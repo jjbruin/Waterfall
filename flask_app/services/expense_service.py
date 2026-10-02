@@ -46,6 +46,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import text
 
 from flask_app.auth.routes import ACCOUNTING_ROLES
+from flask_app.auth.sections import has_accounting_authority
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +337,7 @@ def can_view(engine, actor: dict, report: dict, holders=None) -> bool:
         return True
     if report["status"] == "draft":
         return False
-    if report["status"] in ACCOUNTING_VISIBLE and actor.get("role") in ACCOUNTING_ROLES:
+    if report["status"] in ACCOUNTING_VISIBLE and has_accounting_authority(actor, engine):
         return True
     # Whoever may decide it may read it, before and after the decision.
     return decide_basis(engine, actor, report, holders) is not None
@@ -909,8 +910,8 @@ def get_report(engine, actor, report_id) -> dict:
                             "copy_recurring": mine and r["status"] in EDITABLE,
                             "accounting_return": (r["status"] == "approved"
                                                   and not r.get("batch_id")
-                                                  and actor.get("role") in ACCOUNTING_ROLES
-                                                  and not mine)}}
+                                                  and not mine
+                                                  and has_accounting_authority(actor, engine))}}
 
 
 def _summary(r, users, emps, lines=None) -> dict:
@@ -1093,7 +1094,7 @@ def accounting_return(engine, actor, report_id, note: Optional[str]) -> dict:
     otherwise change an approved figure and have it paid unseen. Accounting's
     coding of the lines is kept.
     """
-    if actor.get("role") not in ACCOUNTING_ROLES:
+    if not has_accounting_authority(actor, engine):
         raise PermissionError("Only accounting can return an approved report.")
     r = _visible_report(engine, actor, report_id)
     if int(r["user_id"]) == int(actor["id"]):

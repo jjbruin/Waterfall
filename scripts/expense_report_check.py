@@ -76,7 +76,10 @@ def main():
     client = app.test_client()
 
     people = {"admin": "admin", "emp": "analyst", "mgr": "analyst", "other": "analyst",
-              "cfo": "cfo", "acct": "accountant", "ceo": "analyst", "pres": "analyst"}
+              "cfo": "cfo", "acct": "accountant", "ceo": "analyst", "pres": "analyst",
+              # The admin ROLE without the admin USERNAME: a developer. "dev" has
+              # Accounting unticked, "dev2" ticked (Jim, Oct 2 2026).
+              "dev": "admin", "dev2": "admin"}
     with app.app_context():
         eng = get_engine()
         for u, role in people.items():
@@ -351,6 +354,35 @@ def main():
     chk("another employee cannot delete it", call("DELETE", "/reports/%d" % r6, "other")[0] == 404)
     chk("the owner can", call("DELETE", "/reports/%d" % r6, "emp")[0] == 200)
     chk("and it is gone", call("GET", "/reports/%d" % r6, "emp")[0] == 404)
+
+    print("\n12. The admin ROLE is not accounting; the Accounting section is")
+    # Jim, Oct 2 2026: "There is only 1 Admin for the system ... and that is me.
+    # Charlene has admin rights to make enhancements to the system however, if
+    # she is blocked from accounting, she should not be able to view or update
+    # accounting tables or screens." r5 is APPROVED and not batched here.
+    from flask_app.auth import sections as _sec
+    with app.app_context():
+        _sec._ensure_table(eng)
+        with eng.begin() as c:
+            c.execute(text("INSERT INTO user_section_access (user_id, section, allowed, updated_by) "
+                           "VALUES (:u, 'accounting', :f, 'check')"), {"u": ids["dev"], "f": False})
+    chk("a developer admin without Accounting cannot open an approved report",
+        call("GET", "/reports/%d" % r5, "dev")[0] == 404)
+    chk("...nor list the employees", call("GET", "/employees", "dev")[0] == 403)
+    chk("...nor set a mileage rate",
+        call("PUT", "/mileage-rates", "dev", {"effective_date": "2027-01-01", "rate": "0.70"})[0] == 403)
+    chk("...nor send the approved report back",
+        call("POST", "/reports/%d/accounting-return" % r5, "dev", {"note": "x"})[0] == 403)
+    chk("...and the report is not in their list",
+        r5 not in [x["id"] for x in (call("GET", "/reports?scope=all", "dev")[1].get("reports") or [])])
+    st, b = call("GET", "/reports/%d" % r5, "dev2")
+    chk("an admin-role user WITH Accounting can open it", st == 200, st)
+    chk("...and is offered the return", (b.get("permissions") or {}).get("accounting_return") is True)
+    chk("...and may list the employees", call("GET", "/employees", "dev2")[0] == 200)
+    st, b = call("GET", "/reports/%d" % r5, "admin")
+    chk("the admin USERNAME always can", st == 200, st)
+    chk("...and has the return offered", (b.get("permissions") or {}).get("accounting_return") is True)
+    chk("the accountant still can", call("GET", "/reports/%d" % r5, "acct")[0] == 200)
 
     print("\n%d passed, %d failed" % (len(_passed), len(_failed)))
     return 1 if _failed else 0

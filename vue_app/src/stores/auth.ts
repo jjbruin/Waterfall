@@ -57,8 +57,11 @@ export const useAuthStore = defineStore('auth', () => {
   // model." An analyst is deliberately NOT here -- note it IS in
   // ANALYST_OR_ABOVE above, so the two lists differ on purpose.
   const ACCOUNTING_ROLES = ['admin', 'cfo', 'accounting_manager', 'accountant']
+  // ...AND the Accounting section (Jim, Oct 2 2026): an admin ROLE with
+  // Accounting unticked builds the system but is not accounting. Mirrors
+  // has_accounting_authority; the `admin` username has every section.
   const canEditAccounting = computed(
-    () => ACCOUNTING_ROLES.includes(user.value?.role || ''))
+    () => ACCOUNTING_ROLES.includes(user.value?.role || '') && hasSection('accounting'))
 
   // Mirrors CLOSE_PLAN_ROLES. The CFO sets the PLAN of the close -- when it
   // opens, when each thing is due, and the order entities are worked in.

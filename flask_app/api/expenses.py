@@ -51,6 +51,21 @@ expenses_bp = Blueprint("expenses", __name__, url_prefix="/api/expenses")
 EMPLOYEE_LIST_ROLES = ACCOUNTING_ROLES
 
 
+def accounting_authority_required(fn):
+    """The role check AND the Accounting section (Jim, Oct 2 2026): an admin
+    ROLE with Accounting unticked is a developer, not accounting. Applied after
+    `roles_exactly`, so the role list still says who could ever qualify."""
+    from functools import wraps
+    from flask_app.auth.sections import has_accounting_authority
+
+    @wraps(fn)
+    def inner(*a, **k):
+        if not has_accounting_authority(_actor()):
+            return jsonify({"error": "This needs the Accounting section."}), 403
+        return fn(*a, **k)
+    return inner
+
+
 def _actor() -> dict:
     return getattr(g, "current_user", None) or {}
 
@@ -212,6 +227,7 @@ def post_copy_recurring(report_id):
 @expenses_bp.route("/reports/<int:report_id>/accounting-return", methods=["POST"])
 @login_required
 @roles_exactly(*ACCOUNTING_ROLES)
+@accounting_authority_required
 def post_accounting_return(report_id):
     return _run("accounting return", ex.accounting_return, get_engine(), _actor(), report_id,
                 _body().get("note"))
@@ -229,6 +245,7 @@ def post_distance():
 @expenses_bp.route("/employees", methods=["GET"])
 @login_required
 @roles_exactly(*EMPLOYEE_LIST_ROLES)
+@accounting_authority_required
 def get_employees():
     return _run("employees", lambda: {"employees": ex.employees(get_engine())})
 
@@ -244,6 +261,7 @@ def put_employee(user_id):
 @expenses_bp.route("/mileage-rates", methods=["PUT"])
 @login_required
 @roles_exactly(*ACCOUNTING_ROLES)
+@accounting_authority_required
 def put_mileage_rate():
     b = _body()
     return _run("mileage rate", ex.set_mileage_rate, get_engine(), b.get("effective_date"),

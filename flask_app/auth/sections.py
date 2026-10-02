@@ -241,9 +241,9 @@ def _engine():
     return get_engine()
 
 
-def denied_sections(user_id: int) -> set:
+def denied_sections(user_id: int, engine=None) -> set:
     """The sections this user is UNCHECKED for. Empty means everything."""
-    engine = _engine()
+    engine = engine or _engine()
     _ensure_table(engine)
     with engine.connect() as conn:
         rows = conn.execute(text(
@@ -262,6 +262,29 @@ def allowed_sections(user: dict) -> list:
         return list(SECTION_KEYS)
     denied = denied_sections(user["id"])
     return [k for k in SECTION_KEYS if k not in denied]
+
+
+def has_accounting_authority(user: dict, engine=None) -> bool:
+    """May this user act AS ACCOUNTING -- read approved expense reports, return
+    them, set mileage rates, see the employee list?
+
+    Jim, Oct 2 2026: "There is only 1 Admin for the system with access and
+    rights to everything and that is me. Charlene has admin rights to make
+    enhancements to the system however, if she is blocked from accounting,
+    she should not be able to view or update accounting tables or screens."
+
+    So the `admin` USERNAME always may; anyone else needs an accounting ROLE
+    AND the Accounting section ticked. A role alone is not enough -- the
+    `admin` role is also how developers get the rights to build the system.
+    """
+    if not user:
+        return False
+    if user.get("username") == SUPERUSER:
+        return True
+    from flask_app.auth.routes import ACCOUNTING_ROLES
+    if user.get("role") not in ACCOUNTING_ROLES or user.get("id") is None:
+        return False
+    return "accounting" not in denied_sections(int(user["id"]), engine)
 
 
 def all_users_access() -> dict:
