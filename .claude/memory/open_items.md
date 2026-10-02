@@ -30,12 +30,12 @@ production image since has resolved pandas 3 (3.0.6 at `v553`-`v555`), while the
 failed inside the container: pandas 3 reads a SQL NULL as NaN, and the intercompany
 reconciliation had an entity called NAN (fixed at `v555`).
 
-- **18.1 Sweep every guardrail under pandas 3.** Scratch venv with the container's
-  resolution; first run was confounded (parallel runs collided on fixed temp-db
-  names), re-running sequentially. Owner: **next session** -- read the result.
-- **18.2 Pin pandas** (`<3.1` at least): pandas 3.1.0rc0 shipped Sep 30 2026 and the
-  next rebuild after 3.1.0 is final takes it unannounced -- the v524 SQLAlchemy shape.
-  Owner: **Jim's call** (pin the version production already runs).
+- **18.1 DONE (Oct 2):** all 134 guardrails run one at a time under pandas 2.3.3 and
+  3.0.6 (scratch venv with the container's resolution): **0 differ.** 50 fail under
+  BOTH -- 16 import the absent `live_api` harness, the rest need real local data or
+  files (§15) -- so they say nothing about pandas 3 either way. The first, parallel
+  run was confounded by checks sharing fixed temp-db names; run them sequentially.
+- **18.2 DONE (Oct 2, `v557`):** `pandas>=2.3,<3.1`, resolving 3.0.6.
 - **18.3 Move local dev to pandas 3** so guardrails test what production runs. Owner:
   **Jim's call**.
 

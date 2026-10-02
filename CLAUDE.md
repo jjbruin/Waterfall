@@ -266,6 +266,26 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v557` = `68ffce3` (PANDAS PINNED `<3.1` -- resolves 3.0.6, what production
+    already ran, so it changes nothing live and stops 3.1 (rc0 out Sep 30) arriving
+    unannounced -- and THE CFO MAY SIGN OFF ANY EMPLOYEE'S EXPENSE REPORT, recorded
+    "CFO in place of <approver>"; never their own, drafts private. Span vs live
+    `effab11`: `68c7b03` (docs) and `68ffce3`. Built from the CLEAN DEPLOY WORKTREE
+    with the tag checked before the update. VERIFIED IN THE CONTAINER: pandas 3.0.6,
+    `expense_report_check` 84/0. Deployed 16:47 UTC, site 200 throughout.)
+  - `v556r` = `effab11` (RESTORE. Not a release: a new revision on the last good
+    locked image, after the v556 failure below. Up ~16:45 UTC.)
+  - `v556` -- FAILED, NEVER SERVED, AND CAUSED A ~4 MINUTE OUTAGE (~16:41-16:45 UTC,
+    root 404). `az acr build` failed during upload -- `waterfall.db-shm` vanished,
+    because a background guardrail sweep was using the local SQLite db in the same
+    checkout -- so tag `68ffce3` was never created, and the chained script still ran
+    `containerapp update` to it. Deactivating the broken v556 then made it worse: in
+    single-revision mode traffic follows the LATEST revision, so the healthy v555
+    deprovisioned. Recovered by deploying a NEW revision on the good locked tag
+    (`v556r`). RULES SINCE: gate `containerapp update` on the tag existing and the run
+    succeeding for that SHA; build only from a clean worktree nothing else is using;
+    to back out in single mode, roll FORWARD to the last good tag, never deactivate the
+    latest revision.
   - `v555` = `effab11` (A NULL SEGMENT IS BLANK UNDER PANDAS 3. PRODUCTION RUNS
     PANDAS 3.0.6 -- `requirements.txt` says only `pandas>=2.3`, pandas 3.0.0 shipped
     Jan 21 2026, so EVERY image in this history has run pandas 3 -- while local dev
