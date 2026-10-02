@@ -534,16 +534,22 @@ def capitalization_sources(
         # too is what stops this report and that page disagreeing about the same
         # deal, which they did on twelve deals until 2026-10-01. With no as-of
         # supplied the whole chain is offered, which is this report's own basis.
-        if as_of is not None:
-            psc, _basis = resolve_committed_pref(m, iid, as_of)
-        else:
-            psc = split(m, "Amount")[0]
-        # The first-loss (OP) side has no as-of rule and must not see superseded
-        # revisions, so it is taken from CURRENT rows only.
+        # CURRENT ROWS ONLY on the no-as-of path. Once MRI_Commitments.sql
+        # stopped filtering EndDate IS NULL (Jim, 2026-10-01) this frame carries
+        # SUPERSEDED REVISIONS, and summing them reads every past version of a
+        # pledge as a live one: measured on the real table, Pontchartrain
+        # 10,847,420 -> 42,823,260, Middle Island 7,896,655 -> 29,978,275,
+        # Belleville 4,752,161 -> 21,533,305. Neither side has an as-of here, so
+        # both take the current row and this report is unmoved by the data
+        # change. Pass `as_of` to get the quarter-aware figure instead.
         if "EndDate" in m.columns:
             m_cur = m[m["EndDate"].isna()]
         else:
             m_cur = m
+        if as_of is not None:
+            psc, _basis = resolve_committed_pref(m, iid, as_of)
+        else:
+            psc = split(m_cur, "Amount")[0]
         _, op_side = split(m_cur, "Amount")
         out.append(("commitments (IA_Commitment)", psc, op_side))
     else:
