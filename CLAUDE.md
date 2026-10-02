@@ -255,6 +255,82 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v550` = `b250639` (HOTFIX FOR v549 — NULLS ARE GUARDED BEFORE THE
+    isinstance TEST IN `_as_date`. Oct 1 2026, tag locked. THIS IS LIVE.
+    **`pd.NaT` IS an instance of `datetime`** — `isinstance(pd.NaT, datetime)`
+    is True — so the isinstance branch sitting AHEAD of the null guard returned
+    `NaT.date()`, which is NaT, and `row_in_effect`'s `end >= as_of` then
+    raised "Cannot compare NaT with datetime.date object".
+    UNREACHABLE UNTIL THE DATA CHANGED, which is why it shipped quietly in
+    v548. While `queries/MRI_Commitments.sql` filtered `EndDate IS NULL` the
+    column was entirely null, pandas typed it object/float, NaN is NOT a
+    datetime, and the `pd.to_datetime` path returned None correctly. The moment
+    ended rows loaded the column became `datetime64[us]` and every OPEN row's
+    EndDate arrived as NaT.
+    REPRODUCED AGAINST THE REAL REFRESHED ROWS BEFORE FIXING: Pontchartrain
+    raised at both quarters, Camarillo at 26Q3, Asbury at 26Q3. Asbury's 26Q2
+    SURVIVED — its in-force row there is an ENDED one that matched before the
+    loop reached a NaT — which is exactly the mixed 200/500 pattern seen live.
+    After the fix all five resolve and open commitments are still counted as of
+    quarter end: Pontchartrain 10,847,420 both quarters, Camarillo 18,843,400,
+    Asbury 1,490,000 at 26Q2 and 1,620,000 at 26Q3.
+    **THE SUITE WAS GREEN ON A SHAPE THE DATABASE CANNOT DELIVER.** Every
+    fixture used Python `None` for an open row; pandas never produces None once
+    the column is `datetime64`, it produces NaT. `committed_pref_check` 39 ->
+    47, the new cases passing `pd.NaT`. Pre-fix it does not merely fail:
+    `_as_date(pd.NaT)` returns NaT AND `_as_date(pd.NA)` raises "boolean value
+    of NA is ambiguous" on the old `value == ""`, so the old ordering carried a
+    SECOND latent fault the guard also closes.
+    VERIFIED ON v550: 114/114 One Pagers 200, 0 failing; 26Q2 Burton
+    26,597,500 / JB Fair Park 14,300,000 / Nottingham 9,135,000 and 26Q3 Burton
+    54,227,500 / JB Fair Park 29,757,181 / Nottingham 12,535,000, all exact;
+    `cap_stack.committed_pe == pe_performance.committed_pe` on every deal
+    checked; Snapshot all 4 subtabs x TGAM/KOCINV/BCA build clean; Treasury
+    AMB6 13 investors / base 11,000,000.00 / PSC1 42.7273% and TGA25 base
+    103,572,497.76 both unchanged; `committed_pref_check` 47/47 and
+    `treasury_upload_check` 26/0 IN THE CONTAINER; logs 0 tracebacks, root 200
+    ~0.2s. `requirements.txt` still pins `SQLAlchemy>=2.0,<2.1`, re-confirmed.
+    Rollback: `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:b4a9c1f --revision-suffix v551`,
+    which is v548 and therefore also reverts the SQL. Note the `commitments`
+    TABLE refresh is NOT in git and is not undone by a rollback.)
+  - `v549` = `76c786c` (DROPS THE `EndDate IS NULL` FILTER SO ENDED COMMITMENT
+    ROWS LOAD — **AND TOOK EVERY 26Q3 ONE PAGER TO HTTP 500**, fixed minutes
+    later by v550. Oct 1 2026, tag locked. Approved by Jim.
+    `queries/MRI_Commitments.sql` becomes `select * from IA_Commitment`. The
+    table goes 557 -> 897 rows, 339 ended, and carries ENDED revisions for the
+    first time — which is what `committed_pref.resolve_committed_pref` (v548)
+    needs: its as-of rule is `StartDate <= Q AND (EndDate IS NULL OR EndDate >=
+    Q)`, and until now the row that WAS in force on a past quarter simply was
+    not in the database. **The table refresh is a DATA change that is not in
+    git**: run `import_query_to_database("MRI_Commitments")` under a BARE Flask
+    app context (never `create_app()`), then `POST /api/data/reload` as admin,
+    because that function does not clear caches and the exec session is a
+    different process from the workers'.
+    ONE READER WAS NOT SAFE AND THE PRE-FLIGHT CHECK IS WHAT FOUND IT. v548
+    added `EndDate IS NULL` to the six SQL readers and filtered Investment
+    Metrics' FIRST-LOSS side, but its PSC-PREF side took the legacy raw-split
+    branch — `capitalization_sources` is only quarter-aware when `as_of` is
+    passed, and NEITHER call site passes it. Summing that frame once ended rows
+    load reads EVERY PAST VERSION of a pledge as a live one: Pontchartrain
+    10,847,420 -> 42,823,260 (4 revisions), Middle Island 7,896,655 ->
+    29,978,275, Belleville 4,752,161 -> 21,533,305, Burton 54,227,500 ->
+    80,825,000, JB Fair Park 29,757,181 -> 44,057,181, Nottingham 12,535,000 ->
+    21,670,000. Both sides now take the current row on the no-as-of path, so
+    the report is UNMOVED by the data change — 0 of 6 deals differ, proved both
+    ways against a fixture carrying the real ended rows.
+    A FIXTURE BUG WORTH RECORDING: the first audit said all six deals changed
+    even WITH the fix, because the scratch fixture serialised a null EndDate as
+    the STRING "None", so `.isna()` matched nothing and every row read as
+    ended. The filter looked broken when it was the test that was.
+    `committed_pref_check` 35 -> 39, `treasury_upload_check` 27/0,
+    `investment_metrics_check` 113/0, `one_engine_per_number_check` 26/0 — and
+    every one of them was green across the outage. See v550.
+    STILL OPEN: **Investment Metrics shares the FUNCTION but not the RULE.**
+    Neither `capitalization_sources` call site passes `as_of`, so it takes the
+    current row rather than the as-of one. Deliberate — making it quarter-aware
+    WOULD move its figures and needs its own measurement.)
   - `v548` = `b4a9c1f` (COMMITTED PREF COMES FROM MRI'S IA_Commitment, AS OF
     THE QUARTER. Oct 1 2026, build `camp` 2m32s, run status Succeeded, tag
     locked. Approved by Charlene; Jim notified.
