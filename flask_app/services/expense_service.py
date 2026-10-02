@@ -162,6 +162,7 @@ def ensure_tables(engine) -> None:
             receipt_id        INTEGER,
             receipt_page      INTEGER,
             extracted_json    TEXT,
+            recurring         BOOLEAN,
             updated_at        TEXT)""",
         f"""CREATE TABLE IF NOT EXISTS er_line_splits (
             id        {pk},
@@ -194,6 +195,17 @@ def ensure_tables(engine) -> None:
     # is called from here so every path that reaches a report has them.
     from flask_app.services import expense_receipts
     expense_receipts.ensure_receipt_tables(engine)
+    # Phase 4: a line the employee claims every month. Added by migration too,
+    # so a table created by an earlier phase gains it.
+    from sqlalchemy import inspect
+    if "recurring" not in {c["name"] for c in inspect(engine).get_columns("er_lines")}:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE er_lines ADD COLUMN recurring BOOLEAN"))
+    # The batch a report is in (phase 3). Here rather than only in the coding
+    # module, because the report paths read it whether or not coding has run.
+    if "batch_id" not in {c["name"] for c in inspect(engine).get_columns("er_reports")}:
+        with engine.begin() as c:
+            c.execute(text("ALTER TABLE er_reports ADD COLUMN batch_id TEXT"))
 
 
 # ------------------------------------------------------------------ helpers
@@ -723,7 +735,8 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
             "cm": (body.get("comment") or "").strip() or None,
             "amt": amount, "mi": miles, "rate": rate, "rc": receipt,
             "why": (body.get("no_receipt_reason") or "").strip() or None,
-            "rid": receipt_id, "rpg": receipt_page if receipt_id else None, "at": _now()}
+            "rid": receipt_id, "rpg": receipt_page if receipt_id else None,
+            "rec": bool(body.get("recurring")), "at": _now()}
     with engine.begin() as c:
         if line_id is None:
             n = c.execute(text("SELECT COALESCE(MAX(sort_order), 0) FROM er_lines "
@@ -733,16 +746,16 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
                 "INSERT INTO er_lines (report_id, sort_order, line_date, line_date_end, "
                 "category_account, purpose, deal_code, deal_kind, deal_name, vendor, comment, "
                 "amount, miles, mileage_rate, receipt, no_receipt_reason, receipt_id, "
-                "receipt_page, updated_at) VALUES "
+                "receipt_page, recurring, updated_at) VALUES "
                 "(:report, :so, :d, :de, :cat, :pur, :dc, :dk, :dn, :v, :cm, :amt, :mi, :rate, "
-                ":rc, :why, :rid, :rpg, :at) RETURNING id"), vals).scalar()
+                ":rc, :why, :rid, :rpg, :rec, :at) RETURNING id"), vals).scalar()
         else:
             got = c.execute(text("UPDATE er_lines SET line_date = :d, line_date_end = :de, "
                                  "category_account = :cat, purpose = :pur, deal_code = :dc, "
                                  "deal_kind = :dk, deal_name = :dn, vendor = :v, comment = :cm, "
                                  "amount = :amt, miles = :mi, mileage_rate = :rate, receipt = :rc, "
                                  "no_receipt_reason = :why, receipt_id = :rid, "
-                                 "receipt_page = :rpg, updated_at = :at "
+                                 "receipt_page = :rpg, recurring = :rec, updated_at = :at "
                                  "WHERE id = :id AND report_id = :report"),
                             {**vals, "id": int(line_id)})
             if got.rowcount != 1:
@@ -769,10 +782,56 @@ def delete_line(engine, actor, report_id, line_id) -> dict:
     return get_report(engine, actor, r["id"])
 
 
+def _norm_vendor(v) -> str:
+    return "".join(ch for ch in str(v or "").lower() if ch.isalnum())
+
+
+def possible_duplicates(engine, report: dict, lines: List[dict]) -> Dict[int, List[str]]:
+    """line id -> why it may already have been claimed.
+
+    THE SAME VENDOR, THE SAME DATE AND THE SAME AMOUNT on another report. All
+    three, because any one alone is everywhere: twenty people claim $50 of
+    phone on the 1st. The other report counts if it is the SAME employee's
+    (any status -- a draft started twice is the commonest duplicate) or another
+    employee's once SUBMITTED (a draft is private and may never be sent; a
+    shared dinner claimed twice is exactly what this is for). It WARNS; it
+    never blocks -- two identical taxi fares on one day are real.
+    """
+    keys = {}
+    for ln in lines:
+        v = _norm_vendor(ln.get("vendor"))
+        if v and ln.get("line_date") and ln.get("amount") is not None:
+            keys.setdefault((v, ln["line_date"], round(float(ln["amount"]), 2)), []).append(ln["id"])
+    if not keys:
+        return {}
+    dates = sorted({k[1] for k in keys})
+    from sqlalchemy import bindparam
+    with engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT l.vendor, l.line_date, l.amount, r.id, r.user_id, r.status FROM er_lines l "
+            "JOIN er_reports r ON r.id = l.report_id WHERE l.line_date IN :d AND r.id <> :me"
+        ).bindparams(bindparam("d", expanding=True)), {"d": dates, "me": report["id"]}).fetchall()
+    out: Dict[int, List[str]] = {}
+    for vendor, d, amt, rid, uid, status in rows:
+        k = (_norm_vendor(vendor), d, round(float(amt or 0), 2))
+        if k not in keys:
+            continue
+        same_emp = int(uid) == int(report["user_id"])
+        if not same_emp and status == "draft":
+            continue
+        why = ("the same vendor, date and amount are on your report #%s" % rid if same_emp
+               else "the same vendor, date and amount are on another employee's report")
+        for lid in keys[k]:
+            if why not in out.setdefault(lid, []):
+                out[lid].append(why)
+    return out
+
+
 def _check(engine, report: dict, lines: List[dict], receipts=None) -> dict:
     cats, codes, _, _ = _option_sets(engine)
     errors, warnings, by_line = [], [], {}
     dup = {x["id"] for x in (receipts or []) if x.get("duplicate_of")}
+    dupes = possible_duplicates(engine, report, lines)
     if not lines:
         errors.append("The report has no lines.")
     for i, ln in enumerate(lines, start=1):
@@ -780,6 +839,9 @@ def _check(engine, report: dict, lines: List[dict], receipts=None) -> dict:
         by_line[ln["id"]] = {"errors": e, "warnings": w}
         errors += ["Line %d %s." % (i, x) for x in e]
         warnings += ["Line %d %s." % (i, x) for x in w]
+        for why in dupes.get(ln["id"], []):
+            w.append("may be a duplicate: " + why)
+            warnings.append("Line %d may be a duplicate: %s." % (i, why))
         if ln.get("receipt_id") in dup:
             w.append("its receipt is also on another expense report")
             by_line[ln["id"]]["warnings"] = w
@@ -814,7 +876,12 @@ def get_report(engine, actor, report_id) -> dict:
                             "delete": mine and r["status"] == "draft" and not r.get("submitted_at"),
                             "submit": mine and r["status"] in EDITABLE,
                             "recall": mine and r["status"] == "submitted",
-                            "decide": basis is not None, "decide_as": basis}}
+                            "decide": basis is not None, "decide_as": basis,
+                            "copy_recurring": mine and r["status"] in EDITABLE,
+                            "accounting_return": (r["status"] == "approved"
+                                                  and not r.get("batch_id")
+                                                  and actor.get("role") in ACCOUNTING_ROLES
+                                                  and not mine)}}
 
 
 def _summary(r, users, emps, lines=None) -> dict:
@@ -934,3 +1001,85 @@ def decide(engine, actor, report_id, action: str, note: Optional[str]) -> dict:
         _event(c, r["id"], "approved" if action == "approve" else "returned", actor,
                basis=basis_text, note=note)
     return get_report(engine, actor, r["id"])
+
+
+# ------------------------------------------------------------------ phase 4
+
+def copy_recurring(engine, actor, report_id) -> dict:
+    """Bring forward the lines the employee marked RECURRING on their last report.
+
+    The last report is the employee's most recent other report that has any
+    recurring line. Copied: category, purpose, deal, vendor, comment, amount
+    and the mark itself. NOT copied: the receipt (this month's is a different
+    file) and the date, which is set to the new period's start for the
+    employee to correct. A line already here with the same category, vendor,
+    comment and amount is not copied twice, so pressing it again adds nothing.
+    """
+    r = _owned_editable(engine, actor, report_id)
+    with engine.connect() as c:
+        src = c.execute(text(
+            "SELECT r.id FROM er_reports r WHERE r.user_id = :u AND r.id <> :me AND EXISTS "
+            "(SELECT 1 FROM er_lines l WHERE l.report_id = r.id AND l.recurring = :t) "
+            "ORDER BY r.period_end DESC, r.id DESC"),
+            {"u": int(actor["id"]), "me": r["id"], "t": True}).first()
+    if not src:
+        raise ValueError("None of your earlier reports has a line marked recurring.")
+    src_lines = [ln for ln in _lines(engine, src[0]) if ln.get("recurring")]
+    have = {(ln.get("category_account"), _norm_vendor(ln.get("vendor")),
+             (ln.get("comment") or "").strip().lower(), ln.get("amount"))
+            for ln in _lines(engine, r["id"])}
+    added = 0
+    for ln in src_lines:
+        key = (ln.get("category_account"), _norm_vendor(ln.get("vendor")),
+               (ln.get("comment") or "").strip().lower(), ln.get("amount"))
+        if key in have:
+            continue
+        body = {"line_date": r["period_start"], "category_account": ln.get("category_account"),
+                "purpose": ln.get("purpose"), "vendor": ln.get("vendor"),
+                "comment": ln.get("comment"), "amount": ln.get("amount"), "recurring": True}
+        if ln.get("splits"):
+            body["splits"] = [{"deal_code": "PIPELINE" if s["deal_kind"] == "pipeline"
+                               else s["deal_code"], "deal_name": s["deal_name"],
+                               "amount": s["amount"]} for s in ln["splits"]]
+        else:
+            body["deal_code"] = "PIPELINE" if ln.get("deal_kind") == "pipeline" else ln.get("deal_code")
+            body["deal_name"] = ln.get("deal_name")
+        save_line(engine, actor, r["id"], body)
+        have.add(key)
+        added += 1
+    out = get_report(engine, actor, r["id"])
+    out["copied"] = {"from_report": src[0], "added": added,
+                     "skipped": len(src_lines) - added}
+    return out
+
+
+def accounting_return(engine, actor, report_id, note: Optional[str]) -> dict:
+    """Accounting sends an APPROVED report back to its employee, with a reason.
+
+    Only before it is batched: a batched report is in a journal entry, and
+    voiding the batch is how that is undone. The approval is cleared, so the
+    corrected report goes back through its approver -- an employee could
+    otherwise change an approved figure and have it paid unseen. Accounting's
+    coding of the lines is kept.
+    """
+    if actor.get("role") not in ACCOUNTING_ROLES:
+        raise PermissionError("Only accounting can return an approved report.")
+    r = _visible_report(engine, actor, report_id)
+    if int(r["user_id"]) == int(actor["id"]):
+        raise PermissionError("You cannot return your own report.")
+    if r["status"] != "approved" or r.get("batch_id"):
+        raise PermissionError("Only an approved report not yet in a batch can be returned.")
+    note = (note or "").strip()
+    if not note:
+        raise ValueError("Say why the report is being returned.")
+    with engine.begin() as c:
+        got = c.execute(text("UPDATE er_reports SET status = 'returned', decided_by = :b, "
+                             "decided_basis = 'accounting', decided_at = :at, updated_at = :at "
+                             "WHERE id = :i AND status = 'approved' AND batch_id IS NULL"),
+                        {"b": int(actor["id"]), "at": _now(), "i": r["id"]})
+        if got.rowcount != 1:
+            raise PermissionError("The report was batched or changed just now.")
+        _event(c, r["id"], "returned", actor, basis="accounting", note=note)
+    # Not the report itself: once returned it is the employee's again, and
+    # accounting reads a report only from approval on.
+    return {"returned": r["id"], "note": note}

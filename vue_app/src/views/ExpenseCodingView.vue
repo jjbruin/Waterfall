@@ -145,6 +145,20 @@ function downloadText(textBody: string, name: string) {
   a.download = name; a.click(); URL.revokeObjectURL(a.href)
 }
 
+// Accounting sends an approved report back, with a reason. It returns to the
+// employee and has to be approved again before it can be paid.
+const returning = ref<number | null>(null)
+const returnNote = ref('')
+async function returnReport(r: any) {
+  try {
+    await api.post(`/api/expenses/reports/${r.id}/accounting-return`, { note: returnNote.value })
+    dataStore.addToast(`Returned to ${r.employee}.`, 'success')
+    returning.value = null
+    delete pick.value[r.id]
+    await load()
+  } catch (e) { fail(e, 'Could not return the report') }
+}
+
 // ---- batches ----
 const batchList = ref<any[]>([])
 const confirmVoid = ref<string | null>(null)
@@ -237,6 +251,7 @@ onMounted(async () => { await load(); loadBatches() })
                 </td>
               </tr>
               <tr v-if="r.problems.length"><td colspan="9" class="err-text">{{ r.problems.join('; ') }}</td></tr>
+              <tr v-if="r.warnings?.length"><td colspan="9" class="warn-text">{{ r.warnings.join('; ') }}</td></tr>
               <tr v-if="open === r"><td colspan="9">
                 <div class="code-form">
                   <label>Booking
@@ -288,15 +303,23 @@ onMounted(async () => { await load(); loadBatches() })
       <p class="muted">One batch per payroll date. The credit is one line to MR20000001, reimbursed
         through TriNet payroll. A batched report is locked; voiding the batch releases it.</p>
       <table class="data-table narrow">
-        <thead><tr><th></th><th>Employee</th><th class="num">Lines</th><th class="num">Total</th><th>Problems</th></tr></thead>
+        <thead><tr><th></th><th>Employee</th><th class="num">Lines</th><th class="num">Total</th><th>Problems</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in reportsOnGrid" :key="r.id">
             <td><input type="checkbox" v-model="pick[r.id]" /></td>
             <td>{{ r.employee }} <span class="muted">#{{ r.id }}</span></td>
             <td class="num">{{ r.lines }}</td><td class="num">{{ fmt(r.total) }}</td>
             <td :class="{ 'err-text': r.problems }">{{ r.problems || '' }}</td>
+            <td>
+              <button v-if="returning !== r.id" class="link" @click="returning = r.id; returnNote = ''">Return…</button>
+              <span v-else class="row">
+                <input v-model="returnNote" placeholder="why — required" class="note-in" />
+                <button class="link" :disabled="!returnNote.trim()" @click="returnReport(r)">Return to {{ r.employee }}</button>
+                <button class="link" @click="returning = null">cancel</button>
+              </span>
+            </td>
           </tr>
-          <tr v-if="!reportsOnGrid.length"><td colspan="5" class="muted">No approved reports.</td></tr>
+          <tr v-if="!reportsOnGrid.length"><td colspan="6" class="muted">No approved reports.</td></tr>
         </tbody>
       </table>
       <div class="row">
@@ -421,6 +444,7 @@ label.grow { flex: 1; min-width: 260px; }
 input, select { border: 1px solid var(--color-border); border-radius: 4px; padding: 4px 6px; font-size: 12.5px; background: var(--color-surface); color: var(--color-text); }
 .num-in { width: 90px; text-align: right; }
 .acct { width: 120px; }
+.note-in { width: 240px; }
 .code-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 6px 0; }
 .interco { width: 100%; border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .link { background: none; border: none; color: var(--color-primary, #2f6f4f); cursor: pointer; padding: 0 4px; font-size: 12px; }

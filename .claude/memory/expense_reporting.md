@@ -1,6 +1,6 @@
-# Employee expense reporting — design (Oct 2 2026; PHASES 1-3 BUILT, not deployed)
+# Employee expense reporting — design (Oct 2 2026; ALL FOUR PHASES BUILT, not deployed)
 
-**Phases 1-3 are on branch `feat/expense-reports`** (off `feat/section-access`, which it
+**All four phases are on branch `feat/expense-reports`** (off `feat/section-access`, which it
 needs for the Expenses section), not merged or deployed as of Oct 2 2026. Delete this
 paragraph when it ships. What is built and how, below under "Phase 1 as built".
 
@@ -277,7 +277,32 @@ to line, the app uses one per batch), and accounting typing a shorter descriptio
 PPI2 than at PSCMAN for one mileage line. This proves the ASSEMBLY; the ownership
 PROPOSAL is the production check above.
 
-### Not built (phase 4)
-Recurring EMPLOYEE lines (the $50 phone line), duplicate detection by vendor/date/amount
-across reports, mileage-rate history UI beyond the table, accounting returning an
-approved report to the employee.
+## Phase 4 as built (Oct 2 2026)
+
+Guardrail `scripts/expense_phase4_check.py` (23), every rule asserted both ways and proved
+against injected defects.
+
+- **Recurring lines.** "recurring every month" on a line; "Copy recurring lines from my
+  last report" brings forward the marked lines of the employee's most recent other report
+  that has any: category, purpose, deal (or split), vendor, comment, amount and the mark.
+  NOT the receipt (this month's is a different file) and NOT the date (set to the new
+  period's start). A line already present is not copied twice. The comment is copied as
+  written, so "- August" has to be edited; the toast says so.
+- **Duplicates: same vendor (normalised: case, spaces, punctuation), same date, same
+  amount on ANOTHER report** -- all three, because twenty people claim $50 of phone on the
+  1st. Counts the employee's own other reports at any status (a report started twice is
+  the commonest case) and colleagues' only once SUBMITTED (a draft is private). Names the
+  report only when it is the employee's own. A WARNING, never a block; shown to the
+  employee, the approver and on accounting's coding grid. Separate from phase 2's
+  identical-file flag.
+- **Accounting returns an APPROVED, UNBATCHED report** with a required note (report
+  screen, or inline on the batch tab). It goes back to the employee as `returned` and
+  **must be approved again**, so an approved figure cannot be changed and paid unseen;
+  accounting's coding is kept. A batched report is refused -- voiding the batch is how --
+  by two independent guards (the status check and the conditional UPDATE); an injection
+  removing one was still refused by the other.
+- `er_reports.batch_id` is now added by the base table setup, not only by the coding
+  module: the return reads it whether or not coding has ever run.
+
+Mileage-rate history is the existing table (effective date, rate, basis, who); nothing
+more was needed.

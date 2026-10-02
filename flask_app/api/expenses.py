@@ -13,6 +13,8 @@
     POST   /api/expenses/reports/<id>/submit         to the approver
     POST   /api/expenses/reports/<id>/recall         back to draft, before a decision
     POST   /api/expenses/reports/<id>/decide         {action: approve | return, note}
+    POST   /api/expenses/reports/<id>/copy-recurring  bring forward last report's recurring lines
+    POST   /api/expenses/reports/<id>/accounting-return  accounting sends an approved report back
     POST   /api/expenses/reports/<id>/receipts       upload files (multipart, field "files")
     GET    /api/expenses/reports/<id>/receipts/<rid>/file   the image or PDF, to show
     POST   /api/expenses/reports/<id>/receipts/<rid>/extract  read it; propose its lines
@@ -198,6 +200,20 @@ def post_extract(report_id, receipt_id):
 def delete_receipt(report_id, receipt_id):
     return _run("delete receipt", rc.delete_receipt, get_engine(), _actor(), report_id,
                 receipt_id)
+
+
+@expenses_bp.route("/reports/<int:report_id>/copy-recurring", methods=["POST"])
+@login_required
+def post_copy_recurring(report_id):
+    return _run("copy recurring", ex.copy_recurring, get_engine(), _actor(), report_id)
+
+
+@expenses_bp.route("/reports/<int:report_id>/accounting-return", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def post_accounting_return(report_id):
+    return _run("accounting return", ex.accounting_return, get_engine(), _actor(), report_id,
+                _body().get("note"))
 
 
 @expenses_bp.route("/employees", methods=["GET"])

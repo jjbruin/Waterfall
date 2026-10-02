@@ -246,6 +246,11 @@ def coding_rows(engine, report_ids=None) -> List[dict]:
     rows = []
     reports = _approved_reports(engine, report_ids)
     all_lines = {r["id"]: ex._lines(engine, r["id"]) for r in reports}
+    # Possible duplicates travel to accounting too -- they are the last to see
+    # a line before it is paid.
+    dupes = {}
+    for rep in reports:
+        dupes.update(ex.possible_duplicates(engine, rep, all_lines[rep["id"]]))
     decided = _codings(engine, [ln["id"] for ls in all_lines.values() for ln in ls])
     for rep in reports:
         employee = ex._name(users, emps, rep["user_id"])
@@ -300,6 +305,7 @@ def coding_rows(engine, report_ids=None) -> List[dict]:
                     "interco_changed": bool(d.get("interco")),
                     "decided_by": d.get("updated_by"), "decided_at": d.get("updated_at"),
                     "problems": problems,
+                    "warnings": ["may be a duplicate: " + w for w in dupes.get(ln["id"], [])],
                 })
     return rows
 

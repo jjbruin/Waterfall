@@ -121,7 +121,7 @@ const blankLine = () => ({
   purpose: '', deal_code: 'OPERATIONS', deal_name: '', vendor: '', comment: '', amount: '',
   miles: '', receipt: '', no_receipt_reason: '',
   receiptChoice: '' as string | number, receipt_page: 1 as number | null, extracted: null as any,
-  isPeriod: false, isMileage: false, isSplit: false,
+  isPeriod: false, isMileage: false, isSplit: false, recurring: false,
   splits: [] as { deal_code: string; deal_name: string; amount: string; pct: string }[],
 })
 const editing = ref<any>(null)
@@ -137,7 +137,7 @@ function editLine(ln: any) {
     deal_name: ln.deal_kind === 'pipeline' ? (ln.deal_name || '') : '',
     receiptChoice: ln.receipt_id ? ln.receipt_id : (ln.receipt === 'N' ? 'N' : ''),
     receipt_page: ln.receipt_page || 1, extracted: ln.extracted || null,
-    isPeriod: !!ln.line_date_end, isMileage: ln.miles != null,
+    isPeriod: !!ln.line_date_end, isMileage: ln.miles != null, recurring: !!ln.recurring,
     isSplit: (ln.splits || []).length > 0,
     splits: (ln.splits || []).map((s: any) => ({
       deal_code: s.deal_kind === 'pipeline' ? PIPELINE : s.deal_code,
@@ -191,7 +191,7 @@ async function saveLine() {
     category_account: e.category_account, purpose: e.purpose,
     deal_code: e.isSplit ? '' : e.deal_code,
     deal_name: !e.isSplit && e.deal_code === PIPELINE ? e.deal_name : '',
-    vendor: e.vendor, comment: e.comment,
+    vendor: e.vendor, comment: e.comment, recurring: e.recurring,
     amount: e.isMileage ? '' : e.amount, miles: e.isMileage ? e.miles : '',
     receipt: e.receiptChoice === 'N' ? 'N' : '',
     no_receipt_reason: e.receiptChoice === 'N' ? e.no_receipt_reason : '',
@@ -275,6 +275,27 @@ const pendingCount = computed(() =>
   (report.value?.receipts || []).filter((r: any) => r.status === 'pending').length)
 const linesFrom = (rcId: number) =>
   (report.value?.lines || []).filter((l: any) => l.receipt_id === rcId).length
+
+// ---- phase 4 ----
+async function copyRecurring() {
+  try {
+    const r = await api.post(`/api/expenses/reports/${report.value.id}/copy-recurring`)
+    report.value = r.data
+    const c = r.data.copied
+    dataStore.addToast(c.added ? `${c.added} recurring line(s) copied from report #${c.from_report}` +
+      ' -- set this month\'s date and attach the receipt.' :
+      'The recurring lines are already on this report.', 'info')
+  } catch (e) { fail(e, 'Could not copy recurring lines') }
+}
+const returnNote = ref('')
+async function accountingReturn() {
+  try {
+    await api.post(`/api/expenses/reports/${report.value.id}/accounting-return`, { note: returnNote.value })
+    dataStore.addToast(`Returned to ${report.value.employee}.`, 'success')
+    returnNote.value = ''
+    closeReport()
+  } catch (e) { fail(e, 'Could not return the report') }
+}
 
 // A read-only look at a line's receipt -- what an approver uses.
 const viewing = ref<any>(null)
@@ -450,6 +471,8 @@ onMounted(async () => {
             <td class="comment" :title="ln.comment">{{ ln.comment }}
               <div v-if="ln.miles != null" class="muted">{{ ln.miles }} mi × ${{ ln.mileage_rate }}</div>
               <div v-for="m in report.check.by_line[ln.id]?.errors" :key="m" class="err-text">Line {{ m }}</div>
+              <div v-for="m in report.check.by_line[ln.id]?.warnings" :key="m" class="warn-text">{{ m }}</div>
+              <div v-if="ln.recurring" class="muted">↻ recurring</div>
             </td>
             <td class="num">{{ fmt(ln.amount) }}</td>
             <td>
@@ -473,8 +496,12 @@ onMounted(async () => {
         </tr></tfoot>
       </table>
 
-      <button v-if="report.permissions.edit && !editing" class="btn-secondary add" @click="newLine">
-        + Add an expense</button>
+      <div class="row">
+        <button v-if="report.permissions.edit && !editing" class="btn-secondary add" @click="newLine">
+          + Add an expense</button>
+        <button v-if="report.permissions.copy_recurring && !editing" class="btn-secondary add"
+                @click="copyRecurring">↻ Copy recurring lines from my last report</button>
+      </div>
 
       <!-- ---------- line form ---------- -->
       <div v-if="editing" class="line-form" :class="{ 'with-receipt': editingReceipt }">
@@ -511,6 +538,8 @@ onMounted(async () => {
                  placeholder="e.g. Market Poplar Site Visit - Airport Parking" /></label>
         </div>
         <div class="row">
+          <label class="check" title="Copied forward to your next report by the recurring button">
+            <input type="checkbox" v-model="editing.recurring" /> recurring every month</label>
           <label class="check"><input type="checkbox" v-model="editing.isMileage" /> mileage</label>
           <template v-if="editing.isMileage">
             <label>Miles <input type="number" step="0.1" v-model="editing.miles" class="num-in" /></label>
@@ -603,6 +632,16 @@ onMounted(async () => {
         <div class="row">
           <button class="btn-primary" @click="decide('approve')">Approve</button>
           <button class="btn-secondary" :disabled="!decisionNote.trim()" @click="decide('return')">
+            Return to {{ report.employee }}</button>
+        </div>
+      </div>
+
+      <div v-if="report.permissions.accounting_return" class="decision">
+        <h4>Accounting</h4>
+        <textarea v-model="returnNote" rows="2"
+                  placeholder="Why it is going back — required. It returns to the employee and must be approved again."></textarea>
+        <div class="row">
+          <button class="btn-secondary" :disabled="!returnNote.trim()" @click="accountingReturn">
             Return to {{ report.employee }}</button>
         </div>
       </div>
