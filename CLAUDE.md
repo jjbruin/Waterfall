@@ -266,6 +266,22 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v564` = `d6adabe` (THE ADMIN ROLE IS NOT ACCOUNTING. Jim, Oct 2 2026: "There is
+    only 1 Admin for the system with access and rights to everything and that is me.
+    Charlene has admin rights to make enhancements to the system however, if she is
+    blocked from accounting, she should not be able to view or update accounting tables
+    or screens." Charlene could read Jim's approved expense report because `can_view`
+    admitted any ACCOUNTING_ROLES role, and `admin` is one. Now
+    `sections.has_accounting_authority`: the `admin` USERNAME, or an accounting role AND
+    the Accounting section ticked -- used by `can_view` (approved/batched), the
+    accounting-return permission and route, GET /employees, PUT /mileage-rates, and
+    `canEditAccounting` on screen. SETTING APPROVERS is now the `admin` USERNAME only
+    (it was the admin role), like assigning sections. The list asks once per load, not
+    per report. TAKES EFFECT FOR CHARLENE ONLY WHEN ACCOUNTING IS UNTICKED for her in
+    User Management. `expense_report_check` 84 -> 98, nine new checks fail on the old
+    code; 98/0 IN THE CONTAINER. Span vs live `577511b`: three commits plus two docs.
+    Clean worktree, build `can7` 2m34s, tag gated and locked, P1 re-run before the
+    update; root 200, 0 errors in the boot log.)
   - `v563` = `577511b` (EVERY MRI JOURNAL-ENTRY DESCRIPTION TO THE RULE, AND EXPENSE
     CODING'S RECEIPT OPENS THE POP-UP. Jim: "any journal entry descriptions getting
     loaded into MRI need to follow the rule" -- applied in `build_gl_csv`, the one
