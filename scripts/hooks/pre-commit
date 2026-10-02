@@ -138,4 +138,33 @@ MSG
     exit 1
 fi
 
+# ── Section access: a new section, screen or API must be registered ──────────
+# Jim, Oct 1 2026: "Create a rule that adds future sections to the user
+# management table whenever we create new sections in the app." The table's
+# columns come from flask_app/auth/sections.py, so the rule is: nothing that
+# adds a sidebar section, a Vue route, an /api endpoint or an assistant tool
+# commits until the registry assigns it. Runs only when such a file is staged.
+if git diff --cached --name-only --diff-filter=ACM | grep -qE \
+    '^(vue_app/src/components/layout/AppSidebar\.vue|vue_app/src/router/index\.ts|flask_app/auth/sections\.py|flask_app/__init__\.py|flask_app/api/.*\.py|flask_app/services/assistant_service\.py)$'; then
+    PY=.venv/Scripts/python.exe
+    [ -x "$PY" ] || PY=.venv/bin/python
+    if [ -x "$PY" ]; then
+        if ! "$PY" scripts/section_access_check.py --static >/tmp/section_access_check.out 2>&1; then
+            grep -E 'FAIL' /tmp/section_access_check.out
+            cat <<'MSG'
+
+A section, screen, API route or assistant tool is not assigned to a section.
+Add it to flask_app/auth/sections.py (SECTIONS / OPEN_ROUTES / API_SECTIONS /
+OPEN_API_PREFIXES) or to TOOL_SECTIONS in assistant_service.py. A new SECTION
+then appears in Settings > User Management, ticked for every user.
+
+Full output:  .venv/Scripts/python.exe scripts/section_access_check.py --static
+MSG
+            exit 1
+        fi
+    else
+        echo "pre-commit: no .venv python; section_access_check not run." >&2
+    fi
+fi
+
 exit 0

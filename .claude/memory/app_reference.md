@@ -89,6 +89,24 @@ Standalone view at `/review-tracking` (`ReviewTrackingView.vue`). Production pip
 ### Review Role Management (Settings)
 Admin-only section in `SettingsView.vue`. Table of current review role assignments (username + role) with remove button. Add form: select user + select review role → "Assign Review Role". Available roles: `asset_manager`, `head_am`, `president`, `cco`, `ceo`. A user can hold multiple review roles.
 
+### Section Access (Settings > User Management)
+Added Oct 1 2026 (built, deploy pending). One checkbox column per SIDEBAR section in
+the User Management table, drawn from the registry in `flask_app/auth/sections.py`
+(`GET /auth/sections`), so a new section adds its own column, ticked for everyone.
+- **Only the `admin` USERNAME can change the boxes** (`PUT
+  /auth/users/<id>/sections`); for every other admin-role user they render greyed out
+  (45% opacity, greyscale, not-allowed cursor) under a "Read only" note, and the
+  endpoint returns 403. The `admin` row is always fully ticked and disabled.
+- **Asset Management and New Business move together** for now; the tooltip says so
+  and one click writes both.
+- **What an untick does**: the sidebar hides the section, the router sends the user to
+  the first section they have with "You do not have access to X", and the server
+  refuses that section's API (403). Settings itself stays reachable from the sidebar
+  footer when Data Management is unticked.
+- **Without Accounting**: `gl_*`/`ia_transactions` and every `tr_*`, `wp_*`, `ic_*`
+  table disappear from Data Explorer and the DB export, their MRI queries refuse, and
+  the assistant will not query them.
+
 ### 5. Ownership & Partnerships
 Ownership tree visualization and relationship data.
 

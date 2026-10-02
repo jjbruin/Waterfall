@@ -364,21 +364,28 @@ F.freeze_part("HARDCODE", "2026-Q2", F.PARTS, "cbui",
 _before = _json.dumps(F.get_frozen("HARDCODE", "2026-Q2")["payload"],
                       sort_keys=True, default=str)
 
+# DEBT_FREE_DEALS was the fifth hardcode here and NO LONGER EXISTS — it became
+# a derived data rule on 2026-09-30 (see scripts/debt_free_rule_check.py),
+# which is exactly the cleanup this section was written to anticipate. Its
+# absence is ASSERTED rather than assumed, so dropping it from the tuple below
+# cannot quietly stop testing anything.
+chk("DEBT_FREE_DEALS has been removed, not merely emptied",
+    not hasattr(LOAN, "DEBT_FREE_DEALS"))
+
 _saved = (LOAN.MANUAL_RATIO_SEEDS, LOAN.PROJECTED_YE_NOI_FALLBACK,
-          LOAN.DEBT_FREE_DEALS, LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS)
+          LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS)
 try:
-    # Remove all five, as a future cleanup would.
+    # Remove the remaining four, as a future cleanup would.
     LOAN.MANUAL_RATIO_SEEDS = {}
     LOAN.PROJECTED_YE_NOI_FALLBACK = frozenset()
-    LOAN.DEBT_FREE_DEALS = set()
     LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS = {}
     _after = _json.dumps(F.get_frozen("HARDCODE", "2026-Q2")["payload"],
                          sort_keys=True, default=str)
 finally:
     (LOAN.MANUAL_RATIO_SEEDS, LOAN.PROJECTED_YE_NOI_FALLBACK,
-     LOAN.DEBT_FREE_DEALS, LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS) = _saved
+     LOAN.KNOWN_LOAN_SUBTOTAL_DIFFS) = _saved
 
-chk("the frozen payload is byte-identical with all five hardcodes removed",
+chk("the frozen payload is byte-identical with the hardcodes removed",
     _before == _after,
     f"len {len(_before)} vs {len(_after)}")
 _fr = F.get_frozen("HARDCODE", "2026-Q2")["payload"]["subtabs"]["loan"]

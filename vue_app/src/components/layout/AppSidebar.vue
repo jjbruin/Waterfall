@@ -22,14 +22,14 @@ function toggleSection(key: string) {
 }
 
 // Auto-expand section containing current route
-const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/waterfall-setup', '/reports']
+const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/valuations', '/one-pager', '/portfolio-snapshot', '/review-tracking', '/investment-metrics', '/waterfall-setup', '/reports']
 // Investment Management. Ownership moved here from Asset Management on
 // Sep 15 2026: the ownership chain is about who owns the investment, not
 // about operating the asset.
 const imRoutes = ['/ownership']
 const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
 const dmRoutes = ['/data-explorer', '/settings']
-const acctRoutes = ['/workpapers', '/treasury', '/intercompany', '/gl-ia-query']
+const acctRoutes = ['/workpapers', '/treasury', '/intercompany', '/expense-coding', '/gl-ia-query']
 
 watch(() => route.path, (path) => {
   if (amRoutes.some(r => path.startsWith(r))) expandedSections.am = true
@@ -37,6 +37,12 @@ watch(() => route.path, (path) => {
   if (dmRoutes.some(r => path.startsWith(r))) expandedSections.dm = true
   if (acctRoutes.some(r => path.startsWith(r))) expandedSections.acct = true
   if (imRoutes.some(r => path.startsWith(r))) expandedSections.im = true
+}, { immediate: true })
+
+// The router sends a user who asked for a section they lack to the first one
+// they have, naming it in ?denied= -- say so rather than silently redirecting.
+watch(() => route.query.denied, (denied) => {
+  if (denied) data.addToast(`You do not have access to ${denied}.`, 'error')
 }, { immediate: true })
 
 // MRI Data tools
@@ -480,7 +486,12 @@ function toggleCollapsed() {
 
     <nav class="sidebar-nav" v-show="!collapsed">
       <!-- Dashboard — standalone, styled like section headers -->
+      <!-- Every section is gated on auth.hasSection(key), the registry in
+           flask_app/auth/sections.py. A NEW SECTION HERE NEEDS AN ENTRY THERE
+           and a v-if like these; scripts/section_access_check.py fails until
+           both exist. -->
       <router-link
+        v-if="auth.hasSection('dashboard')"
         to="/dashboard"
         class="nav-section-link"
         :class="{ active: route.path === '/dashboard' }"
@@ -489,7 +500,7 @@ function toggleCollapsed() {
       </router-link>
 
       <!-- Asset Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('asset_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.am }"
@@ -506,6 +517,18 @@ function toggleCollapsed() {
           <router-link to="/one-pager" class="nav-item" :class="{ active: route.path === '/one-pager' }">One Pager</router-link>
           <router-link to="/portfolio-snapshot" class="nav-item" :class="{ active: route.path === '/portfolio-snapshot' }">Portfolio Snapshot</router-link>
           <router-link to="/review-tracking" class="nav-item" :class="{ active: route.path === '/review-tracking' }">Review Tracking</router-link>
+          <!-- Investment Metrics — the quarterly PSC Investment Summary
+               (Current + Sold). Hidden while the report is a draft; the same
+               server flag that put a DRAFT banner on the page kept it out of
+               here. `investment_metrics_draft` comes from /api/data/config, and
+               while that is still loading it is undefined and the link stays
+               hidden, which is the safe way round. -->
+          <router-link
+            v-if="data.config?.investment_metrics_draft === false"
+            to="/investment-metrics"
+            class="nav-item"
+            :class="{ active: route.path.startsWith('/investment-metrics') }"
+          >Investment Metrics</router-link>
           <router-link to="/waterfall-setup" class="nav-item" :class="{ active: route.path === '/waterfall-setup' }">Waterfall Setup</router-link>
 
           <!-- Report Settings — expandable config panel -->
@@ -554,7 +577,7 @@ function toggleCollapsed() {
       </div>
 
       <!-- Accounting -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('accounting')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.acct }"
@@ -567,12 +590,13 @@ function toggleCollapsed() {
           <router-link to="/workpapers" class="nav-item">Workpaper Packages</router-link>
           <router-link to="/treasury" class="nav-item">Treasury</router-link>
           <router-link to="/intercompany" class="nav-item">Intercompany</router-link>
+          <router-link to="/expense-coding" class="nav-item">Expense Coding</router-link>
           <router-link to="/gl-ia-query" class="nav-item">GL / IA Query</router-link>
         </div>
       </div>
 
       <!-- New Business -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('new_business')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.nb }"
@@ -590,7 +614,7 @@ function toggleCollapsed() {
       </div>
 
       <!-- Investment Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('investment_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.im }"
@@ -606,6 +630,7 @@ function toggleCollapsed() {
 
       <!-- Reports — standalone section-level link -->
       <router-link
+        v-if="auth.hasSection('reports')"
         to="/reports"
         class="nav-section-link"
         :class="{ active: route.path === '/reports' }"
@@ -613,8 +638,18 @@ function toggleCollapsed() {
         Reports
       </router-link>
 
+      <!-- Expenses — standalone section-level link -->
+      <router-link
+        v-if="auth.hasSection('expenses')"
+        to="/expenses"
+        class="nav-section-link"
+        :class="{ active: route.path === '/expenses' }"
+      >
+        Expenses
+      </router-link>
+
       <!-- Data Management -->
-      <div class="nav-section">
+      <div v-if="auth.hasSection('data_management')" class="nav-section">
         <button
           class="nav-section-header"
           :class="{ expanded: expandedSections.dm }"
@@ -943,6 +978,10 @@ function toggleCollapsed() {
     <div class="sidebar-footer" v-show="!collapsed">
       <div class="user-info" v-if="auth.user">
         <span>{{ auth.user.username }}</span>
+        <!-- Settings lives under Data Management, but it is the user's own
+             account (change password) and must stay reachable without it. -->
+        <router-link v-if="!auth.hasSection('data_management')" to="/settings"
+                     class="user-settings-link">Settings</router-link>
         <span class="user-role">{{ auth.user.role }}</span>
       </div>
       <button class="btn btn-logout" @click="handleLogout">
@@ -966,6 +1005,13 @@ function toggleCollapsed() {
   z-index: 100;
   transition: width 0.2s;
   overflow-y: auto;
+}
+
+.user-settings-link {
+  color: inherit;
+  font-size: 11px;
+  opacity: 0.8;
+  margin-left: 6px;
 }
 
 .sidebar.collapsed {

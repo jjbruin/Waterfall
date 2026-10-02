@@ -22,6 +22,53 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 17. Employee expense reports (Oct 2 2026) — LIVE at `v553`
+
+Design, phases and measurements: `expense_reporting.md`.
+
+- **17.1 The intercompany ownership rule — accounting's call.** Right for Fairview,
+  Nottingham and Woodlands (and Ascent's split); wrong for Pontchartrain, Gallery and
+  Belleville because the investee funds INVF7 / INVF2 / INVF11 keep their own
+  `MR15000002` while accounting books their parent PSC3. Do investee funds always pass
+  through to PSC3? Needs a rule from accounting before the walk changes. Owner:
+  **Jim / accounting**.
+- **17.2 Apple and Brainerd shares are data questions.** Commitments carry PSS1 17.93%
+  into APPLE beside PPI2 (accounting books PPI2 100%); Brainerd's commitment dollars give
+  TGA22 82.68 / PSC1 17.32 against accounting's ~62.4 / 37.6. Owner: **accounting**.
+- **17.3 Accounting sets PPI2 to CAD** (Expense Coding > Currencies & recurring). Nothing
+  seeds it. Owner: **accounting**.
+- **17.4 The admin unticks Expenses** for anyone who should not see it, and sets every
+  employee's name on reports and approver. Owner: **admin**.
+- **17.5 No mileage rate is set** — mileage lines are refused until accounting sets one.
+  Owner: **accounting**.
+- Until 17.1-17.2 are settled, accounting should check every intercompany row; every
+  proposal is editable and a hand-set split is kept.
+
+---
+
+## 16. Section access by username (Oct 1 2026) — LIVE at `v552`
+
+Built and verified locally (`scripts/section_access_check.py` 252/0, proved
+non-vacuous against eleven injected defects; accounting_access 54/0,
+gl_ia_query 123/0, treasury_api 46/0 unchanged). See CLAUDE.md "Section access
+by username". Open:
+
+- **16.1 DONE (Oct 1):** `tr_*`, `wp_*`, `ic_*` restricted to Accounting by
+  prefix. Only the `admin` username assigns access; Asset Management and New
+  Business are linked "for now" -- revisit when they should separate.
+- **16.2 Settled (Jim, Oct 1):** review roles in Settings stay behind Asset
+  Management; shared screens (`/api/deals`, `/api/argus`) stay shared.
+- **16.3 Feedback & Requests is not a section** — every user can report a
+  problem. It sits below the nav, not in it.
+- **16.4 Deploy note:** creates `user_section_access` on first gated request
+  (once per process). No backfill; with no rows every user keeps every
+  section, so the deploy itself changes nobody's access.
+- **16.5 DONE (Oct 2):** deployed as `v552` = `11c3455` after origin/main was merged in.
+- **16.6 DONE (Oct 2):** a user named `admin` exists on production (verified in-process:
+  `can_assign` true for it, 403 for the admin-role users `anaik` and `cbui`).
+
+---
+
 ## 15. Guardrails that are RED for a known reason (Sep 29 2026)
 
 A check that has been red for a while stops being read, and then the day it goes

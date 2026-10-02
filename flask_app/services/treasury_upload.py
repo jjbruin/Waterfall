@@ -522,7 +522,8 @@ def propose_investor_split(entityid: str, amount, as_of: str = "",
             com = pd.read_sql(sa.text(
                 'SELECT "InvestorID", "Amount", "CapitalPercent", "StartDate", '
                 '       "EndDate" FROM commitments '
-                ' WHERE UPPER(TRIM("EntityID")) = :e'), conn, params={"e": eid})
+                ' WHERE UPPER(TRIM("EntityID")) = :e'
+                '   AND "EndDate" IS NULL'), conn, params={"e": eid})
     except Exception as e:
         logger.warning("commitments unavailable for %s: %s", eid, e)
         return {"error": "The commitments table could not be read: %s"

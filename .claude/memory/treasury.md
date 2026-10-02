@@ -283,6 +283,10 @@ still right.
 
 ## Protection
 
+**Section access (Oct 1 2026, built, deploy pending):** every `tr_*` table is visible
+only to users ticked for Accounting -- matched by PREFIX, so a new `tr_` table is
+covered when it is created -- and `/api/treasury` refuses anyone without it.
+
 All six `tr_*` tables are in `PROTECTED_TABLES` (`v507`), on the same rule as
 `wp_fs_map` and the budget supplement: the app is the writer and holds the only copy,
 and none comes from a CSV feed. **`tr_periods` matters most** — it is the

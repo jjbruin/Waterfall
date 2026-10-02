@@ -77,6 +77,24 @@ const routes = [
     component: () => import('../views/ReportsView.vue'),
   },
   {
+    path: '/expenses',
+    name: 'Expenses',
+    component: () => import('../views/ExpensesView.vue'),
+  },
+  {
+    path: '/investment-metrics',
+    name: 'Investment Metrics',
+    component: () => import('../views/InvestmentMetricsView.vue'),
+  },
+  {
+    // The printed document, on its own route so it can carry the reference
+    // sheet's geometry without the app chrome — same pattern as the One Pager
+    // and Portfolio Snapshot print views.
+    path: '/investment-metrics/print',
+    name: 'Investment Metrics Print',
+    component: () => import('../views/InvestmentMetricsPrintView.vue'),
+  },
+  {
     path: '/sold-portfolio',
     name: 'Sold Portfolio',
     component: () => import('../views/SoldPortfolioView.vue'),
@@ -115,6 +133,11 @@ const routes = [
     path: '/treasury',
     name: 'Treasury',
     component: () => import('../views/TreasuryView.vue'),
+  },
+  {
+    path: '/expense-coding',
+    name: 'Expense Coding',
+    component: () => import('../views/ExpenseCodingView.vue'),
   },
   {
     path: '/intercompany',
@@ -181,6 +204,17 @@ router.beforeEach(async (to) => {
   // Restore user object from token after page refresh
   if (auth.isAuthenticated && !auth.user) {
     await auth.fetchMe()
+  }
+  // Section access by username. The server refuses the API regardless; this
+  // keeps a user from landing on a screen that would only fill with 403s --
+  // including the default '/' -> '/dashboard' for someone without Dashboard.
+  if (to.meta.requiresAuth !== false && auth.user) {
+    await auth.loadSectionCatalog()
+    const sec = auth.sectionForPath(to.path)
+    if (sec && !auth.hasSection(sec)) {
+      const dest = auth.firstAllowedPath()
+      if (dest !== to.path) return { path: dest, query: { denied: auth.sectionLabel(sec) } }
+    }
   }
 })
 

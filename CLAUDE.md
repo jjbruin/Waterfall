@@ -130,6 +130,7 @@ waterfall-xirr/
 - **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
 - **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
 - **.claude/memory/rent_roll_exhibit.md** - New business's rent-roll specification, the gaps against it, the IC exhibit's exact formatting, and the five-step build plan (Sep 29 2026)
+- **.claude/memory/expense_reporting.md** - Employee expense reports: accounting's process and files, the design, phase 1 as built (Oct 2 2026)
 - **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
 
 ## Running the Application
@@ -238,8 +239,18 @@ az acr repository update -n acrwaterfalldev --image waterfall-xirr:$SHA --write-
 az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:$SHA --revision-suffix v350
 ```
 
-Pick the revision suffix by bumping the current one — reusing a suffix is rejected. This same
-query answers "what commit is live?", since the image tag is the SHA:
+**RE-RUN P1 IMMEDIATELY BEFORE `az containerapp update`, not only before the build.**
+On Oct 1 2026 Charlene deployed `v549` = `76c786c` eight minutes before the
+section-access build started and after its P1 -- from a clone she had not pushed, so
+`git fetch` could not have shown it. Deploying the new image would have rolled her
+work back; it was caught only because the suffix `v549` was already taken. If the
+active image is no longer the one P2 was computed against, STOP: get it pushed,
+merge it, and run the pre-flight again.
+
+Pick the revision suffix by bumping the HIGHEST existing one — reusing a suffix is
+rejected, and an INACTIVE revision still holds its name, so list with `--all`
+(`az containerapp revision list ... --all`). This same query answers "what commit is
+live?", since the image tag is the SHA:
 ```bash
 az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --query "[?properties.active].{name:name,image:properties.template.containers[0].image}" -o table
 ```
@@ -255,6 +266,584 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v553` = `79d21a2` (EMPLOYEE EXPENSE REPORTS, all four phases -- the
+    Expenses section and Accounting > Expense Coding. Design and measurements:
+    `.claude/memory/expense_reporting.md`. Deployed Oct 2 2026 15:52 UTC, build
+    2m12s. P2 against live `11c3455`: 7 commits -- the five expense phases, the
+    v552 docs commit, a merge with ZERO lines of its own; live is an ancestor.
+    No vcode or entity literals in shipped code. Behaviour changes: Expenses is a
+    new section ticked for everyone; `validate_gl` now refuses a MULTI-entity
+    entry out of balance by entity (treasury's byte-identical rebuild unchanged,
+    58/58); `er_` tables hidden from raw-table paths without Accounting; Expense
+    Coding READS closed to analysts. NEW DEPENDENCY `pillow-heif` 1.8.0 (Pillow
+    12.3.0), bounded, prebuilt cp312 manylinux wheel. GUARDRAILS on the merged
+    tree, 13 suites: expense 83/53/46/23, section 265, accounting 56, treasury
+    upload 58 / api 46, intercompany 53, gl_ia 123, investment metrics 178,
+    committed pref 47, lease scan 43; vite build. VERIFIED ON PRODUCTION: HEIC
+    converts in the container; 11 `er_*` tables on PostgreSQL; intercompany
+    population 64 entities. OWNERSHIP PROPOSALS vs accounting's own booking:
+    right for Fairview, Nottingham, Woodlands (and Ascent's split); WRONG for
+    Pontchartrain, Gallery, Belleville -- the investee funds INVF7/INVF2/INVF11
+    keep their own MR15000002 so the walk stops there, while accounting books
+    their parent PSC3 -- and Apple (commitments carry PSS1 17.93% beside PPI2)
+    and Brainerd (82.68/17.32 against accounting's ~62.4/37.6). Proposals are
+    editable; the rule is accounting's question, not changed. See
+    expense_reporting.md and open_items.md.)
+  - `v552` = `11c3455` (SECTION ACCESS BY USERNAME -- per-sidebar-section
+    checkboxes in Settings > User Management; only the `admin` USERNAME assigns;
+    without Accounting the GL/IA tables and every `tr_`/`wp_`/`ic_` table are
+    hidden from Data Explorer, the export, MRI query downloads and the assistant's
+    SQL. Deployed Oct 2 2026 15:38 UTC, build 2m17s. HELD a day: `b93dd5f` was
+    imaged Oct 1 but Charlene had deployed `v549`/`v550` from an unpushed clone
+    between this work's P1 and its build; deploying it would have rolled hers back.
+    Re-run P1 before the update caught it (memory: recheck-live-before-deploy).
+    Once her commits reached origin, origin/main was MERGED into the branch
+    (`11c3455`). P2 against live `c255729` (v551): 8 commits -- `0362ecb`,
+    `b93dd5f`, four docs-only, two merges with ZERO lines of their own (`git show
+    --cc`); runtime delta is the 11 section-access files only; `c255729` is an
+    ancestor. No vcode literals. Behaviour change: the DB export and MRI query
+    downloads now need Data Management (ticked for everyone by default).
+    GUARDRAILS on the merged tree: section_access 256, accounting_access 54,
+    treasury_api 46, gl_ia_query 123, investment_metrics 178, committed_pref 47,
+    vite build. P1 re-run immediately before `containerapp update`: still v551.
+    VERIFIED ON PRODUCTION, in-process with a minted token: an account named
+    `admin` EXISTS (16 users); `admin` gets `/auth/sections` 200 `can_assign`
+    true, all 7 sections; the admin-ROLE users `anaik` and `cbui` get
+    `can_assign` false and their PUT is 403; `user_section_access` has 0 rows, so
+    nobody's access changed at deploy; `section_access_check --static` 98/0 in
+    the container. Root 200 in 0.15s, clean boot.)
+  - `v551` = `c255729` (INVESTMENT METRICS: Act. Yr-1 CoC IS COMPUTED, AND THREE
+    FOOTNOTE MARKERS ARE DERIVED RATHER THAN TRANSCRIBED. Oct 2 2026, tag locked.
+    THIS IS LIVE. Pre-flight P2 against the live `b250639` listed six commits, all
+    Charlene's and all but this one docs-only.
+
+    **Act. Yr-1 CoC now prints**, from the One Pager's ROE engine windowed to the
+    deal's first twelve months. The column had been an em dash because the figure
+    behind it was a different quantity — preferred return over funded-to-date,
+    which ignores excess cash flow and the capital actually at risk and returns
+    0.0% on ten deals that paid no pref in year one. Against the reference
+    workbook at 2026-06-30, at display rounding: **24/76** exact, against 23/76
+    for the old pref/funded alternate and **21/76 for printing nothing**. It is
+    **biased low** — of the 51 rows where both sides carry a number, 40 come in
+    below and 11 above, mean **-1.21pp**, 21 within 1pp, 30 within 2pp. The
+    reference's cells are typed-in constants on 75 of its 76 rows, so the gap is
+    not a window that needs tuning, and it is reported rather than fitted.
+
+    **The window opens at the EARLIER of the invest date and the first cash
+    event**, and that is the one thing most likely to be "simplified" back out.
+    `Acquisition_Date` is overwritten at load time with the earliest accounting
+    entry across ALL investors, and on six live deals PSC's own first
+    contribution is dated the day BEFORE it — Evergreen Plaza, Giant-7, Mount
+    Prospect, OREI, Pontchartrain and 870 Donald Lynch. Opening strictly on the
+    invest date drops that contribution, takes contributions in the window to
+    zero, and takes the whole figure to a dash: measured, it blanked **seven of
+    76** deals outright and sent Cocoplum to **36.0%** against a reference 4.98%.
+
+    **Footnote (5) is derived from the date and now ACTS.** Invest date + 12
+    calendar months past the as-of date selects **exactly the nine deals the
+    reference marks** — Apple, Burton, Trolley Square, Jefferson Stephens, Plaza
+    Del Mar, Hanestowne, Presidential Arms, Swartz Creek, Fairview — with a wide
+    margin either side (the newest UNMARKED deal is Green Valley Ranch at 16
+    months; the oldest marked one is Apple at 11.5). Act. Yr-1 CoC, CoC Proj.
+    Since Close and CoC Act. Since Close all take the projected year-1 figure,
+    which is what the TABLE does on Apple's row even though **the printed note
+    names only the first column**. Both are reproduced; neither is edited to
+    agree with the other. With `proj_yr1_coc` still unloaded the three cells are
+    **BLANKED** rather than left showing a stub period — Presidential Arms' ROE
+    over seven weeks is not a year-1 return, and 8.0% on the page is a number
+    somebody will quote. Precedence is **Dev. > Lease up > this rule > computed**,
+    per cell, which is why Trolley Square and Jefferson Stephens still print
+    `Dev.` The substitution activates by itself the moment `proj_yr1_coc` is
+    switched on.
+
+    **WHAT THIS COSTS, SAID OUT LOUD.** Overall agreement with the reference goes
+    **539/1242 -> 537/1242**. act_yr1_coc gains 2 (21 -> 23); blanking the young
+    deals loses 1 on act_coc_since_close (36 -> 35) and 3 on proj_coc_since_close
+    (32 -> 29). That is the instructed behaviour and the reference is not the
+    target — but the number moved the wrong way and it is recorded here rather
+    than left for somebody to rediscover. **60 cells change in all**, 31 of them
+    dashes becoming figures.
+
+    Totals: Current Act. Yr-1 CoC — -> **7.1%**, CoC Proj. Since Close 7.9% ->
+    **8.2%**, CoC Act. Since Close 6.9% -> **6.5%**; Sold Act. Yr-1 CoC — ->
+    **7.9%**, both Sold since-close averages unmoved. The nine (5) deals are
+    **$132.2m of $784.8m = 16.8%** of Current pref weight and are excluded from
+    those averages entirely, never counted as zero.
+
+    **First lien reads ORIGINATION dates** where the data carries them, off the
+    RAW `mri_loans_all` frame: one loan is the first lien; several loans all
+    carrying an Origination row give the sum of those sharing the earliest;
+    anything else falls back and names the undated LoanIDs in
+    `first_lien_origination_missing`. **Maturity is never a proxy** — the
+    existing `earliest_loan` basis sorts on `dtEvent`, which is a MATURITY on 83
+    of 91 live rows, so what it calls "the earliest loan" is the
+    earliest-maturing one. Development deals keep the committed facility.
+    Measured before shipping: 49 deals have one loan, 16 none, 11 several, and
+    **not one of the 11 carries an origination date on every loan** — the whole
+    live table holds four Origination rows and all four sit on single-loan deals.
+    **No printed figure moved**, and 10 deals are named in the diagnostic.
+    `_collapse_loan_date_events` and `_filter_paid_off_loans` were NOT touched;
+    the report already read upstream of both.
+
+    **Three markers derived, the rest transcribed**: Current (2) from
+    `Currency != 'USD'` (exactly one deal, Apple/CAD), Current (5) from the date
+    test, Sold (4) from `sale_date > as_of` (exactly Clima Secur, 30 Bearfoot and
+    870 Donald Lynch — East Manchester sold 2026-06-25, five days the other side,
+    and is correctly unmarked). Woodlands Square's Current (4), City West's Sold
+    (2) and every (6) stay hardcoded. **The marker set on live is byte-identical
+    to v550's** — nothing on the page moved; the hand-maintained lists just stopped
+    being the authority. A new runtime diagnostic,
+    `config_entries_without_a_deal`, names any config vcode with no deal behind it
+    and any footnote number its table does not carry: **empty on live.**
+
+    **The default quarter is pinned to 2026-06-30.** `latest_quarter_end` returns
+    the quarter that has finished, which on Oct 2 is 2026-09-30 — closed two days
+    ago with no accounting behind it, and the report opened on it.
+    `DEFAULT_QUARTER_LAG_DAYS = 45` is the rule that replaces the pin and is
+    deliberately unwired; `PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER = None` is today's
+    behaviour. The guardrail asserts both are inert by reading the engine source.
+    Every quarter stays selectable — the list and the default are separate
+    questions, and 2026-09-30 is still in the list.
+
+    Guardrail `investment_metrics_check.py` **113 -> 178**, including an
+    equivalence test that pins `_pe_roe_events` to `get_pe_performance`'s own
+    `roe_to_date` at a quarter end, so the restated classification cannot drift
+    from the engine it restates, and a marker regression over the real 76-deal
+    population frozen inline. Printed sheet re-measured from the LIVE payload:
+    **44/44, fits the sheet.** Live payload verified cell-for-cell against the
+    locally predicted one: **0 disagreements across 76 rows x 17 columns.**
+    Smoke: One Pager, Portfolio Snapshot bundle (OWPSC/PSC3/PSCKOC, `errors: {}`),
+    Dashboard KPIs, deals list, `/investment-metrics` 20.1s cold / 0.17s warm,
+    1,057 MiB of 2,048, **0 tracebacks**.)
+  - `v550` = `b250639` (HOTFIX FOR v549 — NULLS ARE GUARDED BEFORE THE
+    isinstance TEST IN `_as_date`. Oct 1 2026, tag locked.
+    **`pd.NaT` IS an instance of `datetime`** — `isinstance(pd.NaT, datetime)`
+    is True — so the isinstance branch sitting AHEAD of the null guard returned
+    `NaT.date()`, which is NaT, and `row_in_effect`'s `end >= as_of` then
+    raised "Cannot compare NaT with datetime.date object".
+    UNREACHABLE UNTIL THE DATA CHANGED, which is why it shipped quietly in
+    v548. While `queries/MRI_Commitments.sql` filtered `EndDate IS NULL` the
+    column was entirely null, pandas typed it object/float, NaN is NOT a
+    datetime, and the `pd.to_datetime` path returned None correctly. The moment
+    ended rows loaded the column became `datetime64[us]` and every OPEN row's
+    EndDate arrived as NaT.
+    REPRODUCED AGAINST THE REAL REFRESHED ROWS BEFORE FIXING: Pontchartrain
+    raised at both quarters, Camarillo at 26Q3, Asbury at 26Q3. Asbury's 26Q2
+    SURVIVED — its in-force row there is an ENDED one that matched before the
+    loop reached a NaT — which is exactly the mixed 200/500 pattern seen live.
+    After the fix all five resolve and open commitments are still counted as of
+    quarter end: Pontchartrain 10,847,420 both quarters, Camarillo 18,843,400,
+    Asbury 1,490,000 at 26Q2 and 1,620,000 at 26Q3.
+    **THE SUITE WAS GREEN ON A SHAPE THE DATABASE CANNOT DELIVER.** Every
+    fixture used Python `None` for an open row; pandas never produces None once
+    the column is `datetime64`, it produces NaT. `committed_pref_check` 39 ->
+    47, the new cases passing `pd.NaT`. Pre-fix it does not merely fail:
+    `_as_date(pd.NaT)` returns NaT AND `_as_date(pd.NA)` raises "boolean value
+    of NA is ambiguous" on the old `value == ""`, so the old ordering carried a
+    SECOND latent fault the guard also closes.
+    VERIFIED ON v550: 114/114 One Pagers 200, 0 failing; 26Q2 Burton
+    26,597,500 / JB Fair Park 14,300,000 / Nottingham 9,135,000 and 26Q3 Burton
+    54,227,500 / JB Fair Park 29,757,181 / Nottingham 12,535,000, all exact;
+    `cap_stack.committed_pe == pe_performance.committed_pe` on every deal
+    checked; Snapshot all 4 subtabs x TGAM/KOCINV/BCA build clean; Treasury
+    AMB6 13 investors / base 11,000,000.00 / PSC1 42.7273% and TGA25 base
+    103,572,497.76 both unchanged; `committed_pref_check` 47/47 and
+    `treasury_upload_check` 26/0 IN THE CONTAINER; logs 0 tracebacks, root 200
+    ~0.2s. `requirements.txt` still pins `SQLAlchemy>=2.0,<2.1`, re-confirmed.
+    Rollback: `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:b4a9c1f --revision-suffix v551`,
+    which is v548 and therefore also reverts the SQL. Note the `commitments`
+    TABLE refresh is NOT in git and is not undone by a rollback.)
+  - `v549` = `76c786c` (DROPS THE `EndDate IS NULL` FILTER SO ENDED COMMITMENT
+    ROWS LOAD — **AND TOOK EVERY 26Q3 ONE PAGER TO HTTP 500**, fixed minutes
+    later by v550. Oct 1 2026, tag locked. Approved by Jim.
+    `queries/MRI_Commitments.sql` becomes `select * from IA_Commitment`. The
+    table goes 557 -> 897 rows, 339 ended, and carries ENDED revisions for the
+    first time — which is what `committed_pref.resolve_committed_pref` (v548)
+    needs: its as-of rule is `StartDate <= Q AND (EndDate IS NULL OR EndDate >=
+    Q)`, and until now the row that WAS in force on a past quarter simply was
+    not in the database. **The table refresh is a DATA change that is not in
+    git**: run `import_query_to_database("MRI_Commitments")` under a BARE Flask
+    app context (never `create_app()`), then `POST /api/data/reload` as admin,
+    because that function does not clear caches and the exec session is a
+    different process from the workers'.
+    ONE READER WAS NOT SAFE AND THE PRE-FLIGHT CHECK IS WHAT FOUND IT. v548
+    added `EndDate IS NULL` to the six SQL readers and filtered Investment
+    Metrics' FIRST-LOSS side, but its PSC-PREF side took the legacy raw-split
+    branch — `capitalization_sources` is only quarter-aware when `as_of` is
+    passed, and NEITHER call site passes it. Summing that frame once ended rows
+    load reads EVERY PAST VERSION of a pledge as a live one: Pontchartrain
+    10,847,420 -> 42,823,260 (4 revisions), Middle Island 7,896,655 ->
+    29,978,275, Belleville 4,752,161 -> 21,533,305, Burton 54,227,500 ->
+    80,825,000, JB Fair Park 29,757,181 -> 44,057,181, Nottingham 12,535,000 ->
+    21,670,000. Both sides now take the current row on the no-as-of path, so
+    the report is UNMOVED by the data change — 0 of 6 deals differ, proved both
+    ways against a fixture carrying the real ended rows.
+    A FIXTURE BUG WORTH RECORDING: the first audit said all six deals changed
+    even WITH the fix, because the scratch fixture serialised a null EndDate as
+    the STRING "None", so `.isna()` matched nothing and every row read as
+    ended. The filter looked broken when it was the test that was.
+    `committed_pref_check` 35 -> 39, `treasury_upload_check` 27/0,
+    `investment_metrics_check` 113/0, `one_engine_per_number_check` 26/0 — and
+    every one of them was green across the outage. See v550.
+    STILL OPEN: **Investment Metrics shares the FUNCTION but not the RULE.**
+    Neither `capitalization_sources` call site passes `as_of`, so it takes the
+    current row rather than the as-of one. Deliberate — making it quarter-aware
+    WOULD move its figures and needs its own measurement.)
+  - `v548` = `b4a9c1f` (COMMITTED PREF COMES FROM MRI'S IA_Commitment, AS OF
+    THE QUARTER. Oct 1 2026, build `camp` 2m32s, run status Succeeded, tag
+    locked. Approved by Charlene; Jim notified.
+    ONE ENGINE. `committed_pref.resolve_committed_pref` is the only place the
+    rule lives, and the One Pager's cap stack, its PE block and Investment
+    Metrics all call it. They disagreed on TWELVE DEALS before this: the One
+    Pager summed accounting `Typename='Commitment'` rows while Investment
+    Metrics already read IA_Commitment first. `one_pager.py` carried TWO
+    independent copies of that accounting sum, 1,800 lines apart, agreeing only
+    because the filter was duplicated verbatim. Both halves now return the same
+    figure on every deal — verified live on six.
+    THE AS-OF RULE IS A DATE RANGE, NOT A QUARTER-END SNAPSHOT, and the DATA
+    decided it against the stated premise. A commitment is revised by ENDING
+    one row and opening the next the following day: of the 80 deal-level chains
+    in MRI, 30 pairs are contiguous, 0 have a gap, 1 overlaps. Exactly ONE
+    ended row in that whole population lands on a quarter end and there is no
+    `09-30` EndDate anywhere in the table. So the row that applies on Q is
+    `StartDate <= Q AND (EndDate IS NULL OR EndDate >= Q)`.
+    **THE BENEFIT IS DEFERRED AND THAT WAS THE POINT OF SHIPPING IT THIS WAY.**
+    `queries/MRI_Commitments.sql` still filters `EndDate IS NULL` — Jim's call,
+    NOT touched — so ENDED rows never reach the app. A deal whose current row
+    starts after the quarter (JB Fair Park's begins 2026-07-30) has NO row in
+    effect at 26Q2. Falling through to funded pref would have moved its printed
+    figure by **-22,850,000** to a number matching neither today, the sent
+    report, nor the answer the query change will give. So the fallback KEEPS
+    THE ACCOUNTING FIGURE, with the basis saying so. Measured before building;
+    it is what stopped the first attempt at this deploy.
+    ELEVEN DEALS CHANGED AT DEPLOY (v547 -> v548, measured on production):
+    Burton 26Q3 81,857,500 -> 54,227,500; Camarillo 0 -> 18,843,400 and Outlook
+    0 -> 11,847,307 and East Manchester 0 -> 3,600,000 (both quarters); Clima
+    Secur 26Q3 0 -> 3,025,000; Pontchartrain 12,620,000 -> 10,847,420;
+    Nottingham 26Q3 12,058,427 -> 12,535,000; JB Fair Park 26Q3 30,000,000 ->
+    29,757,181; Middle Island 8,129,967 -> 7,896,655; Asbury 26Q3 1,490,000 ->
+    1,620,000; Donald Lynch 0 -> blank.
+    THREE CHANGE FURTHER WHEN THE ENDED ROWS LOAD, all at 26Q2: Burton
+    54,227,500 -> 26,597,500, JB Fair Park 30,000,000 -> 14,300,000, Nottingham
+    12,058,427 -> 9,135,000. **Those three are the figures that were typed into
+    the sent 26Q2 TIAA report BY HAND** — which is the strongest evidence that
+    IA_Commitment is the right source. Against that report the Snapshot
+    Financial page goes 290/355 -> 300/355 and the One Pagers 182/190 -> 186/190
+    WITH the ended rows; with today's open-only table it is 287/355 and 182/190,
+    the three Camarillo cells the only movement.
+    NONE, NEVER 0, AND NO FLOOR. `financials_service` tested
+    `committed_pe == 0`, which fires on a genuine zero AND on every None,
+    silently relabelling "no pledge on file" as "fully funded"; now `is None`.
+    `remaining_to_fund` is NOT floored — Nottingham prints -1.2M at 26Q2 once
+    the ended rows load, and flooring it would hide a disagreement between the
+    pledge and the ledger. Flagged as `committed_below_funded`.
+    TOMBSTONES AND BACK-FILL. Eleven rows open and close on the same day for
+    0.00/0.01 and are dropped. A chain whose every row is MRI back-filling an
+    uploaded transaction is not a pledge register: Apple - Bales Drive would
+    have fallen 4,172,975 -> 170,179, a 96% drop driven entirely by artifacts,
+    so its accounting figure is KEPT with the basis `pending accounting`.
+    ALL EIGHT READERS OF THE `commitments` TABLE NOW FILTER TO CURRENT ROWS —
+    a no-op today, load-bearing the moment ended rows arrive. Treasury's
+    investor split is the one that would have broken loudest: AMB6 carries PSC1
+    TWICE once ended rows load (11,000,000 ended 2026-06-30 plus 4,700,000
+    open), the base doubles to 22,000,000 and EVERY ONE of the thirteen
+    investors' percentages halves; TGA25 would go 103.6M -> 438.9M. Verified
+    unchanged after deploy: AMB6 13 investors, base 11,000,000.00, PSC1
+    42.7273%; TGA25 base 103,572,497.76.
+    JIM'S ENGINES PROVED UNTOUCHED BY DIFF, not by reading: all 114 One Pager
+    payloads compared against the v547 capture, **ZERO differences outside the
+    four intended committed-pref fields**. `waterfall.py`, `capital_calls.py`,
+    `metrics.py` and `models.py` contain zero occurrences of "commit", and
+    `seed_states_from_accounting` selects on `is_contribution`, which already
+    excludes commitments at `loaders.py:275`.
+    POST-DEPLOY: root 200 (0.27-0.45s), 0 tracebacks, One Pager 1.8s, Snapshot
+    Financial 8.5s cold, Investment Metrics 0.18s. `committed_pref_check` 35/35
+    IN THE CONTAINER, proved non-vacuous against four injected defects (rule A
+    instead of B fails 2, dropping the tombstone rule 1, returning 0 instead of
+    None 1, removing the back-fill gate 3). `one_engine_per_number_check` 26/0,
+    `investment_metrics_check` 113/0, `treasury_upload_check` 27/0; every other
+    suite byte-identical to the baseline tree.
+    **NOT FULLY DELIVERED, and it is not a regression**: Investment Metrics
+    shares the FUNCTION but not the RULE — neither `capitalization_sources`
+    call site passes `as_of`, so it still takes the legacy raw-split branch.
+    No figure of its moved, but it reports Apple - Bales at the back-fill sum
+    (0.1242M CAD) where the One Pager now says 4,172,975. Closing that WOULD
+    move Investment Metrics figures and so needs its own measurement.
+    FREEZE_ENABLED still ABSENT (`[]`) before and after. Rollback:
+    `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:0b439d8 --revision-suffix v549`.)
+  - `v547` = `0b439d8` (THREE ONE PAGER FIGURES STOP LYING BY DEFAULT, Sep 30
+    2026. Merge of `fix/pe-yield-blank-when-uncomputable` onto `origin/main`
+    `6829b38`, so it sits ON TOP of Jim's v545/v546 Investment Metrics work and
+    reverts none of it (`ad92358` verified an ancestor of HEAD before building).
+    Build 2m14s, digest `sha256:3fe513c7dc95c91b90a2c23d5abadd37411f0119cd892174a86f0a8b818d6c30`,
+    tag locked. Rollback target `ad92358` (v546), staged and unused.
+    **(1) `pe_yield_on_exposure` DEFAULTED TO 0.0** and is only assigned when it
+    can be computed, so any deal failing that test published a computed yield of
+    nil where there was nothing to compute it from. Now `None` — the same
+    sentinel `pe_exposure_on_cap` and `pe_exposure_on_value` already carried two
+    lines above. The field's own trace already disagreed with it:
+    `field_trace_service`'s check returned None in exactly those cases. 17 of 70
+    deals at 26Q2 published 0.0; they now read N/A. The screen does not move for
+    them — both cells are truthiness-guarded, so 0.0 and null both rendered N/A
+    already; what changes is the payload.
+    **(2) A NEGATIVE NOI NOW YIELDS A NEGATIVE PERCENTAGE.** The gate was
+    `noi_ye > 0`, which declined a deal whose NOI is really negative and
+    reported it as absent — "cannot compute" and "is negative" came out as the
+    same answer. It is truthiness now. Exactly two deals move: Jefferson Addison
+    Heights -235,114 / 61,854,983 = **-0.38%** and Jefferson Eastchase
+    -698,661 / 71,381,704 = **-0.98%**, both confirmed through the live endpoint
+    after deploy.
+    TRUTHINESS, NOT `is not None`, AND THE DIFFERENCE IS LOAD-BEARING.
+    `perf['noi']['actual_ye']` DEFAULTS TO 0 while `ytd_actual` defaults to
+    None, so a deal with no actuals carries a literal 0 that was never assigned
+    — verified on all 15: `actual_ye` 0, `ytd_actual` null. Gating on "not None"
+    would divide that no-data 0 and republish the fake zero on 15 deals.
+    **(3) BOTH PARTICIPATION CELLS AND BOTH COUPON CELLS NOW READ MRI DEAL TERMS
+    FIRST**, waterfall as fallback. The One Pager prints each term TWICE —
+    Capitalization (`cap_stack.pe_participation` / `pe_coupon`) and PE
+    Performance (`participation` / `coupon`) — and the two resolved them
+    differently: Capitalization let deal terms OVERRIDE, the PE block took the
+    waterfall FIRST. So nine deals were each printing two different numbers for
+    one term. `_pe_terms_fallback` had written the participation half down as an
+    open question — "picking a winner there is a separate question about which
+    source is right" — and it is now decided in favour of deal terms.
+    **THE COUPON HALF WAS NOT PREVENTIVE AND WAS BRIEFED AS THOUGH IT WERE.**
+    I stated no live deal disagreed on the coupon WITHOUT HAVING MEASURED IT,
+    and that was wrong. THREE INVESTOR-FACING COUPONS CHANGED:
+    Pegasus Life Storage 10% -> **9%**, Cocoplum Apartments 5% -> **8.5%**,
+    Orange Grove 8% -> **8.5%**. Six participation figures moved with them —
+    5-15 Broad St 0.333 -> 0.33, Merle Hay 0.7 -> 0.3, OREI Portfolio / Whitney
+    Manor / Westchase 0.75 -> 0.475, Donald Lynch 0.2 -> 0.3. In every case the
+    PE block moved ONTO the figure the Capitalization block was already showing;
+    the Capitalization cell moved on no deal.
+    A ZERO IS NOT A COUPON but IS a participation: an explicit 0 in deal terms
+    overrides for participation ("the PE takes no share") and falls through for
+    the coupon (0% preferred return is not a structure). Inert today — 75 deals
+    carry a deal_terms coupon, none of them 0.
+    **(4) `normalize_share`, `<= 1` NOT `< 1`.** A share of exactly 1.0 means
+    ALL of it; the old test sent it down the percentage branch, 1.0/100 = 0.01,
+    and printed "1%" for a hundred percent. ONE definition replacing four copies
+    of the same expression across both waterfall readers and both deal-terms
+    paths. LATENT TODAY and stated as such: the only two deals carrying 1.0 are
+    the OPJPI pair, whose deal_terms 0 overrides them, so nothing on screen
+    moves from this half. The COUPON keeps its own `< 1` — a 1.0 coupon reads as
+    1%, a 1.0 share as 100% — and no deal carries a 1.0 coupon either way.
+    RETURN OF CAPITAL IS NOT IN THIS RELEASE. It shipped as v544 (`e255da7`) and
+    is inherited; East Manchester's 3,600,000.00 was re-confirmed here only as a
+    regression check.
+    VERIFIED AFTER DEPLOY: `onepager_participation_precedence_check` 27/27 **IN
+    THE CONTAINER** (replica `v547-56cf769c64-zqtbv`), which is what proves the
+    IMAGE rather than the local tree; 12 live spot-checks through
+    `/api/financials/<vcode>/one-pager?quarter=2026-Q2`, all pass, with the two
+    cells carrying identical values on every deal that previously disagreed;
+    root 200 (0.14 / 0.08 / 0.10s), `/api/data/deals` 401, clean boot, 0
+    tracebacks, SQLAlchemy `<2.1` pin held.
+    `onepager_missing_vs_zero_check` was DELIBERATELY NOT run in the container:
+    it lifts `fmtOccVariance` and the One Pager cell out of `OnePagerView.vue`,
+    and the runtime image ships no `vue_app/`, so it would fail for reasons
+    unrelated to this deploy. 31/32 locally, that one failure pre-existing and
+    identical on main. The pe_yield fix is confirmed on the image instead by the
+    two Jefferson deals returning real negatives through the live endpoint.
+    STILL UNRESOLVED AT DEPLOY TIME: CLAUDE.md's standing instruction is to tell
+    Jim BEFORE building anything that moves reported figures. This moved nine,
+    three of them investor-facing coupons. It was flagged twice before the build
+    and the deploy proceeded on Charlene's instruction without that step being
+    closed.)
+  - `v546` = `ad92358` (INVESTMENT METRICS GOES LIVE — draft gate OFF, and the
+    link moves under Asset Management. Sep 30 2026, build `camm` 2m20s, run
+    status Succeeded. `INVESTMENT_METRICS_DRAFT = False`, so the screen banner,
+    the printed DRAFT line and the watermark are gone and the sidebar links to
+    the report between Review Tracking and Waterfall Setup.
+    THE LINK IS STILL GATED ON THE SERVER FLAG, not hard-coded visible: the
+    compiled sidebar in the served bundle is
+    `(config?.investment_metrics_draft)===!1` with `class:"nav-item"`, sitting
+    immediately after Review Tracking. `/investment-metrics` joined `amRoutes`
+    so the section auto-expands on a direct visit. Turning the gate back on
+    removes the link again without touching the sidebar.
+    NOT ONE FIGURE MOVED, and it was checked rather than asserted: the v545 and
+    v546 live payloads were fetched and compared — **every row identical**,
+    totals identical, grand total identical, footnotes identical, column
+    geometry identical. The diff is two files, the flag and the sidebar; the
+    engine, the labels, the footnotes and both view templates are untouched.
+    ACCESS IS THE ONE PAGER'S, VERIFIED ACROSS EVERY LOGIN ROLE. Both routes
+    carry `@login_required`, which does not consult role at all. Driven
+    locally against the shipped code with a forged JWT per role: viewer,
+    analyst, accountant, cfo and admin ALL get 200, and no token gets 401 —
+    identical to `/api/financials/<vcode>/one-pager`. Note there is no Asset
+    Manager LOGIN role: the six are viewer / analyst / accountant /
+    accounting_manager / cfo / admin, and `asset_manager` is a REVIEW-workflow
+    role (`_STEP_ROLE`, `review_roles`) that neither the sidebar nor this API
+    consults. Asset Management is a navigation grouping.
+    POST-DEPLOY: IM cold 4.68s / warm 0.20-0.22s; One Pager 2.53s; Snapshot
+    0.11s; Dashboard KPIs 17.8s (the cold shared `load_all`, first request
+    after the revision started); deals 0.16s. Container 1,091 MB of 2,048
+    (51%), +9 MB over v545. Boot log clean, 0 tracebacks. Live config returns
+    `investment_metrics_draft: false`; the live print render is 44/44 with no
+    DRAFT text on either sheet.
+    STILL OPEN, and the flag being off does not close any of it: UW Proj. IRR
+    and both Yr-1 CoC columns remain in `UNLOADED_FIGURES` "none" mode against
+    an Alay TODO, and first lien reproduces the reference on 42 of 76.
+    Rollback: `activeRevisionsMode` is Single, so redeploy the image —
+    `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:c3cb48d --revision-suffix v547`.)
+  - `v545` = `c3cb48d` (INVESTMENT METRICS — the quarterly PSC Investment
+    Summary as a top-level report, SHIPPED BEHIND A DRAFT GATE. Sep 30 2026,
+    build `camk` 2m31s, digest `sha256:f315a801b18a616`.
+    **IT IS NOT IN THE SIDEBAR AND THAT IS THE POINT.**
+    `investment_metrics_config.INVESTMENT_METRICS_DRAFT = True` drives three
+    things from one switch — the screen banner, the printed DRAFT mark, and
+    whether the sidebar links to it at all. Published on `/api/data/config` as
+    `investment_metrics_draft` (live: `true`) so the sidebar reads the same
+    flag the report does. The compiled gate in the served entry bundle is
+    `(config?.investment_metrics_draft)===!1`, so with the flag true the link
+    cannot render. Route reachable by direct URL at `/investment-metrics`.
+    THE MARK PRINTS. A banner that vanishes on the way to the printer is worse
+    than none: the screen would say draft and the forwarded PDF would say
+    nothing. Verified against LIVE data through the real browser print path —
+    both sheets carry it. It adds NO LAYOUT: with the flag on, the 1,430 table
+    words on page 1 and 797 on page 2 sit at identical coordinates and there
+    are zero extra rects inside the table, so `investment_metrics_print_inspect`
+    still measures the real document and still passes 44/44 with the flag off.
+    PURELY ADDITIVE against what was live: 15 files, +4,280, **-0**. No DDL, no
+    change to any existing computation; the only edits to existing files are
+    wiring. P2 listed SIX commits and two are other-author and already
+    deployed — `ec9ae69` is CLAUDE.md only, and `a1f073f` is a MERGE whose
+    `--cc` diff is EMPTY and whose second parent IS `1da00ca`, the live commit.
+    So the net runtime delta was exactly the four Investment Metrics commits.
+    90s -> 10s COLD, 0.2s WARM, 0 DB QUERIES. Measured on frames padded to live
+    row counts, because a 5k-row stand-in flatters it by two orders of
+    magnitude. `_earliest_isbs_debt` normalised a 233k-row column with a Python
+    `map` on every call — 92 calls, **21.6 million `norm_id` calls**, 53 of 64
+    seconds; `_get_uw_7073_signed` and `_get_uw_pe_periodic` each open with
+    `isbs_raw.copy()`, 152 copies of a 325 MB frame per report. All three fixes
+    are pure narrowing done once with the SAME predicates, and the payload is
+    byte-identical before and after. `one_pager` deliberately NOT modified — it
+    is shared with the One Pager and the Portfolio Snapshot.
+    Route cache invalidates BY OBJECT IDENTITY, holding a reference to the
+    frames it was built from: `id()` alone can be reused and row counts repeat.
+    POST-DEPLOY, MEASURED: IM cold 5.25s / warm 0.17-0.20s; Dashboard KPIs
+    18.9s (that was the cold `load_all`, shared, first request after deploy);
+    One Pager 2.58s; Snapshot bundle 1.30s; deals 0.15s. Container 1,082 MB of
+    2,048 (50%). Boot log clean, 0 tracebacks.
+    A HARNESS ARTIFACT WAS CORRECTED BY THE DEPLOY, worth recording because it
+    ran through every figure I reported beforehand: `vAccount` is TEXT on
+    production and the local CSV mirror brought it back as int64, so every
+    `== '7073'` in `one_pager` matched nothing and U/W ROE came back empty for
+    all 76 deals — silently, as "this deal has no underwriting". On production
+    `proj_coc_since_close` is populated on **53 of 76**, not 29. Live cell
+    agreement against the reference PDF is **618/1242 (49.8%)**, or 576/1014
+    (56.8%) excluding the 228 cells held for Alay.
+    NOT SIGNED OFF, hence the gate: UW Proj. IRR and Proj/Act Yr-1 CoC are all
+    behind `cfg.UNLOADED_FIGURES` in `"none"` mode with an open TODO(alay), and
+    the first-lien column reproduces the reference on only 42 of 76.
+    Rollback is REDEPLOY THE IMAGE, not a traffic split —
+    `activeRevisionsMode` is **Single**, so `ingress traffic set` does not
+    apply: `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:1da00ca --revision-suffix v546`.)
+  - `v544` = `1da00ca` (A DEBT-FREE DEAL IS FOUND BY ITS DATA, and return of
+    capital counts only `Capital='Y'`. Q3 phase-1 plus the debt-free rule,
+    shipped together, Sep 30 2026. Built from a worktree cut at live `ad65707`;
+    P2 span was exactly five commits over seven files.
+    **THE PER-DEAL LIST IS GONE.** `DEBT_FREE_DEALS = {"P0000066"}` is removed —
+    not emptied — and the N/A display is now derived: `not dev`, `not sold`,
+    ISBS basis, debt exactly `0.0`, no active MRI loan, and
+    `property_count >= 1`. Both guardrails assert the constant cannot return.
+    **THE PARENT TERM EXISTS BECAUSE THE MEASUREMENT FOUND SIX DEALS.** Without
+    it the rule fired on Pegasus AND on all six Town Fair Tire properties
+    (`P0000101`-`P0000106`) at 26Q1, 26Q2 AND 26Q3 — each reporting
+    "no debt account rows -> 0" with no loan of its own. They are CHILD
+    properties (`Property_Count == 0`, one shared `Portfolio_Name`) whose
+    facility is held at the parent, so "held with no debt" is the wrong
+    sentence for them. Pegasus is `Property_Count == 1` with no portfolio. A
+    NULL `Property_Count` is declined on its own account as well as by
+    `_deal_index`'s coercion, so an unknown can never widen the rule.
+    **AND THE `sold` TERM IS NOT WHAT EXCLUDES CITY WEST**, which was my
+    assumption and was wrong. PCITWES never reaches the rule at all: it has no
+    ISBS rows, so its debt is `None`, not `0.0`. The `sold` term is still
+    correct and still required — do not read the measurement as proving it
+    load-bearing for that deal.
+    POPULATION CHECK, READ-ONLY ON PRODUCTION, AFTER THE PARENT TERM: fires on
+    `P0000066` and nothing else at 26Q1, 26Q2 and 26Q3; `CHANGED vs old vcode
+    list = NONE` at all three. **The only thing that moved is the SOURCE of
+    Pegasus's dash** — same em dash, same five N/A literals, `debt` still
+    `None` so no subtotal absorbs anything.
+    RETURN OF CAPITAL: `_is_return_of_capital` reads MRI's `Capital` flag, not
+    the Typename, so a Realized Gain stops inflating capital coming back.
+    **MEASURED THROUGH `get_pe_performance` ITSELF, old rule vs new, all deals
+    at 26Q2: 21 DEALS MOVE AND NONE GOES TO $0.00.**
+
+    | deal | before | after |
+    |---|---|---|
+    | `P0000007` Berger Pittsburgh Portfolio | 57,183,009.00 | 36,719,000.00 |
+    | `P0000003` Apple Self Storage | 46,417,982.69 | 27,214,566.32 |
+    | `PVILLAGE` Village Square Apartments | 29,026,157.79 | 15,400,000.00 |
+    | `PCAMARI` Camarillo Village | 23,934,631.39 | 18,843,400.00 |
+    | `POUTLOO` Outlook Nine Mile | 19,855,369.00 | 11,847,307.00 |
+    | `PJWEST` Jefferson West Love | 19,176,803.67 | 14,747,340.00 |
+    | `PWILLOW` Willowdale Apartments | 18,629,374.08 | 10,585,000.00 |
+    | `P3RDAVE` 3rd Ave & Indian School | 15,311,541.00 | 8,533,755.00 |
+    | `PDEVON` Devon Square | 14,595,605.00 | 12,000,000.00 |
+    | `PLANCS1` Lancaster Apartments | 13,887,277.96 | 7,558,214.86 |
+    | `PASTONC` Jefferson Centura | 6,103,708.57 | 4,346,000.00 |
+    | `P0000017` East Manchester | 5,139,662.37 | 3,600,000.00 |
+    | `PSHOPPW` Shoppers World | 4,671,733.48 | 3,374,000.48 |
+    | `PORANGE` Orange Grove | 4,000,000.00 | 1,200,000.00 |
+    | `P0000038` Quakertown Shopping Center | 3,681,883.24 | 3,087,500.00 |
+    | `PDECLAN` Declan & Walton | 3,049,567.22 | 2,250,000.00 |
+    | `PCREEK` Creek Crossing | 3,030,794.99 | 2,200,000.00 |
+    | `PLENDSS` Leander Self Storage | 3,023,728.71 | 2,261,292.28 |
+    | `PJEFFOA` Jefferson Oakhurst | 2,876,112.87 | 1,796,000.00 |
+    | `PHOMEW` Homewood Commons | 2,604,531.05 | 1,828,033.33 |
+    | `PBARN` Barnbeck Apartments | 1,549,746.02 | 1,150,000.00 |
+
+    **CORRECTION TO `e255da7`'S OWN COMMIT MESSAGE, recorded here because git
+    history is not being rewritten.** That message says "IT MOVES 20 DEAL/
+    INVESTOR PAIRS... Seven go to 0.00 because their entire reported return of
+    capital was realized gain (Village Square, 3rd Ave, Orange Grove, Jefferson
+    Centura, Shoppers World, Jefferson Oakhurst, Leander Self Storage)."
+    **That was a PAIR-LEVEL reading and the deal-level result is different: 21
+    deals change and NOT ONE reaches $0.00.** All seven named deals do appear
+    in the table above — they were identified correctly as affected — but each
+    lands on a real figure (3rd Ave 8,533,755; Orange Grove 1,200,000;
+    Jefferson Centura 4,346,000; Shoppers World 3,374,000.48; Jefferson
+    Oakhurst 1,796,000; Leander 2,261,292.28; Village Square 15,400,000). The
+    claim that their whole return of capital was realized gain is false. Read
+    the table here, not the commit message.
+    `P0000042 "Village Square Apartments"` is a SECOND, EMPTY deal — it maps to
+    no InvestmentID (`iids=[]`), funded 0.00 and ROC 0.00 before and after — so
+    its zero has nothing to do with this change and must not be read as one of
+    the seven.
+    A METHOD NOTE WORTH KEEPING: the first measurement grouped raw accounting
+    rows by `(InvestmentID, InvestorID)` and reported 85 moving pairs, because
+    that counts intermediate entities (`PPI16`, `PSCKOC`, `PSC3`) as deals. The
+    engine scopes by VCODE via `build_investmentid_to_vcode`, which is what
+    gives 21. Same arithmetic, wrong grouping — and it agreed with the engine
+    to the cent on every deal it did scope correctly, which is why the
+    disagreement looked like a defect rather than a grouping error.
+    POST-DEPLOY, ON PRODUCTION: root 200 (0.74s / 0.11s / 0.15s), clean boot
+    with 0 tracebacks, `/api/data/deals` and `/api/data/config` both 401,
+    `FREEZE_ENABLED` still ABSENT (`[]`) before and after — freezing stays off.
+    `q3_cleanup_check` 20/0 and `debt_free_rule_check` 41/0 **in the
+    container**, the former asserting East Manchester's 3,600,000.00 against
+    live data. Locally both trees were run side by side against live `ad65707`
+    and every pre-existing failure is identical, so nothing regressed:
+    `freeze_as_sent_check` 103 -> 104, `one_engine_per_number_check` 26/0,
+    `loan_maturity_gap_check` 36/0, `lease_terms_check` 129/0,
+    `gl_ia_query_check` 123/0.
+    `debt_free_rule_check` is proved non-vacuous THREE ways: `--inject=off`
+    fails 9, `--inject=nosold` fails 3, `--inject=nochild` fails 7. It also
+    caught a bug in its own fixture — "New Construction" is no longer in
+    `config.DEV_STRATEGIES`, so the dev case was silently a second unlevered
+    one.
+    NOT RECORDED BY ANYONE: `v543` = `ad65707` shipped with NO deploy-history
+    entry, the same gap as `v522`. Left for whoever deployed it rather than
+    reconstructed here.
+    Build `1da00ca`, tag locked `--write-enabled false`. v543 stays tagged for
+    rollback.)
   - `v542` = `992de9d` (RENT ADD-ONS: a later document stating the whole rent
     ends an earlier add-on -- Mattress Firm $243,600 -> $170,100, their exhibit's
     figure -- and every add-on applied is flagged with its document. Acceptance
@@ -2631,7 +3220,7 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 |---|---|---|
 | `ACCOUNTING_ROLES` | admin, cfo, accounting_manager, accountant | every write in `/api/workpapers` and `/api/treasury` |
 | `CLOSE_PLAN_ROLES` | admin, cfo | when the close opens, when things are due, what order entities are worked in |
-| — | everyone signed in | reads |
+| — | everyone ticked for Accounting (Settings > User Management) | reads -- see "Section access by username"; before that gate, every signed-in user |
 
 - **`roles_exactly`, NOT `role_required`.** `role_required` compares LEVELS and
   `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL level 1 — so any
@@ -2656,6 +3245,60 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   sign-off, reachable by any signed-in user. Every narrowing is asserted in BOTH
   directions: a rule tested only in the refusing direction is satisfied by
   locking everyone out.
+
+### Section access by username
+Built Oct 1 2026, NOT deployed. Registry: `flask_app/auth/sections.py`.
+
+Jim: access is granted per SIDEBAR SECTION, by username, from checkboxes in
+Settings > User Management that default to ticked. Users without Accounting
+cannot see `gl_accounts`, `gl_detail`, `ia_transactions` or ANY `tr_*`,
+`wp_*` or `ic_*` table (treasury, workpapers, intercompany -- matched by
+PREFIX, so a new table in those families is covered when it is created). The
+USERNAME `admin` always has every section; the admin ROLE has only what is
+ticked. **Only the `admin` USERNAME can change the boxes** -- admin-role users
+see them greyed out and the endpoint refuses them (403), so nobody can grant
+themselves a section they were denied. **Asset Management and New Business
+are granted together "for now"** (`LINKED_SECTIONS`): one click writes both,
+and a request splitting them is refused. Delete the group to separate them.
+
+- **A second axis, not a replacement for roles.** The section says where a user
+  may GO; the role still says what they may DO there. Both must pass.
+- **Only an untick is stored** (`user_section_access.allowed = FALSE`). No row
+  means allowed, so a NEW section is ticked for every existing user, and every
+  section for a new user, with no backfill. Re-ticking DELETES the row.
+- **Enforced on the server**, one `before_request` gate over every `/api` path
+  (`enforce_section_access`). The sidebar and router hide what is refused; they
+  are not the control. Read from the database on every request, so an untick
+  takes effect at the user's next click, not when their token expires.
+- **Shared APIs name every section that uses them** -- `/api/deals` and
+  `/api/argus` are Asset Management OR New Business, because both sections'
+  screens call them. Most of `/api/data` (deal list, config, reload) is open
+  plumbing; only Data Management's own tools are gated.
+- **The three GL tables are blocked wherever raw rows leave the app**: Data
+  Explorer (listed AND rows), the database export, the MRI query run/download
+  for `MRI_GL_Detail` / `MRI_GL_Accounts` / `MRI_IA_Transactions`, and the
+  assistant's `query_database` tool.
+- **The assistant's tools are gated one by one** (`TOOL_SECTIONS` in
+  `assistant_service.py`) -- it is on every screen, so otherwise a user could
+  simply ask it for a section's data. An unmapped tool is refused.
+- **Settings is open to everyone** -- it is the user's own password. It sits
+  under Data Management, so the sidebar footer links it when that is unticked.
+
+**THE RULE (Jim, Oct 1 2026): A NEW SECTION GOES IN THE REGISTRY.** Adding a
+section to the sidebar means adding it to `SECTIONS` in `auth/sections.py` and
+gating its block on `auth.hasSection('<key>')`; it then appears in User
+Management, ticked for everyone, with no screen change. Likewise every new Vue
+route, `/api` route and assistant tool must be assigned. Guardrail
+`scripts/section_access_check.py` (256) fails until they are -- it enumerates
+the RUNNING app's url_map rather than grepping -- and the pre-commit hook runs
+its `--static` half whenever the sidebar, router, an API blueprint or the
+assistant is staged. **It caught its first case before it shipped:** merging
+`origin/main` brought in Investment Metrics (`v545`), whose `/investment-metrics`
+screens and `/api/investment-metrics` endpoints belonged to no section. They are
+Asset Management's (`b93dd5f`).
+
+**Deploy status (Oct 1 2026): built and imaged as `b93dd5f`, NOT deployed** --
+see the top of `.claude/memory/session_handoff.md`. Delete this line when it ships.
 
 ### Treasury — the bank side of the close
 **Full detail in `.claude/memory/treasury.md`.** Live at `v508`, screen `/treasury`.
@@ -3149,14 +3792,15 @@ The sidebar (`AppSidebar.vue`) is organized into major sections with expandable 
 | Section | Type | Children |
 |---------|------|----------|
 | **Dashboard** | Standalone link | `/dashboard` |
-| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, One Pager, Review Tracking, Ownership, Waterfall Setup, Report Settings (expandable config panel) |
+| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, Valuations, One Pager, Portfolio Snapshot, Review Tracking, Investment Metrics, Waterfall Setup, Report Settings (expandable config panel) |
 | **Accounting** | Expandable | Workpaper Packages, Treasury, Intercompany, GL / IA Query |
 | **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
-| **Investment Management** | Future (dimmed) | — |
+| **Investment Management** | Expandable | Ownership (moved here from Asset Management Sep 15 2026) |
 | **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
 | **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
 | **Feedback & Requests** | Expandable | Submit form + request list (standalone section below nav) |
 
+- **A NEW SECTION MUST BE REGISTERED in `flask_app/auth/sections.py`** and gated on `auth.hasSection('<key>')` -- that is what puts its checkbox column in User Management. See "Section access by username"; `scripts/section_access_check.py` and the pre-commit hook enforce it.
 - **Report Settings** under Asset Management: expandable inline config panel (Start Year, Horizon, Pro_Yr Base, YTD Actuals + Apply Settings button)
 - **MRI Data** under Data Management: expandable panel with server status, query list, per-query download/run/import buttons, admin "Refresh All Data from MRI"
 - **Database Tools** under Data Management: expandable panel with Import CSVs (file upload + match), Export Database (.zip download)

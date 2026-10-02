@@ -6,6 +6,16 @@ interface User {
   id: number
   username: string
   role: string
+  // Section keys this user may open (flask_app/auth/sections.py). Absent only
+  // on a payload from before section access existed -- treated as "all", since
+  // the server is the control and this only decides what is shown.
+  sections?: string[]
+}
+
+export interface AppSection {
+  key: string
+  label: string
+  routes: string[]
 }
 
 interface ManagedUser {
@@ -15,6 +25,8 @@ interface ManagedUser {
   email: string | null
   must_change_password: boolean
   created_at: string
+  denied_sections: string[]
+  superuser: boolean
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -58,12 +70,67 @@ export const useAuthStore = defineStore('auth', () => {
   const canSetClosePlan = computed(
     () => CLOSE_PLAN_ROLES.includes(user.value?.role || ''))
 
+  // ── Section access by username ─────────────────────────────────────
+  // The catalogue comes from the server (GET /auth/sections), which reads the
+  // one registry in flask_app/auth/sections.py. Nothing here lists sections:
+  // a section added there shows up in the sidebar gate, the router guard and
+  // the User Management columns without touching this file.
+  const sectionCatalog = ref<AppSection[]>([])
+  // Only the `admin` USERNAME may change the boxes (Jim, Oct 1 2026); the
+  // server says whether THIS user may, and refuses the write regardless.
+  const canAssignSections = ref(false)
+  // Sections granted together, e.g. Asset Management with New Business.
+  const linkedSections = ref<string[][]>([])
+  let catalogPromise: Promise<void> | null = null
+
+  function loadSectionCatalog(force = false) {
+    if (catalogPromise && !force) return catalogPromise
+    catalogPromise = api.get('/auth/sections')
+      .then(res => {
+        sectionCatalog.value = res.data.sections || []
+        canAssignSections.value = !!res.data.can_assign
+        linkedSections.value = res.data.linked || []
+      })
+      .catch(() => { catalogPromise = null })
+    return catalogPromise
+  }
+
+  function linkedTo(key: string) {
+    const grp = linkedSections.value.find(g => g.includes(key))
+    return grp ? grp.filter(k => k !== key) : []
+  }
+
+  function hasSection(key: string) {
+    const s = user.value?.sections
+    return !s || s.includes(key)
+  }
+
+  // The section owning a screen path, '' if none does. Prefix match, so
+  // /portfolio-snapshot/print belongs with /portfolio-snapshot.
+  function sectionForPath(path: string) {
+    for (const sec of sectionCatalog.value) {
+      if (sec.routes.some(r => path === r || path.startsWith(r + '/'))) return sec.key
+    }
+    return ''
+  }
+
+  // Where to land a user who may not open the screen they asked for.
+  function firstAllowedPath() {
+    const sec = sectionCatalog.value.find(s => hasSection(s.key))
+    return sec?.routes[0] || '/settings'
+  }
+
+  function sectionLabel(key: string) {
+    return sectionCatalog.value.find(s => s.key === key)?.label || key
+  }
+
   // User management state (admin only)
   const users = ref<ManagedUser[]>([])
   const usersLoading = ref(false)
 
   async function login(username: string, password: string) {
     const res = await api.post('/auth/login', { username, password })
+    catalogPromise = null  // can_assign belongs to whoever is signing in
 
     // Check if user must change password
     if (res.data.must_change_password) {
@@ -104,6 +171,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout() {
+    catalogPromise = null
+    canAssignSections.value = false
     token.value = null
     user.value = null
     mustChangePassword.value = false
@@ -170,6 +239,11 @@ export const useAuthStore = defineStore('auth', () => {
     await loadUsers()
   }
 
+  async function updateUserSections(userId: number, sections: Record<string, boolean>) {
+    await api.put(`/auth/users/${userId}/sections`, { sections })
+    await loadUsers()
+  }
+
   async function deleteUser(userId: number) {
     await api.delete(`/auth/users/${userId}`)
     await loadUsers()
@@ -178,6 +252,9 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user, token, isAuthenticated, isAdmin, isAnalyst, userRole,
     canEditAccounting, canSetClosePlan,
+    sectionCatalog, loadSectionCatalog, hasSection, sectionForPath,
+    canAssignSections, linkedSections, linkedTo,
+    firstAllowedPath, sectionLabel, updateUserSections,
     mustChangePassword, pendingUsername,
     users, usersLoading,
     login, fetchMe, logout, changePassword,

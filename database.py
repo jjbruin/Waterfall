@@ -1676,6 +1676,10 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     # What each entity is to pay and the batches generated --
                     # losing the batches would let a reimbursement be paid twice.
                     'ic_pay_rows', 'ic_je_batches',
+                    # Employee expense reports -- app-written, the only copy.
+                    'er_employees', 'er_reports', 'er_lines', 'er_line_splits',
+                    'er_events', 'er_mileage_rates', 'er_receipts',
+                    'er_coding', 'er_entity_currency', 'er_recurring', 'er_batches',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',

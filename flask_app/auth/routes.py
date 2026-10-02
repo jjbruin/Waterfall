@@ -12,6 +12,11 @@ from flask_app.auth.models import (
     delete_user, change_password,
     get_user_by_email, create_reset_token, validate_reset_token, consume_reset_token,
 )
+from flask_app.auth import sections as section_registry
+from flask_app.auth.sections import (
+    SUPERUSER, allowed_sections, all_users_access,
+    set_user_sections, forget_user,
+)
 from flask_app.auth.email_utils import send_password_reset_email, send_password_changed_email, send_welcome_email
 
 auth_bp = Blueprint("auth", __name__)
@@ -130,6 +135,19 @@ def roles_exactly(*allowed_roles):
     return decorator
 
 
+def _user_payload(user: dict) -> dict:
+    """What the screen is told about the signed-in user.
+
+    ``sections`` is read from the database on every call rather than carried
+    in the token, so unticking a box takes effect at the user's next request
+    -- not when a token issued before the change finally expires.
+    """
+    return {
+        "id": user["id"], "username": user["username"], "role": user["role"],
+        "sections": allowed_sections(user),
+    }
+
+
 def _create_token(user: dict) -> str:
     """Create a JWT for the given user."""
     exp = datetime.now(timezone.utc) + timedelta(
@@ -142,6 +160,34 @@ def _create_token(user: dict) -> str:
         "exp": exp,
     }
     return jwt.encode(payload, current_app.config["JWT_SECRET"], algorithm="HS256")
+
+
+def decode_request_token():
+    """The signed-in user from the request's JWT, or None.
+
+    Header first, then the ``token`` query param (EventSource/SSE cannot set a
+    header). Shared by ``login_required`` and the section gate, so the two can
+    never disagree about who is calling.
+    """
+    token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.args.get("token")
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
+        )
+    except jwt.InvalidTokenError:
+        return None
+    return {
+        "id": int(payload["sub"]),
+        "username": payload["username"],
+        "role": payload["role"],
+    }
 
 
 def login_required(f):
@@ -158,18 +204,14 @@ def login_required(f):
         if not token:
             return jsonify({"error": "Missing token"}), 401
         try:
-            payload = jwt.decode(
+            jwt.decode(
                 token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
             )
-            g.current_user = {
-                "id": int(payload["sub"]),
-                "username": payload["username"],
-                "role": payload["role"],
-            }
         except jwt.ExpiredSignatureError:
             return jsonify({"error": "Token expired"}), 401
         except jwt.InvalidTokenError:
             return jsonify({"error": "Invalid token"}), 401
+        g.current_user = decode_request_token()
         return f(*args, **kwargs)
     return decorated
 
@@ -230,9 +272,7 @@ def login():
         }), 200
 
     token = _create_token(user)
-    return jsonify({"token": token, "user": {
-        "id": user["id"], "username": user["username"], "role": user["role"],
-    }})
+    return jsonify({"token": token, "user": _user_payload(user)})
 
 
 @auth_bp.route("/force-change-password", methods=["POST"])
@@ -275,17 +315,14 @@ def force_change_password():
     # Now issue a token
     updated_user = get_user_by_id(user["id"])
     token = _create_token(updated_user)
-    return jsonify({"token": token, "user": {
-        "id": updated_user["id"], "username": updated_user["username"],
-        "role": updated_user["role"],
-    }})
+    return jsonify({"token": token, "user": _user_payload(updated_user)})
 
 
 @auth_bp.route("/me", methods=["GET"])
 @login_required
 def me():
-    """Return current user info."""
-    return jsonify({"user": g.current_user})
+    """Return current user info, with the sections they may open."""
+    return jsonify({"user": _user_payload(g.current_user)})
 
 
 @auth_bp.route("/logout", methods=["POST"])
@@ -399,7 +436,69 @@ def check_reset_token():
 def get_users():
     """List all users (admin only)."""
     users = list_users()
+    denied = all_users_access()
+    for u in users:
+        u["denied_sections"] = sorted(denied.get(u["id"], []))
+        u["superuser"] = u["username"] == SUPERUSER
     return jsonify({"users": users})
+
+
+@auth_bp.route("/sections", methods=["GET"])
+@login_required
+def get_sections():
+    """The sections a user can be granted, in sidebar order.
+
+    The User Management table draws its checkbox columns from THIS list, so a
+    section added to ``auth/sections.py`` appears there with no screen change.
+    """
+    return jsonify({
+        "sections": [{"key": s["key"], "label": s["label"],
+                      "routes": list(s["routes"])}
+                     for s in section_registry.SECTIONS],
+        "superuser": SUPERUSER,
+        "linked": [list(grp) for grp in section_registry.LINKED_SECTIONS],
+        # Whether THIS user may change the boxes; the server still checks.
+        "can_assign": g.current_user.get("username") == SUPERUSER,
+    })
+
+
+@auth_bp.route("/users/<int:user_id>/sections", methods=["PUT"])
+@login_required
+def update_sections(user_id):
+    """Tick or untick sections for a user -- the ``admin`` USERNAME only.
+
+    Jim, Oct 1 2026: "Only Admin user should assign the access." Other users
+    with the admin ROLE see the table and its boxes, greyed out; they still
+    manage accounts, roles and passwords as before. A role check would let any
+    of them grant themselves a section they were deliberately denied.
+
+    Body: { "sections": { "<key>": true|false, ... } } -- only the keys sent
+    are changed. The ``admin`` USERNAME is refused: it always has every
+    section, so storing an untick for it would record a restriction that is
+    never applied.
+    """
+    if g.current_user.get("username") != SUPERUSER:
+        return jsonify({"error": "Forbidden",
+                        "message": "Only the '%s' user can assign section "
+                                   "access." % SUPERUSER}), 403
+    target = get_user_by_id(user_id)
+    if target is None:
+        return jsonify({"error": "User not found"}), 404
+    if target["username"] == SUPERUSER:
+        return jsonify({"error": "The '%s' user always has access to every "
+                                 "section." % SUPERUSER}), 400
+    body = request.get_json(silent=True) or {}
+    sections = body.get("sections")
+    if not isinstance(sections, dict) or not sections:
+        return jsonify({"error": "sections must be an object of "
+                                 "{section: true|false}"}), 400
+    try:
+        denied = set_user_sections(
+            user_id, {k: bool(v) for k, v in sections.items()},
+            g.current_user["username"])
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"user_id": user_id, "denied_sections": denied})
 
 
 @auth_bp.route("/users", methods=["POST"])
@@ -547,6 +646,7 @@ def remove_user(user_id):
     ok = delete_user(user_id)
     if not ok:
         return jsonify({"error": "User not found"}), 404
+    forget_user(user_id)
     return jsonify({"message": "User deleted"})
 
 

@@ -34,3 +34,8 @@ azure-communication-email>=1.0
 
 # AI assistant
 anthropic>=0.109
+# Receipt images (expenses, Oct 2026). Pillow is already pulled in by pdfplumber;
+# named here because expense_receipts imports it directly. HEIC is an iPhone's
+# default photo format. Upper bounds on purpose: see v524.
+Pillow>=10,<13
+pillow-heif>=1.0,<2

@@ -1,4 +1,27 @@
-# Session Handoff — through Sep 28 2026 (v528 live)
+# Session Handoff — through Oct 2 2026 (v553 live)
+
+## Oct 2 2026 — v553 shipped expense reports
+
+- **Live: `v553` = `79d21a2`** (expense reports, on top of v552 section access).
+  `main` is BEHIND live: pushes to `main` are blocked by the permission classifier --
+  Jim to fast-forward `main` to `79d21a2` (`origin/feat/expense-reports`).
+- **Open from the deploy**: the intercompany ownership proposal is right for 3 of 7
+  booked deals; the investee-fund pass-through (INVF7/INVF2/INVF11 -> PSC3) needs
+  accounting's rule, Apple's PSS1 and Brainerd's shares are data questions
+  (`expense_reporting.md`). Accounting must set PPI2 to CAD.
+
+## Oct 2 2026 — v552 shipped section access; branches
+
+- **Live: `v552` = `11c3455`** (section access). Recorded in CLAUDE.md's deploy history.
+  `main` still needs fast-forwarding to `11c3455` -- the push was blocked by the
+  permission classifier and is Jim's to do.
+- **`feat/intercompany-pay-je`** (`be7a33e`, pushed): intercompany phase 2 -- Pay and the
+  reimbursement JE. Not yet through pre-flight review.
+- **`feat/expense-reports`** (`3b1f38b`, pushed): employee expense reports, all four
+  phases (`.claude/memory/expense_reporting.md`). Built on `feat/section-access`.
+  Adds `pillow-heif` (check PyPI before building). After deploy: compare the ownership
+  proposals with production for the Sep 24 deals, and accounting sets PPI2 to CAD.
+- Both will conflict trivially in `database.py`'s PROTECTED_TABLES list.
 
 ## Sep 28 2026 — THE ARGUS CASH FLOW, AM'S THIRD LIST
 
