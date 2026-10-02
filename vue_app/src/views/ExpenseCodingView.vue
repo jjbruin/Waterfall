@@ -261,7 +261,10 @@ onMounted(async () => { await load(); loadBatches() })
                   <label v-if="draft.booking !== 'deal_cost'">Expense account
                     <input v-model="draft.expense_account" list="ec-accounts" class="acct" /></label>
                   <span v-if="draft.booking !== 'deal_cost'" class="muted">employee chose {{ r.employee_category || r.employee_account }}</span>
-                  <label class="grow">JE description <input v-model="draft.description" /></label>
+                  <label class="grow">JE description
+                    <span class="muted">— MRI: 80 characters, letters, digits and spaces only
+                      ({{ (draft.description || '').length }}/80)</span>
+                    <input v-model="draft.description" maxlength="80" /></label>
                   <div v-if="draft.booking === 'interco'" class="interco">
                     <div class="muted">{{ r.interco_proposed?.basis || r.interco_proposed?.error || 'Set the entities that own this expense.' }}</div>
                     <div v-for="(a, i) in draft.interco" :key="i" class="row">

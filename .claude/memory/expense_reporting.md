@@ -362,3 +362,20 @@ Google; injection-proved).
   Philadelphia -> 5050 Poplar Ave, Memphis 1,006.7.
 - The inline Purpose/Deal save carries `route_id`, verified -- otherwise a quick change
   would drop the route.
+
+## MRI description rule (Oct 2 2026)
+
+Jim: MRI's JE description is at most 80 characters and allows NO punctuation.
+`treasury_upload.mri_description` (beside the GL writer) cleans to letters, digits and
+spaces and trims to 80 on a word boundary -- the comment first, then the deal, never the
+prefix or initials; common long words (Reimbursement -> Reimb, Conference -> Conf, ...)
+are abbreviated ONLY when over the limit; a suffix (the CAD note "USD 712 98") keeps its
+room. Expense descriptions: `ER FK <deal> <comment>`, `IC ER FK ...` for intercompany,
+comment words the deal already says dropped; the payroll credit is
+`ER Trinet Payroll 202609 <suffix>`. Accounting's typed text is cleaned when saved AND
+at the batch. Applies to EXPENSE only: intercompany's fixed text already complies;
+treasury's descriptions come from the bank and were not changed.
+Note: accounting's accepted Sep 24 file has punctuation on all 119 lines and 12 over 80
+-- either MRI accepted them then or accounting cleaned the file; the acceptance check now
+compares against their text cleaned to the rule. Two employees with the same initials
+would read alike -- not handled.

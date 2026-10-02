@@ -193,23 +193,43 @@ def main():
         rows["Site Visit - Airfare"]["booking"] == "deal_cost")
     chk("an owned deal books intercompany",
         rows["Site Visit - Hotel"]["booking"] == "interco")
-    chk("the description is ER - employee - deal - comment, Operations left out",
+    # MRI's rule (Jim, Oct 2 2026): 80 characters, letters, digits and spaces only;
+    # the employee as initials.
+    chk("the description is ER, initials, deal, comment -- Operations left out, no punctuation",
         rows["Cell Phone Reimbursement - August"]["description"]
-        == "ER - Fred Kurz - Cell Phone Reimbursement - August"
+        == "ER FK Cell Phone Reimbursement August"
         and rows["Site Visit - Airfare"]["description"]
-        == "ER - Fred Kurz - Market Poplar - Site Visit - Airfare", rows["Site Visit - Airfare"]["description"])
-    chk("an intercompany description is prefixed Interco",
-        rows["Site Visit - Hotel"]["description"].startswith("Interco - ER - Fred Kurz - The Gallery"))
+        == "ER FK Market Poplar Site Visit Airfare", rows["Site Visit - Airfare"]["description"])
+    chk("an intercompany description is prefixed IC",
+        rows["Site Visit - Hotel"]["description"].startswith("IC ER FK The Gallery"),
+        rows["Site Visit - Hotel"]["description"])
+    chk("a comment's words the deal already says are not repeated",
+        rows["Pontchartrain Site Visit - Dinner at Arnauds"]["description"]
+        == "IC ER FK Pontchartrain Landing Site Visit Dinner at Arnauds",
+        rows["Pontchartrain Site Visit - Dinner at Arnauds"]["description"])
+    from flask_app.services.treasury_upload import mri_description
+    long_ = mri_description("ER", "FK", "Some Deal", "Conference Registration Reimbursement for the "
+                            "International Association annual meeting in a far city", keep=2)
+    chk("over 80, common long words are abbreviated before any are dropped",
+        len(long_) <= 80 and "Conf" in long_ and "Reimb" in long_, long_)
+    chk("under 80, words are kept whole",
+        mri_description("ER", "FK", "", "Conference Registration", keep=2) == "ER FK Conference Registration")
+    chk("the suffix keeps its room when the rest is trimmed",
+        len(mri_description("x" * 10, "y " * 60, suffix="USD 712.98")) <= 80
+        and mri_description("x" * 10, "y " * 60, suffix="USD 712.98").endswith("USD 712 98"))
 
     print("\n4. Accounting's corrections stick and the proposal stays beside them")
     din = rows["Pontchartrain Site Visit - Dinner at Arnauds"]
     st, _, _ = call("PUT", "/api/expense-coding/lines/%d/0" % din["line_id"], "acct",
                     {"expense_account": "MR53000004",
-                     "description": "Interco - ER - Fred Kurz - Pontchartrain Site Visit - Dinner at Arnauds"})
+                     "description": "Interco - ER - Fred Kurz - Pontchartrain Site Visit - Dinner at Arnaud's!"})
     chk("an analyst cannot code", call("PUT", "/api/expense-coding/lines/%d/0" % din["line_id"],
                                        "ana", {"expense_account": "MR53000004"})[0] == 403)
     st, b, _ = call("GET", "/api/expense-coding/lines", "acct")
     d2 = [r for r in b["rows"] if r["line_id"] == din["line_id"]][0]
+    chk("accounting's typed description is held to MRI's rule as it is saved",
+        d2["description"] == "Interco ER Fred Kurz Pontchartrain Site Visit Dinner at Arnaud s",
+        d2["description"])
     chk("the recode to Meals is applied, and the employee's Travel is still shown",
         d2["expense_account"] == "MR53000004" and d2["employee_account"] == "MR53000011"
         and d2["expense_account_changed"])
@@ -231,20 +251,24 @@ def main():
     chk("one payroll credit at PSC Manager for the total",
         [x["amount"] for x in by("PSCMAN", "MR20000001")] == [-round(75.81 + 1219.80 + 100.01 + 228.03 + 712.98, 2)])
     chk("its description names the period and the suffix",
-        by("PSCMAN", "MR20000001")[0]["descrpn"]
-        == "Expense Reimbursement Activity - Trinet Payroll - 202609 End of Month")
+        by("PSCMAN", "MR20000001")[0]["descrpn"] == "ER Trinet Payroll 202609 End of Month",
+        by("PSCMAN", "MR20000001")[0]["descrpn"])
     gal = sorted((x["rltdentity"], x["amount"]) for x in by("PSCMAN", "MR15000001")
                  if "The Gallery" in x["descrpn"])
     chk("Gallery's 100.01 splits to the cent: PSC3 30.00, PSCKOC 70.01",
         gal == [("PSC3", 30.0), ("PSCKOC", 70.01)], gal)
     chk("PSC3 books the dinner as Meals, RLTDENTITY INVF7, against Due To PSC Manager",
         [(x["acctnum"], x["amount"], x["rltdentity"]) for x in L if x["entityid"] == "PSC3"
-         and "Arnauds" in x["descrpn"]] == [("MR53000004", 228.03, "INVF7"),
+         and "Arnaud" in x["descrpn"]] == [("MR53000004", 228.03, "INVF7"),
                                             ("MR15000002", -228.03, "")])
     ppi2 = [x for x in L if x["entityid"] == "PPI2"]
     chk("PPI2 books in CAD, with the USD in the description",
         [x["amount"] for x in ppi2] == [1007.75, -1007.75]
-        and ppi2[0]["descrpn"].endswith("(712.98 USD)"), ppi2)
+        and ppi2[0]["descrpn"].endswith("USD 712 98"), ppi2)
+    import re as _re
+    bad = [x["descrpn"] for x in L if len(x["descrpn"]) > 80 or _re.search(r"[^A-Za-z0-9 ]", x["descrpn"])]
+    chk("EVERY line of the batch is 80 characters or fewer, letters, digits and spaces only",
+        L and not bad, bad[:3])
     chk("PSC Manager's side of PPI2 stays in USD",
         [x["amount"] for x in by("PSCMAN", "MR15000001") if x["rltdentity"] == "PPI2"] == [712.98])
     for e in ("PSCMAN", "PSC3", "PSCKOC", "PPI2"):
@@ -378,8 +402,11 @@ def acceptance(call, app, ids, people, H, client):
     chk("the app's batch of the same lines is clean", not pv["errors"], pv["errors"][:3])
     ours = Counter((x["entityid"], x["acctnum"], "%.2f" % x["amount"], x["descrpn"].strip(),
                     x["rltdentity"]) for x in pv["lines"])
+    # Their descriptions carry " - " and up to 90 characters; MRI's rule (Jim, Oct 2
+    # 2026) is 80 and no punctuation, so the app writes THEIR text cleaned to it.
+    from flask_app.services.treasury_upload import mri_description as _clean
     theirs = Counter((r["EntityID"], r["AcctNum"], "%.2f" % float(r["Amount"]),
-                      r["Descrpn"].strip(), r["RLTDENTITY"]) for r in rows)
+                      _clean(r["Descrpn"]), r["RLTDENTITY"]) for r in rows)
     same = sum((ours & theirs).values())
     only_t = theirs - ours
     only_o = ours - theirs
@@ -388,8 +415,15 @@ def acceptance(call, app, ids, people, H, client):
         print("      file only: %s" % (k,))
     for k in sorted(only_o):
         print("      app only:  %s" % (k,))
-    non_ppi2_t = [k for k in only_t if k[0] != "PPI2"]
-    non_ppi2_o = [k for k in only_o if k[0] != "PPI2"]
+    # The payroll CREDIT is the app's own text, abbreviated to MRI's rule; theirs
+    # read "Expense Reimbursement Activity - Trinet Payroll - 202609 End of Month".
+    credit = lambda k: k[0] == "PSCMAN" and k[1] == "MR20000001"
+    chk("the payroll credit is the app's abbreviated text, for the same amount",
+        [k for k in only_o if credit(k)] == [("PSCMAN", "MR20000001", "-19036.08",
+                                             "ER Trinet Payroll 202609 End of Month", "")],
+        [k for k in only_o if credit(k)])
+    non_ppi2_t = [k for k in only_t if k[0] != "PPI2" and not credit(k)]
+    non_ppi2_o = [k for k in only_o if k[0] != "PPI2" and not credit(k)]
     chk("every PSCMAN, PSC3 and TGA6 line is reproduced exactly (amount, account, "
         "description, related entity)", not non_ppi2_t and not non_ppi2_o,
         (non_ppi2_t[:3], non_ppi2_o[:3]))

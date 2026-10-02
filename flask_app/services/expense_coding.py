@@ -226,14 +226,25 @@ def _codings(engine, line_ids) -> Dict[tuple, dict]:
     return out
 
 
+def initials(full_name: str) -> str:
+    """Fred Kurz -> FK. MRI's 80 characters are better spent on the expense."""
+    return "".join(w[0] for w in str(full_name or "").split() if w[:1].isalnum()).upper()
+
+
 def _desc(employee, deal_kind, deal_name, comment, interco):
-    parts = ["ER", employee]
-    if deal_kind != "operations" and deal_name:
-        parts.append(deal_name)
-    if comment:
-        parts.append(comment)
-    s = " - ".join(p for p in parts if p)
-    return ("Interco - " + s) if interco else s
+    """"ER FK Pontchartrain Landing Site Visit Dinner" -- MRI's rule (Jim, Oct 2
+    2026): 80 characters, no punctuation. Intercompany is prefixed "IC". The
+    comment shortens first, then the deal; the prefix and initials never do."""
+    from flask_app.services.treasury_upload import mri_description
+    from flask_app.services.treasury_upload import mri_text
+    prefix = "IC ER" if interco else "ER"
+    deal = deal_name if deal_kind != "operations" else ""
+    # A comment often repeats the deal ("Pontchartrain Site Visit" on Pontchartrain
+    # Landing); those words are already there. Only words of four letters or more,
+    # so "at" or "to" in a comment is never taken for the deal's.
+    seen = {w.lower() for w in mri_text(deal).split() if len(w) >= 4}
+    comment = " ".join(w for w in mri_text(comment).split() if w.lower() not in seen)
+    return mri_description(prefix, initials(employee), deal, comment, keep=2)
 
 
 def coding_rows(engine, report_ids=None) -> List[dict]:
@@ -310,6 +321,12 @@ def coding_rows(engine, report_ids=None) -> List[dict]:
     return rows
 
 
+def _clean_desc(v) -> Optional[str]:
+    """Accounting's typed description, held to MRI's rule as it is saved."""
+    from flask_app.services.treasury_upload import mri_description
+    return mri_description(v) or None
+
+
 def save_coding(engine, line_id: int, split_id: int, body: dict, by: str) -> dict:
     ensure_tables(engine)
     with engine.connect() as c:
@@ -347,7 +364,7 @@ def save_coding(engine, line_id: int, split_id: int, body: dict, by: str) -> dic
             "INSERT INTO er_coding (line_id, split_id, description, expense_account, booking, "
             "interco_json, updated_by, updated_at) VALUES (:l, :s, :d, :a, :b, :i, :by, :at)"),
             {"l": int(line_id), "s": int(split_id),
-             "d": (body.get("description") or "").strip() or None,
+             "d": _clean_desc(body.get("description")),
              "a": (body.get("expense_account") or "").strip() or None, "b": booking,
              "i": json.dumps(interco) if interco else None, "by": by, "at": ex._now()})
     return {"saved": True}
@@ -460,6 +477,7 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
     for r in rows:
         if r["problems"]:
             continue
+        r["description"] = tu.mri_description(r["description"])
         amt = float(r["amount"] or 0)
         if r["booking"] == "expense":
             manager.append(gl(MANAGER_ENTITY, r["expense_account"], amt, r["description"]))
@@ -482,14 +500,17 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
                         continue
                     used_fx[ent] = {"currency": c, "rate": rate}
                     local = round(usd * rate, 2)
-                    desc = "%s (%s USD)" % (desc, "{:.2f}".format(usd))
+                    # "USD 712 98": the amount without a decimal point, which MRI
+                    # counts as punctuation; its room is reserved before trimming.
+                    desc = tu.mri_description(desc, suffix="USD %s" % "{:.2f}".format(usd))
                 entity_side.append(gl(ent, r["expense_account"], local, desc, rltd[ent]))
                 entity_side.append(gl(ent, ENTITY_ACCOUNT, -local, desc))
     for rc in recs:
         manager.append(gl(MANAGER_ENTITY, rc["account"], float(rc["amount"]),
-                          "ER - %s - %s" % (rc["employee"], rc["description"])))
-    credit_desc = ("Expense Reimbursement Activity - Trinet Payroll - %s %s"
-                   % (period, (body.get("credit_suffix") or "").strip())).strip()
+                          tu.mri_description("ER", initials(rc["employee"]), rc["description"],
+                                             keep=2)))
+    credit_desc = tu.mri_description("ER Trinet Payroll", period,
+                                     body.get("credit_suffix") or "", keep=2)
     total = round(sum(ln["amount"] for ln in manager), 2)
     lines = manager + ([gl(MANAGER_ENTITY, PAYROLL_ACCOUNT, -total, credit_desc)]
                        if manager else []) + entity_side

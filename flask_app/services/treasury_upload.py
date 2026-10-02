@@ -32,6 +32,7 @@ A file that uploads and is wrong costs more than a file that does not upload.
 """
 import csv
 import io
+import re
 import logging
 import shutil
 from datetime import date, datetime
@@ -201,6 +202,59 @@ def validate_gl(lines: Iterable[dict]) -> dict:
             "balanced": balanced, "line_count": len(lines),
             "period": (sorted(periods)[0] if len(periods) == 1 else None),
             "entityid": (sorted(entities)[0] if len(entities) == 1 else None)}
+
+
+#: MRI's journal-entry description (Jim, Oct 2 2026): at most 80 characters, and
+#: no punctuation -- letters, digits and spaces only.
+MRI_DESC_MAX = 80
+_NOT_MRI = re.compile(r"[^A-Za-z0-9 ]+")
+
+
+def mri_text(text_) -> str:
+    """Letters, digits and single spaces: punctuation becomes a space, so
+    "Site Visit-Hotel" stays two words rather than fusing into one."""
+    return " ".join(_NOT_MRI.sub(" ", str(text_ or "")).split())
+
+
+#: Applied ONLY when a description is over the limit, so a short one keeps its
+#: words whole. Common, unambiguous shortenings; extend as accounting prefers.
+MRI_ABBREVIATIONS = {
+    "reimbursement": "Reimb", "reimbursements": "Reimb", "international": "Intl",
+    "conference": "Conf", "registration": "Reg", "subscription": "Sub",
+    "transportation": "Transp", "apartments": "Apts", "management": "Mgmt",
+    "portfolio": "Port", "restaurant": "Rest", "breakfast": "Bkfst",
+    "department": "Dept", "association": "Assn", "professional": "Prof",
+}
+
+
+def mri_description(*parts, keep: int = 0, suffix: str = "") -> str:
+    """A description MRI accepts, built from parts in order.
+
+    Each part is cleaned to letters, digits and spaces. If the whole runs over
+    MRI_DESC_MAX, words come off the END of the LAST part first (the comment),
+    then the part before it (the deal), never touching the first `keep` parts
+    (the prefix and initials). `suffix` (e.g. "USD 712 98") is always kept, so
+    its room is reserved first. A last-resort hard cut covers anything left.
+    """
+    suffix = mri_text(suffix)
+    room = MRI_DESC_MAX - (len(suffix) + 1 if suffix else 0)
+    words = [mri_text(p).split() for p in parts]
+    words = [w for w in words if w] if not keep else [w for i, w in enumerate(words) if w or i < keep]
+
+    def joined():
+        return " ".join(" ".join(w) for w in words if w)
+
+    if len(joined()) > room:
+        words = [ws if n < keep else [MRI_ABBREVIATIONS.get(w.lower(), w) for w in ws]
+                 for n, ws in enumerate(words)]
+    i = len(words) - 1
+    while len(joined()) > room and i >= keep:
+        if words[i]:
+            words[i].pop()
+        else:
+            i -= 1
+    out = joined()[:room].rstrip()
+    return ("%s %s" % (out, suffix)).strip() if suffix else out
 
 
 def build_gl_csv(lines: Iterable[dict]) -> str:
