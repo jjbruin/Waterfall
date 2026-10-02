@@ -197,6 +197,7 @@ async function saveLine() {
     no_receipt_reason: e.receiptChoice === 'N' ? e.no_receipt_reason : '',
     receipt_id: typeof e.receiptChoice === 'number' ? e.receiptChoice : '',
     receipt_page: typeof e.receiptChoice === 'number' ? e.receipt_page : '',
+    route_id: e.isMileage ? (e.route_id || '') : '',
     splits: e.isSplit ? e.splits.map((s: any) => ({
       deal_code: s.deal_code, amount: s.amount,
       deal_name: s.deal_code === PIPELINE ? s.deal_name : '' })) : [],
@@ -206,6 +207,37 @@ async function saveLine() {
     report.value = (e.id ? await api.put(`${url}/${e.id}`, body) : await api.post(url, body)).data
     editing.value = null
   } catch (err) { fail(err, 'Could not save the line') }
+}
+
+// ---- the distance wizard (Jim, Oct 2 2026) ----
+// Google measures the drive on the SERVER, which keeps the measurement; the
+// line points at it, so "measured" means Google measured it. A three-letter
+// code is asked as an airport ("PHL" alone geocodes to the Philippines).
+const wiz = ref<any>(null)
+function openWizard() {
+  wiz.value = { stops: ['', ''], round_trip: false, busy: false, result: null, error: '' }
+}
+async function measureRoute() {
+  const w = wiz.value
+  w.busy = true; w.error = ''; w.result = null
+  try {
+    const r = (await api.post('/api/expenses/distance',
+      { stops: w.stops, round_trip: w.round_trip })).data
+    w.result = r
+    if (r.error) w.error = r.error
+  } catch (e: any) { w.error = e?.response?.data?.error || String(e) }
+  finally { w.busy = false }
+}
+function useRoute() {
+  const e = editing.value, r = wiz.value.result
+  e.miles = String(r.miles)
+  e.route_id = r.route_id
+  e.route = { summary: wiz.value.stops.filter((x: string) => x.trim()).join(' → ') +
+    (wiz.value.round_trip ? ' → ' + wiz.value.stops[0] : '') + `, ${r.miles} mi measured` }
+  // Accounting's template records mileage as "no receipt"; say so for them.
+  if (e.receiptChoice === '') { e.receiptChoice = 'N' }
+  if (e.receiptChoice === 'N' && !e.no_receipt_reason) e.no_receipt_reason = 'Mileage — measured route'
+  wiz.value = null
 }
 
 // ---- inline Purpose / Deal on the table (Jim, Oct 2 2026) ----
@@ -224,6 +256,7 @@ function lineBody(ln: any, over: Record<string, any> = {}) {
     receipt: ln.receipt_id ? '' : (ln.receipt === 'N' ? 'N' : ''),
     no_receipt_reason: ln.receipt_id ? '' : (ln.no_receipt_reason || ''),
     receipt_id: ln.receipt_id || '', receipt_page: ln.receipt_id ? (ln.receipt_page || 1) : '',
+    route_id: ln.route_id || '',
     splits: (ln.splits || []).map((x: any) => ({
       deal_code: x.deal_kind === 'pipeline' ? PIPELINE : x.deal_code,
       deal_name: x.deal_kind === 'pipeline' ? x.deal_name : '', amount: x.amount })),
@@ -505,6 +538,8 @@ onMounted(async () => {
             <td>{{ ln.vendor }}</td>
             <td class="comment" :title="ln.comment">{{ ln.comment }}
               <div v-if="ln.miles != null" class="muted">{{ ln.miles }} mi × ${{ ln.mileage_rate }}</div>
+              <div v-if="ln.route" class="muted" :title="ln.route.stops.map((x: any) => `${x.input} → ${x.resolved}`).join('\n')">
+                ↦ {{ ln.route.summary }}</div>
               <div v-for="m in report.check.by_line[ln.id]?.errors" :key="m" class="err-text">Line {{ m }}</div>
               <div v-for="m in report.check.by_line[ln.id]?.warnings" :key="m" class="warn-text">{{ m }}</div>
               <div v-if="ln.recurring" class="muted">↻ recurring</div>
@@ -581,6 +616,9 @@ onMounted(async () => {
             <span v-if="rateForLine" class="muted">× ${{ rateForLine.rate }} (from {{ rateForLine.effective_date }})
               = <strong>{{ fmt(mileageAmount) }}</strong>. Tolls go on their own line.</span>
             <span v-else class="warn-text">No mileage rate is in force on that date — accounting sets it.</span>
+            <button v-if="!wiz" class="link" @click="openWizard">Measure route…</button>
+            <span v-if="editing.route?.summary" class="muted">
+              {{ editing.route.summary }}</span>
           </template>
           <label v-else>Amount <input v-model="editing.amount" class="num-in" placeholder="0.00" /></label>
           <label>Receipt
@@ -594,6 +632,34 @@ onMounted(async () => {
             <input type="number" min="1" :max="editingReceipt.page_count" v-model.number="editing.receipt_page" class="num-in" /></label>
           <label v-if="editing.receiptChoice === 'N'" class="grow">Why is there no receipt?
             <input v-model="editing.no_receipt_reason" /></label>
+        </div>
+        <div v-if="wiz && editing.isMileage" class="wizard">
+          <div class="muted">Addresses, landmarks, city names or airport codes (PHL, MSY). Google measures the drive.</div>
+          <div v-for="(st, i) in wiz.stops" :key="i" class="row">
+            <label class="grow">{{ i === 0 ? 'From' : i === wiz.stops.length - 1 ? 'To' : 'Stop ' + i }}
+              <input v-model="wiz.stops[i]" :placeholder="i === 0 ? 'e.g. 1 Main St, Philadelphia, or PHL' : 'e.g. Market at Poplar, Memphis'"
+                     @keyup.enter="measureRoute" /></label>
+            <button v-if="wiz.stops.length > 2" class="link" @click="wiz.stops.splice(i, 1)">remove</button>
+          </div>
+          <div class="row">
+            <button class="link" @click="wiz.stops.splice(wiz.stops.length - 1, 0, '')">+ a stop in between</button>
+            <label class="check"><input type="checkbox" v-model="wiz.round_trip" /> round trip (drive back to the start)</label>
+            <button class="btn-secondary" :disabled="wiz.busy || wiz.stops.filter((x: string) => x.trim()).length < 2"
+                    @click="measureRoute">{{ wiz.busy ? 'Measuring…' : 'Measure' }}</button>
+            <button class="link" @click="wiz = null">cancel</button>
+          </div>
+          <div v-if="wiz.result?.stops" class="resolved">
+            <div v-for="(st, i) in wiz.result.stops" :key="i" :class="{ 'err-text': st.error }">
+              <strong>{{ st.input }}</strong> → {{ st.resolved || '—' }}
+              <span v-if="st.error"> — {{ st.error }}</span>
+            </div>
+          </div>
+          <div v-if="wiz.error" class="err-text">{{ wiz.error }}</div>
+          <div v-if="wiz.result?.miles" class="row">
+            <strong>{{ wiz.result.miles }} miles</strong>
+            <span v-if="wiz.result.legs?.length > 1" class="muted">({{ wiz.result.legs.join(' + ') }})</span>
+            <button class="btn-primary" @click="useRoute">Use {{ wiz.result.miles }} miles</button>
+          </div>
         </div>
         <div v-if="editing.isSplit" class="splits">
           <div class="muted">Split this expense across deals. Enter amounts, or percentages and
@@ -878,6 +944,8 @@ input, select, textarea {
 .view-panel { border: 1px solid var(--color-border); border-radius: 6px; padding: 8px 12px; margin: 10px 0; height: 640px; display: flex; flex-direction: column; }
 .view-panel > :last-child { flex: 1; }
 .splits { border-top: 1px dashed var(--color-border); padding-top: 6px; }
+.wizard { border: 1px solid var(--color-border); border-radius: 6px; padding: 6px 10px; margin: 6px 0; background: var(--color-surface); }
+.wizard .resolved { font-size: 12.5px; margin: 4px 0; }
 .split-cell { white-space: nowrap; }
 .cell-select { width: 100%; min-width: 150px; max-width: 230px; font-size: 12px; padding: 3px 4px; }
 .pipe-name { display: block; padding: 2px 0 0; text-align: left; }

@@ -193,8 +193,9 @@ def ensure_tables(engine) -> None:
     _DDL_DONE.add(key)
     # Phase 2's receipts table and line columns live with the receipt code; it
     # is called from here so every path that reaches a report has them.
-    from flask_app.services import expense_receipts
+    from flask_app.services import expense_receipts, expense_distance
     expense_receipts.ensure_receipt_tables(engine)
+    expense_distance.ensure_route_tables(engine)
     # Phase 4: a line the employee claims every month. Added by migration too,
     # so a table created by an earlier phase gains it.
     from sqlalchemy import inspect
@@ -590,6 +591,15 @@ def _lines(engine, report_id) -> List[dict]:
             x["extracted"] = json.loads(x.pop("extracted_json") or "null")
         except (TypeError, ValueError):
             x["extracted"] = None
+        x["route"] = None
+        if x.get("route_id"):
+            from flask_app.services import expense_distance
+            rt = expense_distance.route_row(engine, x["route_id"])
+            if rt:
+                x["route"] = {"id": rt["id"], "miles": rt["miles"], "round_trip": rt["round_trip"],
+                              "summary": expense_distance.summary(rt),
+                              "stops": [{"input": s.get("input"), "resolved": s.get("resolved")}
+                                        for s in rt["stops"]]}
     return lines
 
 
@@ -729,6 +739,17 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
         receipt = "Y"
     elif receipt == "Y":
         receipt = None          # a Y with nothing attached means nothing
+    # THE MEASURED ROUTE a mileage line came from (the distance wizard). Only the
+    # employee's own measurement, and only on a mileage line.
+    route_id = body.get("route_id")
+    route_id = int(route_id) if route_id not in (None, "") else None
+    if route_id is not None:
+        from flask_app.services import expense_distance
+        rt = expense_distance.route_row(engine, route_id)
+        if not rt or int(rt["user_id"]) != int(actor["id"]):
+            raise ValueError("Route %s is not one of your measurements." % route_id)
+        if miles is None:
+            raise ValueError("A measured route belongs on a mileage line.")
     vals = {"report": r["id"], "d": d, "de": d_end,
             "cat": (body.get("category_account") or "").strip() or None,
             "pur": (body.get("purpose") or "").strip() or None,
@@ -738,7 +759,7 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
             "amt": amount, "mi": miles, "rate": rate, "rc": receipt,
             "why": (body.get("no_receipt_reason") or "").strip() or None,
             "rid": receipt_id, "rpg": receipt_page if receipt_id else None,
-            "rec": bool(body.get("recurring")), "at": _now()}
+            "rec": bool(body.get("recurring")), "route": route_id, "at": _now()}
     with engine.begin() as c:
         if line_id is None:
             n = c.execute(text("SELECT COALESCE(MAX(sort_order), 0) FROM er_lines "
@@ -748,16 +769,17 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
                 "INSERT INTO er_lines (report_id, sort_order, line_date, line_date_end, "
                 "category_account, purpose, deal_code, deal_kind, deal_name, vendor, comment, "
                 "amount, miles, mileage_rate, receipt, no_receipt_reason, receipt_id, "
-                "receipt_page, recurring, updated_at) VALUES "
+                "receipt_page, recurring, route_id, updated_at) VALUES "
                 "(:report, :so, :d, :de, :cat, :pur, :dc, :dk, :dn, :v, :cm, :amt, :mi, :rate, "
-                ":rc, :why, :rid, :rpg, :rec, :at) RETURNING id"), vals).scalar()
+                ":rc, :why, :rid, :rpg, :rec, :route, :at) RETURNING id"), vals).scalar()
         else:
             got = c.execute(text("UPDATE er_lines SET line_date = :d, line_date_end = :de, "
                                  "category_account = :cat, purpose = :pur, deal_code = :dc, "
                                  "deal_kind = :dk, deal_name = :dn, vendor = :v, comment = :cm, "
                                  "amount = :amt, miles = :mi, mileage_rate = :rate, receipt = :rc, "
                                  "no_receipt_reason = :why, receipt_id = :rid, "
-                                 "receipt_page = :rpg, recurring = :rec, updated_at = :at "
+                                 "receipt_page = :rpg, recurring = :rec, route_id = :route, "
+                                 "updated_at = :at "
                                  "WHERE id = :id AND report_id = :report"),
                             {**vals, "id": int(line_id)})
             if got.rowcount != 1:
@@ -841,6 +863,11 @@ def _check(engine, report: dict, lines: List[dict], receipts=None) -> dict:
         by_line[ln["id"]] = {"errors": e, "warnings": w}
         errors += ["Line %d %s." % (i, x) for x in e]
         warnings += ["Line %d %s." % (i, x) for x in w]
+        rt = ln.get("route")
+        if rt and ln.get("miles") is not None and abs(float(ln["miles"]) - float(rt["miles"])) >= 0.05:
+            w.append("its %s miles differ from the measured route's %s" % (ln["miles"], rt["miles"]))
+            warnings.append("Line %d: %s miles entered against a measured %s." % (
+                i, ln["miles"], rt["miles"]))
         for why in dupes.get(ln["id"], []):
             w.append("may be a duplicate: " + why)
             warnings.append("Line %d may be a duplicate: %s." % (i, why))

@@ -19,6 +19,7 @@
     GET    /api/expenses/reports/<id>/receipts/<rid>/file   the image or PDF, to show
     POST   /api/expenses/reports/<id>/receipts/<rid>/extract  read it; propose its lines
     DELETE /api/expenses/reports/<id>/receipts/<rid>        remove a file
+    POST   /api/expenses/distance                    {stops, round_trip}: driving miles, stored
     GET    /api/expenses/employees                   everyone's name, approver and route
     PUT    /api/expenses/employees/<user_id>         name on reports, approver (admin)
     PUT    /api/expenses/mileage-rates               a rate and the date it takes effect
@@ -214,6 +215,15 @@ def post_copy_recurring(report_id):
 def post_accounting_return(report_id):
     return _run("accounting return", ex.accounting_return, get_engine(), _actor(), report_id,
                 _body().get("note"))
+
+
+@expenses_bp.route("/distance", methods=["POST"])
+@login_required
+def post_distance():
+    from flask_app.services import expense_distance
+    b = _body()
+    return _run("distance", expense_distance.measure, get_engine(), _actor(),
+                b.get("stops") or [], bool(b.get("round_trip")))
 
 
 @expenses_bp.route("/employees", methods=["GET"])

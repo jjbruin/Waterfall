@@ -1680,6 +1680,7 @@ PROTECTED_TABLES = {'capital_calls', 'waterfalls', 'one_pager_comments', 'waterf
                     'er_employees', 'er_reports', 'er_lines', 'er_line_splits',
                     'er_events', 'er_mileage_rates', 'er_receipts',
                     'er_coding', 'er_entity_currency', 'er_recurring', 'er_batches',
+                    'er_routes',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',

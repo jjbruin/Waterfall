@@ -338,3 +338,27 @@ against the app's proposal:
   employee's deal list, which offers the parent deal only.
 - Not changed: every proposal is editable and a hand-set split is kept. Until the rule
   is settled accounting should CHECK every intercompany row.
+
+## The distance wizard (Oct 2 2026, built; ships with the GOOGLE_MAPS_API_KEY wiring)
+
+`flask_app/services/expense_distance.py`, `POST /api/expenses/distance`, the "Measure
+route…" panel under mileage. Guardrail `scripts/expense_distance_check.py` (26, stubs
+Google; injection-proved).
+
+- **Google, on Jim's call**: Routes API for the drive, Geocoding API for what each stop
+  was understood as. Key = container secret `google-maps-key`, read server-side as
+  `GOOGLE_MAPS_API_KEY`; never reaches the browser. Local key in `.env`.
+- **A bare 3-letter code is asked as an airport** -- measured: Geocoding "PHL" alone is
+  "Philippines". A code Google matches to a non-airport stops and says so.
+- **Every stop shows what it resolved to.** Measured: "Pontchartrain Landing, New
+  Orleans" resolved to Pontchartrain Blvd, a street -- the street address fixes it.
+  Places API is the option if loose landmark names prove common.
+- **The measurement is the server's** (`er_routes`, protected): a line points at it
+  (`route_id`), only the employee's own, only on a mileage line. Miles typed over it are
+  kept and the line warns "differ from the measured route".
+- Round trip drives back as its own leg. Using a route pre-fills "no receipt — Mileage,
+  measured route", as accounting's template records mileage.
+- Real key, locally: PHL -> City Hall round trip 24.5 mi (11.9 + 12.5); EWR -> JFK 34.7;
+  Philadelphia -> 5050 Poplar Ave, Memphis 1,006.7.
+- The inline Purpose/Deal save carries `route_id`, verified -- otherwise a quick change
+  would drop the route.
