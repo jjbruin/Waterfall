@@ -208,6 +208,61 @@ async function saveLine() {
   } catch (err) { fail(err, 'Could not save the line') }
 }
 
+// ---- inline Purpose / Deal on the table (Jim, Oct 2 2026) ----
+// The server REPLACES a line from the body it is sent, so a quick change
+// sends the whole line as stored with only the one field changed -- sending
+// just the field would blank everything else.
+function lineBody(ln: any, over: Record<string, any> = {}) {
+  const pipe = ln.deal_kind === 'pipeline'
+  return {
+    line_date: ln.line_date || '', line_date_end: ln.line_date_end || '',
+    category_account: ln.category_account || '', purpose: ln.purpose || '',
+    deal_code: ln.splits?.length ? '' : (pipe ? PIPELINE : (ln.deal_code || '')),
+    deal_name: pipe ? (ln.deal_name || '') : '',
+    vendor: ln.vendor || '', comment: ln.comment || '', recurring: !!ln.recurring,
+    amount: ln.miles != null ? '' : (ln.amount ?? ''), miles: ln.miles ?? '',
+    receipt: ln.receipt_id ? '' : (ln.receipt === 'N' ? 'N' : ''),
+    no_receipt_reason: ln.receipt_id ? '' : (ln.no_receipt_reason || ''),
+    receipt_id: ln.receipt_id || '', receipt_page: ln.receipt_id ? (ln.receipt_page || 1) : '',
+    splits: (ln.splits || []).map((x: any) => ({
+      deal_code: x.deal_kind === 'pipeline' ? PIPELINE : x.deal_code,
+      deal_name: x.deal_kind === 'pipeline' ? x.deal_name : '', amount: x.amount })),
+    ...over,
+  }
+}
+const inlineSaving = ref<number | null>(null)
+async function quickSave(ln: any, over: Record<string, any>) {
+  inlineSaving.value = ln.id
+  try {
+    report.value = (await api.put(`/api/expenses/reports/${report.value.id}/lines/${ln.id}`,
+      lineBody(ln, over))).data
+  } catch (e) { fail(e, 'Could not save the change') }
+  finally { inlineSaving.value = null }
+}
+// A pipeline deal is a NAME, so choosing it inline opens a box for the name and
+// nothing is saved until one is typed.
+const pipelineName = ref<Record<number, string>>({})
+function dealChoiceOf(ln: any) {
+  if (pipelineName.value[ln.id] !== undefined) return PIPELINE
+  return ln.deal_kind === 'pipeline' ? PIPELINE : (ln.deal_code || '')
+}
+function chooseDeal(ln: any, code: string) {
+  if (code === PIPELINE) {
+    pipelineName.value = { ...pipelineName.value, [ln.id]: ln.deal_kind === 'pipeline' ? ln.deal_name : '' }
+    return
+  }
+  const { [ln.id]: _, ...rest } = pipelineName.value
+  pipelineName.value = rest
+  quickSave(ln, { deal_code: code, deal_name: '' })
+}
+function savePipelineName(ln: any) {
+  const name = (pipelineName.value[ln.id] || '').trim()
+  if (!name) return
+  const { [ln.id]: _, ...rest } = pipelineName.value
+  pipelineName.value = rest
+  quickSave(ln, { deal_code: PIPELINE, deal_name: name })
+}
+
 // ---- receipts ----
 const receiptOf = (id: any) => (report.value?.receipts || []).find((r: any) => r.id === id)
 const editingReceipt = computed(() =>
@@ -404,51 +459,6 @@ onMounted(async () => {
         <button v-if="report.permissions.edit" class="btn-secondary" @click="saveHeader">Save</button>
       </div>
 
-      <!-- ---------- receipts ---------- -->
-      <div class="receipts">
-        <div class="row">
-          <strong>Receipts</strong>
-          <template v-if="report.permissions.edit">
-            <label class="btn-secondary file-btn">Upload files
-              <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
-            <label class="btn-secondary file-btn">Upload a folder
-              <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
-            <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
-              Read {{ pendingCount }} waiting</button>
-          </template>
-          <span v-if="progress" class="muted">{{ progress }}</span>
-          <span v-else class="muted">PDF, JPG, PNG, iPhone HEIC and other images. Each receipt read becomes a line for you to complete.</span>
-        </div>
-        <table v-if="report.receipts?.length" class="data-table compact">
-          <tbody>
-            <tr v-for="rc in report.receipts" :key="rc.id">
-              <td><button class="link" @click="viewing = { receipt_id: rc.id, receipt_page: 1 }">📎 {{ rc.filename }}</button>
-                <span v-if="rc.page_count > 1" class="muted"> ({{ rc.page_count }} pages)</span></td>
-              <td :class="{ 'warn-text': rc.status === 'error' || rc.status === 'no_receipt' }">
-                {{ RSTATUS[rc.status] || rc.status }}<template v-if="rc.error"> — {{ rc.error }}</template></td>
-              <td class="muted">{{ linesFrom(rc.id) }} line(s)</td>
-              <td><span v-if="rc.duplicate_of" class="warn-text">also on another report</span></td>
-              <td class="row-actions">
-                <template v-if="report.permissions.edit">
-                  <button v-if="!linesFrom(rc.id) && rc.status !== 'pending'" class="link" @click="rereadReceipt(rc)">Read again</button>
-                  <button class="link" @click="lineForReceipt(rc)">Add a line for it</button>
-                  <button class="link" @click="removeReceipt(rc)">Remove</button>
-                </template>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div v-if="viewing && !editing" class="view-panel">
-        <div class="row"><button class="link" @click="viewing = null">Close receipt</button></div>
-        <ReceiptViewer :report-id="report.id" :receipt-id="viewing.receipt_id" :page="viewing.receipt_page"
-                       :content-type="receiptOf(viewing.receipt_id)?.content_type"
-                       :view-type="receiptOf(viewing.receipt_id)?.view_type"
-                       :filename="receiptOf(viewing.receipt_id)?.filename"
-                       :extracted="viewing.extracted" :amount="viewing.amount" />
-      </div>
-
       <table class="data-table">
         <thead><tr>
           <th>Date / period</th><th>Category</th><th>Purpose</th><th>Deal</th>
@@ -459,11 +469,36 @@ onMounted(async () => {
               :class="{ bad: report.check.by_line[ln.id]?.errors.length }">
             <td>{{ ln.line_date }}<template v-if="ln.line_date_end"> – {{ ln.line_date_end }}</template></td>
             <td :title="ln.category_account">{{ ln.category_name || ln.category_account }}</td>
-            <td>{{ ln.purpose }}</td>
+            <td>
+              <select v-if="report.permissions.edit" class="cell-select" :value="ln.purpose || ''"
+                      :disabled="inlineSaving === ln.id"
+                      @change="(e: any) => quickSave(ln, { purpose: e.target.value })">
+                <option value="" disabled>choose…</option>
+                <option v-for="p in options.purposes" :key="p" :value="p">{{ p }}</option>
+              </select>
+              <template v-else>{{ ln.purpose }}</template>
+            </td>
             <td>
               <template v-if="ln.splits.length">
                 <div v-for="s in ln.splits" :key="s.id" class="split-cell">
                   {{ dealOf(s) }} <span class="muted">{{ fmt(s.amount) }}</span></div>
+                <div v-if="report.permissions.edit" class="muted">split — Edit to change</div>
+              </template>
+              <template v-else-if="report.permissions.edit">
+                <select class="cell-select" :value="dealChoiceOf(ln)" :disabled="inlineSaving === ln.id"
+                        @change="(e: any) => chooseDeal(ln, e.target.value)">
+                  <option value="" disabled>choose…</option>
+                  <option v-for="d in options.deals" :key="d.code" :value="d.code">{{ dealLabel(d) }}</option>
+                  <option :value="PIPELINE">Pipeline deal — type its name…</option>
+                </select>
+                <input v-if="pipelineName[ln.id] !== undefined" v-model="pipelineName[ln.id]"
+                       class="cell-select" placeholder="pipeline deal name, then Enter"
+                       @keyup.enter="savePipelineName(ln)" @blur="savePipelineName(ln)" />
+                <!-- The choice reads "Pipeline deal", so the NAME is shown under it. -->
+                <button v-else-if="ln.deal_kind === 'pipeline'" class="link pipe-name"
+                        title="Rename the pipeline deal"
+                        @click="pipelineName = { ...pipelineName, [ln.id]: ln.deal_name || '' }">
+                  {{ ln.deal_name }}</button>
               </template>
               <template v-else>{{ dealOf(ln) }}</template>
             </td>
@@ -603,6 +638,51 @@ onMounted(async () => {
       </div>
       <div v-if="report.check.warnings.length" class="notice soft">
         <ul><li v-for="m in report.check.warnings" :key="m">{{ m }}</li></ul>
+      </div>
+
+      <!-- ---------- receipts ---------- -->
+      <div class="receipts">
+        <div class="row">
+          <strong>Receipts</strong>
+          <template v-if="report.permissions.edit">
+            <label class="btn-secondary file-btn">Upload files
+              <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
+            <label class="btn-secondary file-btn">Upload a folder
+              <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
+            <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
+              Read {{ pendingCount }} waiting</button>
+          </template>
+          <span v-if="progress" class="muted">{{ progress }}</span>
+          <span v-else class="muted">PDF, JPG, PNG, iPhone HEIC and other images. Each receipt read becomes a line for you to complete.</span>
+        </div>
+        <table v-if="report.receipts?.length" class="data-table compact">
+          <tbody>
+            <tr v-for="rc in report.receipts" :key="rc.id">
+              <td><button class="link" @click="viewing = { receipt_id: rc.id, receipt_page: 1 }">📎 {{ rc.filename }}</button>
+                <span v-if="rc.page_count > 1" class="muted"> ({{ rc.page_count }} pages)</span></td>
+              <td :class="{ 'warn-text': rc.status === 'error' || rc.status === 'no_receipt' }">
+                {{ RSTATUS[rc.status] || rc.status }}<template v-if="rc.error"> — {{ rc.error }}</template></td>
+              <td class="muted">{{ linesFrom(rc.id) }} line(s)</td>
+              <td><span v-if="rc.duplicate_of" class="warn-text">also on another report</span></td>
+              <td class="row-actions">
+                <template v-if="report.permissions.edit">
+                  <button v-if="!linesFrom(rc.id) && rc.status !== 'pending'" class="link" @click="rereadReceipt(rc)">Read again</button>
+                  <button class="link" @click="lineForReceipt(rc)">Add a line for it</button>
+                  <button class="link" @click="removeReceipt(rc)">Remove</button>
+                </template>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="viewing && !editing" class="view-panel">
+        <div class="row"><button class="link" @click="viewing = null">Close receipt</button></div>
+        <ReceiptViewer :report-id="report.id" :receipt-id="viewing.receipt_id" :page="viewing.receipt_page"
+                       :content-type="receiptOf(viewing.receipt_id)?.content_type"
+                       :view-type="receiptOf(viewing.receipt_id)?.view_type"
+                       :filename="receiptOf(viewing.receipt_id)?.filename"
+                       :extracted="viewing.extracted" :amount="viewing.amount" />
       </div>
 
       <div class="actions">
@@ -799,6 +879,8 @@ input, select, textarea {
 .view-panel > :last-child { flex: 1; }
 .splits { border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .split-cell { white-space: nowrap; }
+.cell-select { width: 100%; min-width: 150px; max-width: 230px; font-size: 12px; padding: 3px 4px; }
+.pipe-name { display: block; padding: 2px 0 0; text-align: left; }
 .link { background: none; border: none; color: var(--color-primary, #2f6f4f); cursor: pointer; padding: 0 4px; font-size: 12px; }
 .row-actions { white-space: nowrap; }
 .add { margin: 4px 0 10px; }
