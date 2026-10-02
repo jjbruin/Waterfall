@@ -266,6 +266,19 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v563` = `577511b` (EVERY MRI JOURNAL-ENTRY DESCRIPTION TO THE RULE, AND EXPENSE
+    CODING'S RECEIPT OPENS THE POP-UP. Jim: "any journal entry descriptions getting
+    loaded into MRI need to follow the rule" -- applied in `build_gl_csv`, the one
+    writer treasury, intercompany and expense all use; `validate_gl` warns which lines
+    it will clean. The AMB6 August GL file MRI accepted had punctuation in 23 of 51
+    descriptions (asked of accounting). `treasury_upload_check` 58 -> 61: identical in
+    every field but the description, which must equal the accepted text cleaned.
+    Intercompany's JE Template rebuild still line-for-line identical. The coding page's
+    receipt link showed a broken image -- a PDF in an <img>, no content type passed;
+    `ReceiptViewer` now reads the type from the file. Span vs live `fae6013`: `577511b`
+    plus docs. Clean worktree, gated; site 200. In the container: treasury_upload 26/0
+    (the accepted-file rebuild skips there), expense_coding 47/0; the served chunk
+    carries the pop-up.)
   - `v562` = `fae6013` (EXPENSE JE DESCRIPTIONS HELD TO MRI'S RULE -- 80 characters,
     letters, digits and spaces only (Jim, Oct 2 2026). `ER FK <deal> <comment>`, `IC ER
     ...` for intercompany, comment words the deal already says dropped, long common
