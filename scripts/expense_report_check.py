@@ -379,6 +379,14 @@ def main():
     chk("an admin-role user WITH Accounting can open it", st == 200, st)
     chk("...and is offered the return", (b.get("permissions") or {}).get("accounting_return") is True)
     chk("...and may list the employees", call("GET", "/employees", "dev2")[0] == 200)
+    chk("...but may NOT set an approver -- only the admin USERNAME may",
+        call("PUT", "/employees/%d" % ids["emp"], "dev2", {"approver_user_id": ids["dev2"]})[0] == 403)
+    chk("...nor may the developer without Accounting",
+        call("PUT", "/employees/%d" % ids["emp"], "dev", {"approver_user_id": ids["dev"]})[0] == 403)
+    st, b = call("GET", "/employees", "admin")
+    chk("...and the approver was left alone",
+        [e.get("approver_user_id") for e in b.get("employees", []) if e.get("user_id") == ids["emp"]]
+        == [ids["mgr"]], b.get("employees"))
     st, b = call("GET", "/reports/%d" % r5, "admin")
     chk("the admin USERNAME always can", st == 200, st)
     chk("...and has the return offered", (b.get("permissions") or {}).get("accounting_return") is True)

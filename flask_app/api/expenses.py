@@ -254,6 +254,13 @@ def get_employees():
 @login_required
 @roles_exactly("admin")
 def put_employee(user_id):
+    # Who approves whom is the Admin's -- the `admin` USERNAME, not the role
+    # (Jim, Oct 2 2026: "There is only 1 Admin for the system"). The same rule
+    # as assigning sections: a developer with the admin role must not be able
+    # to make themselves, or anyone, an approver.
+    from flask_app.auth.sections import SUPERUSER
+    if _actor().get("username") != SUPERUSER:
+        return jsonify({"error": "Only the %s account sets approvers." % SUPERUSER}), 403
     return _run("save employee", ex.save_employee, get_engine(), user_id, _body(),
                 _actor().get("username", "unknown"))
 

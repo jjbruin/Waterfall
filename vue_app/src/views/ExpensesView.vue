@@ -23,7 +23,8 @@ const dataStore = useDataStore()
 type Tab = 'mine' | 'to_approve' | 'all' | 'setup'
 const tab = ref<Tab>('mine')
 const canSeeSetup = computed(() => auth.canEditAccounting)   // admin + accounting roles
-const isAdminRole = computed(() => auth.isAdmin)
+// The `admin` USERNAME, not the role: the server says so (Jim, Oct 2 2026).
+const isAdminRole = computed(() => auth.canAssignSections)
 
 const options = ref<any>({ categories: [], purposes: [], deals: [], mileage_rates: [] })
 const me = ref<any>(null)
