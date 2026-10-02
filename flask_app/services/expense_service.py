@@ -57,10 +57,37 @@ PURPOSES = ("Business Development", "Company Related", "Meetings & Conferences",
 #: its general business".
 OPERATIONS = {"code": "OPERATIONS", "kind": "operations", "name": "Operations"}
 
-#: Accounting's own source for the category list: "should be able to pull
-#: from the GL Tables for all MR5* codes". TYPE 'I' only -- the M rows are
-#: roll-up headers ("Other Expenses"), not accounts.
-CATEGORY_PREFIX = "MR5"
+#: The choice that means "a pipeline deal -- I will type its name". Jim, Oct 2
+#: 2026: an owned property is picked from the list asset management uses;
+#: "otherwise, allow the employee to type the name of the pipeline deal". It is
+#: what the screen SENDS; a pipeline line is stored with kind 'pipeline', no
+#: code and the typed name, never with this word in the code column.
+PIPELINE = "PIPELINE"
+
+#: The categories an employee picks from: the FIFTEEN in accounting's template
+#: (`Expense Reimbursement - Example.xlsx`, Account Code tab, C2:C16), exactly as
+#: named there. Jim, Oct 2 2026: "Use the 15 accounts in accounting's template"
+#: -- all MR5* came to 52 on production and carried Payroll, Interest and
+#: Depreciation. The ACCOUNT NUMBER is resolved from `gl_accounts` by name, so
+#: the chart stays the one source of the number; a name the chart does not carry
+#: is REPORTED in `options()['missing_categories']`, never silently dropped.
+CATEGORY_NAMES = (
+    "Broken Deal Expense",
+    "Other Expense: Advertising & Marketing",
+    "Other Expense: Bank Fees",
+    "Other Expense: Dues & Subscriptions",
+    "Other Expense: Education & Training",
+    "Other Expense: IT & Maintenance",
+    "Other Expense: Meals & Entertainment",
+    "Other Expense: Meetings & Conferences",
+    "Other Expense: Office Expense",
+    "Other Expense: Postage & Delivery",
+    "Other Expense: Research",
+    "Other Expense: Software",
+    "Other Expense: Telephone & Internet",
+    "Other Expense: Travel",
+    "Professional Fees: Other",
+)
 
 #: The CEO and President approve any report; review roles, not login roles.
 BACKUP_REVIEW_ROLES = ("ceo", "president")
@@ -135,7 +162,7 @@ def ensure_tables(engine) -> None:
         f"""CREATE TABLE IF NOT EXISTS er_line_splits (
             id        {pk},
             line_id   INTEGER NOT NULL,
-            deal_code TEXT NOT NULL,
+            deal_code TEXT,
             deal_kind TEXT,
             deal_name TEXT,
             amount    DOUBLE PRECISION NOT NULL)""",
@@ -300,48 +327,66 @@ def options(engine) -> dict:
     from sqlalchemy import inspect
     insp = inspect(engine)
     cats: List[dict] = []
+    by_name: Dict[str, str] = {}
     if insp.has_table("gl_accounts"):
         with engine.connect() as c:
             rows = c.execute(text(
-                'SELECT "ACCTNUM", "ACCTNAME" FROM gl_accounts WHERE "ACCTNUM" LIKE :p '
-                'AND "TYPE" = :t ORDER BY "ACCTNUM"'),
-                {"p": CATEGORY_PREFIX + "%", "t": "I"}).fetchall()
-        cats = [{"account": str(a).strip(), "name": str(n or "").strip()} for a, n in rows]
+                'SELECT "ACCTNUM", "ACCTNAME" FROM gl_accounts WHERE "TYPE" = :t'),
+                {"t": "I"}).fetchall()
+        # MRI pads ACCTNAME with trailing spaces; compare stripped and caseless.
+        for a, n in rows:
+            by_name.setdefault(str(n or "").strip().lower(), str(a).strip())
+    missing = []
+    for name in CATEGORY_NAMES:
+        acct = by_name.get(name.lower())
+        if acct:
+            cats.append({"account": acct, "name": name})
+        else:
+            missing.append(name)
 
-    deals = [dict(OPERATIONS)]
-    if insp.has_table("deals"):
-        with engine.connect() as c:
-            rows = c.execute(text(
-                'SELECT vcode, "Investment_Name", "Portfolio_Name", "Lifecycle" FROM deals')).fetchall()
-        owned = []
-        for vc, name, parent, life in rows:
-            # A child property is reached through its parent deal; a sold deal
-            # takes no new expenses.
-            if (parent or "").strip() or (life or "").strip().lower() == "sold":
-                continue
-            owned.append({"code": str(vc), "kind": "deal",
-                          "name": str(name or vc).strip()})
-        # The deals table carries some deals under two codes with one name
-        # (Adirondack RV Park is PADIRON and P0000064). Two identical entries in
-        # a dropdown cannot be told apart, so a repeated name shows its code.
-        seen: Dict[str, int] = {}
-        for d in owned:
-            seen[d["name"].lower()] = seen.get(d["name"].lower(), 0) + 1
-        for d in owned:
-            if seen[d["name"].lower()] > 1:
-                d["name"] = "%s (%s)" % (d["name"], d["code"])
-        deals += sorted(owned, key=lambda d: d["name"].lower())
-    if insp.has_table("prospect_deals"):
-        with engine.connect() as c:
-            rows = c.execute(text(
-                "SELECT vcode, deal_name, stage, onboarded_vcode FROM prospect_deals")).fetchall()
-        pipe = [{"code": str(vc), "kind": "prospect",
-                 "name": "%s (pipeline, %s)" % (str(n or vc).strip(), vc)}
-                for vc, n, st, onb in rows
-                if (st or "") not in ("closed", "passed") and not onb]
-        deals += sorted(pipe, key=lambda d: d["name"].lower())
-    return {"categories": cats, "purposes": list(PURPOSES), "deals": deals,
+    deals = [dict(OPERATIONS)] + am_deal_list()
+    return {"categories": cats, "missing_categories": missing,
+            "purposes": list(PURPOSES), "deals": deals,
             "mileage_rates": mileage_rates(engine)}
+
+
+def am_deal_list() -> List[dict]:
+    """The owned deals, EXACTLY as asset management picks them in Deal Analysis.
+
+    Same source (`data_service.get_inv_display`, behind `/api/data/deals`) and
+    the same label -- "Name (vcode)", " -- Sold" for a deal sold this year -- so
+    an employee and an analyst see one list. Not a second query over `deals`.
+    The one difference is deliberate: a deal carried under two codes is offered
+    under ONE (below).
+    """
+    from flask_app.services import data_service
+    inv = data_service.get_inv_display(data_service.get_data()["inv"])
+    out = []
+    if inv is None or inv.empty:
+        return out
+    # ONE CODE PER DEAL (Jim, Oct 2 2026: "Keep the codes consistent. If most
+    # are P000... then use the P000 otherwise use the entity id version").
+    # Where a name is carried under a P000 code AND an entity-id code
+    # (Adirondack RV Park: P0000064 and PADIRON), only the P000 is offered; a
+    # deal that has only an entity-id code (P3RDAVE) keeps it. Grouped on the
+    # exact name, so "Declan & Walton" and "Declan & Walton Apartments" are two.
+    import re
+    p000 = re.compile(r"^P\d{7}$")
+    has_p000 = {str(n).strip().lower() for n, vc in zip(inv["Investment_Name"].fillna(""),
+                                                       inv["vcode"].fillna(""))
+                if p000.match(str(vc).strip())}
+    for _, r in inv.iterrows():
+        vc = str(r.get("vcode") or "").strip()
+        if not vc:
+            continue
+        name = str(r.get("Investment_Name") or "").strip() or vc
+        if not p000.match(vc) and name.lower() in has_p000:
+            continue
+        sold = (str(r.get("Sale_Status") or "").upper() == "SOLD" or
+                str(r.get("Lifecycle") or "").strip().upper() == "SOLD")
+        out.append({"code": vc, "kind": "deal", "name": name,
+                    "label": "%s (%s)%s" % (name, vc, " -- Sold" if sold else "")})
+    return out
 
 
 def employees(engine) -> List[dict]:
@@ -531,7 +576,7 @@ def line_problems(line: dict, categories: set, deal_codes: set) -> tuple:
     if not line.get("category_account"):
         errs.append("has no accounting category")
     elif categories and line["category_account"] not in categories:
-        errs.append("names category %s, which is not an MR5 expense account"
+        errs.append("names category %s, which is not on accounting's list"
                     % line["category_account"])
     if not line.get("purpose"):
         errs.append("has no purpose")
@@ -553,12 +598,14 @@ def line_problems(line: dict, categories: set, deal_codes: set) -> tuple:
             errs.append("is split %s across deals but totals %s" % (
                 "{:,.2f}".format(tot), "{:,.2f}".format(amt)))
         for s in splits:
-            if deal_codes and s["deal_code"] not in deal_codes:
-                errs.append("is split to %s, which is not on the deal list" % s["deal_code"])
-    elif not line.get("deal_code"):
-        errs.append("has no deal (choose Operations for general business)")
-    elif deal_codes and line["deal_code"] not in deal_codes:
-        errs.append("names deal %s, which is not on the deal list" % line["deal_code"])
+            p = _deal_problem(s.get("deal_code"), s.get("deal_kind"), s.get("deal_name"), deal_codes)
+            if p:
+                errs.append("has a split that " + p)
+    else:
+        p = _deal_problem(line.get("deal_code"), line.get("deal_kind"), line.get("deal_name"),
+                          deal_codes)
+        if p:
+            errs.append(p)
     if line.get("receipt") not in ("Y", "N"):
         errs.append("does not say whether a receipt was submitted")
     elif line["receipt"] == "N" and not (line.get("no_receipt_reason") or "").strip():
@@ -570,6 +617,17 @@ def _option_sets(engine):
     o = options(engine)
     return ({x["account"] for x in o["categories"]}, {d["code"] for d in o["deals"]},
             {d["code"]: d for d in o["deals"]}, {x["account"]: x["name"] for x in o["categories"]})
+
+
+def _deal_problem(code, kind, name, deal_codes) -> Optional[str]:
+    """Why a deal choice is incomplete, or None. One rule for a line and a split."""
+    if kind == "pipeline":
+        return None if (name or "").strip() else "names a pipeline deal but not which one"
+    if not code:
+        return "has no deal (choose Operations for general business)"
+    if deal_codes and code not in deal_codes:
+        return "names deal %s, which is not on the deal list" % code
+    return None
 
 
 def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
@@ -595,9 +653,12 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
     else:
         amount = _money(body.get("amount"), "Amount")
 
-    def deal_fields(code):
+    def deal_fields(code, typed):
+        """(code, kind, name) to store. A pipeline deal is its typed name."""
         if not code:
             return None, None, None
+        if code == PIPELINE:
+            return None, "pipeline", (typed or "").strip() or None
         dd = deal_by_code.get(code) or {}
         return code, dd.get("kind"), dd.get("name") or code
 
@@ -610,11 +671,11 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
         if not code:
             raise ValueError("A split row has an amount and no deal.")
         if a is None:
-            raise ValueError("The split to %s has no amount." % code)
-        c_, k_, n_ = deal_fields(code)
+            raise ValueError("A split row has a deal and no amount.")
+        c_, k_, n_ = deal_fields(code, s.get("deal_name"))
         splits.append({"deal_code": c_, "deal_kind": k_, "deal_name": n_, "amount": a})
     deal_code, deal_kind, deal_name = (None, None, None) if splits else \
-        deal_fields((body.get("deal_code") or "").strip() or None)
+        deal_fields((body.get("deal_code") or "").strip() or None, body.get("deal_name"))
 
     receipt = (body.get("receipt") or "").strip().upper() or None
     vals = {"report": r["id"], "d": d, "de": d_end,

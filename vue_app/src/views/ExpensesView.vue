@@ -37,8 +37,12 @@ const fmt = (v: any) => v == null ? '' :
 const STATUS: Record<string, string> = {
   draft: 'Draft', submitted: 'Submitted', returned: 'Returned', approved: 'Approved',
 }
-const dealName = (code: string) =>
-  (options.value.deals.find((d: any) => d.code === code) || {}).name || code
+// A pipeline deal is not on any list: the employee types its name (Jim, Oct 2
+// 2026). PIPELINE is what the form SENDS; the server stores the typed name.
+const PIPELINE = 'PIPELINE'
+const dealLabel = (d: any) => d.label || d.name
+const dealOf = (x: any) => x.deal_kind === 'pipeline'
+  ? `${x.deal_name} (pipeline)` : x.deal_name
 
 function fail(e: any, what: string) {
   const msg = e?.response?.data?.error || e?.message || String(e)
@@ -112,10 +116,10 @@ async function deleteReport() {
 // ---- a line ----
 const blankLine = () => ({
   id: null as number | null, line_date: '', line_date_end: '', category_account: '',
-  purpose: '', deal_code: 'OPERATIONS', vendor: '', comment: '', amount: '',
+  purpose: '', deal_code: 'OPERATIONS', deal_name: '', vendor: '', comment: '', amount: '',
   miles: '', receipt: 'Y', no_receipt_reason: '',
   isPeriod: false, isMileage: false, isSplit: false,
-  splits: [] as { deal_code: string; amount: string; pct: string }[],
+  splits: [] as { deal_code: string; deal_name: string; amount: string; pct: string }[],
 })
 const editing = ref<any>(null)
 
@@ -125,10 +129,15 @@ function editLine(ln: any) {
     ...blankLine(), ...ln,
     line_date_end: ln.line_date_end || '', vendor: ln.vendor || '',
     comment: ln.comment || '', no_receipt_reason: ln.no_receipt_reason || '',
-    amount: ln.amount ?? '', miles: ln.miles ?? '', deal_code: ln.deal_code || '',
+    amount: ln.amount ?? '', miles: ln.miles ?? '',
+    deal_code: ln.deal_kind === 'pipeline' ? PIPELINE : (ln.deal_code || ''),
+    deal_name: ln.deal_kind === 'pipeline' ? (ln.deal_name || '') : '',
     isPeriod: !!ln.line_date_end, isMileage: ln.miles != null,
     isSplit: (ln.splits || []).length > 0,
-    splits: (ln.splits || []).map((s: any) => ({ deal_code: s.deal_code, amount: String(s.amount), pct: '' })),
+    splits: (ln.splits || []).map((s: any) => ({
+      deal_code: s.deal_kind === 'pipeline' ? PIPELINE : s.deal_code,
+      deal_name: s.deal_kind === 'pipeline' ? (s.deal_name || '') : '',
+      amount: String(s.amount), pct: '' })),
   }
 }
 
@@ -151,8 +160,9 @@ function startSplit() {
   const e = editing.value
   e.isSplit = true
   if (!e.splits.length) {
-    e.splits = [{ deal_code: e.deal_code === 'OPERATIONS' ? '' : e.deal_code, amount: '', pct: '' },
-                { deal_code: '', amount: '', pct: '' }]
+    e.splits = [{ deal_code: e.deal_code === 'OPERATIONS' ? '' : e.deal_code,
+                  deal_name: e.deal_name, amount: '', pct: '' },
+                { deal_code: '', deal_name: '', amount: '', pct: '' }]
   }
 }
 // Percentages are a typing aid: they become amounts here, rounded ONCE, with
@@ -174,10 +184,14 @@ async function saveLine() {
   const body: any = {
     line_date: e.line_date, line_date_end: e.isPeriod ? e.line_date_end : '',
     category_account: e.category_account, purpose: e.purpose,
-    deal_code: e.isSplit ? '' : e.deal_code, vendor: e.vendor, comment: e.comment,
+    deal_code: e.isSplit ? '' : e.deal_code,
+    deal_name: !e.isSplit && e.deal_code === PIPELINE ? e.deal_name : '',
+    vendor: e.vendor, comment: e.comment,
     amount: e.isMileage ? '' : e.amount, miles: e.isMileage ? e.miles : '',
     receipt: e.receipt, no_receipt_reason: e.receipt === 'N' ? e.no_receipt_reason : '',
-    splits: e.isSplit ? e.splits.map((s: any) => ({ deal_code: s.deal_code, amount: s.amount })) : [],
+    splits: e.isSplit ? e.splits.map((s: any) => ({
+      deal_code: s.deal_code, amount: s.amount,
+      deal_name: s.deal_code === PIPELINE ? s.deal_name : '' })) : [],
   }
   try {
     const url = `/api/expenses/reports/${report.value.id}/lines`
@@ -304,9 +318,9 @@ onMounted(async () => {
             <td>
               <template v-if="ln.splits.length">
                 <div v-for="s in ln.splits" :key="s.id" class="split-cell">
-                  {{ s.deal_name }} <span class="muted">{{ fmt(s.amount) }}</span></div>
+                  {{ dealOf(s) }} <span class="muted">{{ fmt(s.amount) }}</span></div>
               </template>
-              <template v-else>{{ ln.deal_name }}</template>
+              <template v-else>{{ dealOf(ln) }}</template>
             </td>
             <td>{{ ln.vendor }}</td>
             <td class="comment" :title="ln.comment">{{ ln.comment }}
@@ -355,9 +369,12 @@ onMounted(async () => {
         <div class="row">
           <label v-if="!editing.isSplit">Deal
             <select v-model="editing.deal_code">
-              <option v-for="d in options.deals" :key="d.code" :value="d.code">{{ d.name }}</option>
+              <option v-for="d in options.deals" :key="d.code" :value="d.code">{{ dealLabel(d) }}</option>
+              <option :value="PIPELINE">Pipeline deal — type its name…</option>
             </select>
           </label>
+          <label v-if="!editing.isSplit && editing.deal_code === PIPELINE">Pipeline deal
+            <input v-model="editing.deal_name" placeholder="e.g. Market at Poplar" /></label>
           <button v-if="!editing.isSplit" class="link" @click="startSplit">Split across deals…</button>
           <label>Vendor <input v-model="editing.vendor" placeholder="if applicable" /></label>
           <label class="grow">Comment <input v-model="editing.comment"
@@ -384,14 +401,16 @@ onMounted(async () => {
           <div v-for="(s, i) in editing.splits" :key="i" class="row">
             <select v-model="s.deal_code">
               <option value="" disabled>deal…</option>
-              <option v-for="d in options.deals" :key="d.code" :value="d.code">{{ d.name }}</option>
+              <option v-for="d in options.deals" :key="d.code" :value="d.code">{{ dealLabel(d) }}</option>
+              <option :value="PIPELINE">Pipeline deal — type its name…</option>
             </select>
+            <input v-if="s.deal_code === PIPELINE" v-model="s.deal_name" placeholder="pipeline deal name" />
             <input v-model="s.pct" class="num-in" placeholder="%" />
             <input v-model="s.amount" class="num-in" placeholder="amount" />
             <button class="link" @click="editing.splits.splice(i, 1)">remove</button>
           </div>
           <div class="row">
-            <button class="link" @click="editing.splits.push({ deal_code: '', amount: '', pct: '' })">+ another deal</button>
+            <button class="link" @click="editing.splits.push({ deal_code: '', deal_name: '', amount: '', pct: '' })">+ another deal</button>
             <span :class="Math.abs(splitTotal - (lineAmount || 0)) < 0.005 ? 'muted' : 'warn-text'">
               split {{ fmt(splitTotal) }} of {{ fmt(lineAmount) }}</span>
             <button class="link" @click="editing.isSplit = false; editing.splits = []">no split</button>
@@ -510,6 +529,11 @@ onMounted(async () => {
           </tr>
         </tbody>
       </table>
+
+      <div v-if="options.missing_categories?.length" class="notice">
+        These categories from accounting's template are not in the chart of accounts, so
+        employees cannot choose them: {{ options.missing_categories.join(', ') }}.
+      </div>
 
       <h4>Mileage rate</h4>
       <p class="muted">Mileage is miles × the rate in force on the expense's date, computed by the

@@ -46,6 +46,33 @@ def main():
 
     app = create_app()
     app.config["DATABASE_URL"] = None
+
+    # THE OWNED-DEAL LIST IS ASSET MANAGEMENT'S, so the check feeds the REAL
+    # `get_inv_display` a fixture rather than standing in for it: a sold-last-
+    # year deal, a sold-this-year deal, a child property, and two codes sharing
+    # a name, exactly the shapes production carries.
+    import pandas as pd
+    from flask_app.services import data_service
+    this_year = datetime.now().year
+    inv = pd.DataFrame([
+        {"vcode": "P1", "Investment_Name": "Apple Self Storage", "Portfolio_Name": "",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Stable"},
+        {"vcode": "P2", "Investment_Name": "Sold Plaza", "Portfolio_Name": "",
+         "Sale_Status": "SOLD", "Sale_Date": "%d-03-31" % (this_year - 1), "Lifecycle": "Sold"},
+        {"vcode": "P5", "Investment_Name": "Sold This Year", "Portfolio_Name": "",
+         "Sale_Status": "SOLD", "Sale_Date": "%d-03-31" % this_year, "Lifecycle": "Sold"},
+        {"vcode": "P3", "Investment_Name": "Child Parcel", "Portfolio_Name": "Gallery of New Hampshire",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Income"},
+        {"vcode": "P4", "Investment_Name": "Gallery of New Hampshire", "Portfolio_Name": "",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Income"},
+        {"vcode": "PADIRON", "Investment_Name": "Adirondack RV Park", "Portfolio_Name": "",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Income"},
+        {"vcode": "P0000064", "Investment_Name": "Adirondack RV Park", "Portfolio_Name": "",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Income"},
+        {"vcode": "P3RDAVE", "Investment_Name": "3rd Ave & Indian School", "Portfolio_Name": "",
+         "Sale_Status": "", "Sale_Date": None, "Lifecycle": "Development"},
+    ])
+    data_service.get_data = lambda *a, **k: {"inv": inv}
     client = app.test_client()
 
     people = {"admin": "admin", "emp": "analyst", "mgr": "analyst", "other": "analyst",
@@ -60,9 +87,11 @@ def main():
         with eng.begin() as c:
             c.execute(text('CREATE TABLE IF NOT EXISTS gl_accounts ("ACCTNUM" TEXT, "ACCTNAME" TEXT, "TYPE" TEXT)'))
             c.execute(text("DELETE FROM gl_accounts"))
+            # MRI pads ACCTNAME, so the fixture does too.
             for a, n, t in (("MR53000000", "Other Expenses", "M"),
-                            ("MR53000004", "Other Expense: Meals & Entertainment", "I"),
-                            ("MR53000011", "Other Expense: Travel", "I"),
+                            ("MR53000004", "Other Expense: Meals & Entertainment   ", "I"),
+                            ("MR53000011", "Other Expense: Travel   ", "I"),
+                            ("MR51000002", "Payroll: Wages", "I"),
                             ("MR11000012", "Deal Cost Receivable", "B")):
                 c.execute(text('INSERT INTO gl_accounts VALUES (:a, :n, :t)'), {"a": a, "n": n, "t": t})
             c.execute(text('CREATE TABLE IF NOT EXISTS deals (vcode TEXT, "Investment_Name" TEXT, '
@@ -74,15 +103,7 @@ def main():
                 c.execute(text("INSERT INTO deals (vcode, \"Investment_Name\", \"Portfolio_Name\", "
                                "\"Lifecycle\") VALUES (:a, :b, :c, :d)"),
                           dict(zip("abcd", row)))
-        from sqlalchemy import inspect
-        if not inspect(eng).has_table("prospect_deals"):
-            with eng.begin() as c:
-                c.execute(text("CREATE TABLE prospect_deals (vcode TEXT, deal_name TEXT, "
-                               "stage TEXT, onboarded_vcode TEXT)"))
         with eng.begin() as c:
-            for vc, n, st in (("N1", "Windsor Square", "due_diligence"), ("N2", "Dead Deal", "passed")):
-                c.execute(text("INSERT INTO prospect_deals (vcode, deal_name, stage) VALUES (:v, :n, :s)"),
-                          {"v": vc, "n": n, "s": st})
             c.execute(text("INSERT INTO review_roles (user_id, review_role) VALUES (:u, 'ceo')"),
                       {"u": ids["ceo"]})
             c.execute(text("INSERT INTO review_roles (user_id, review_role) VALUES (:u, 'president')"),
@@ -124,12 +145,24 @@ def main():
     st, o = call("GET", "/options", "emp")
     accts = [c["account"] for c in o["categories"]]
     codes = [d["code"] for d in o["deals"]]
-    chk("categories are MR5 income-statement accounts", accts == ["MR53000004", "MR53000011"], accts)
-    chk("a roll-up header (TYPE M) is not a category", "MR53000000" not in accts)
+    chk("categories are accounting's template names, numbered from the chart",
+        sorted(accts) == ["MR53000004", "MR53000011"], accts)
+    chk("an MR5 account not on the template (Payroll: Wages) is not offered",
+        "MR51000002" not in accts)
+    chk("a template name the chart lacks is REPORTED, not dropped",
+        len(o["missing_categories"]) == 13 and "Broken Deal Expense" in o["missing_categories"],
+        o["missing_categories"])
+    labels = {d["code"]: d.get("label") for d in o["deals"]}
     chk("Operations is offered first", codes[:1] == ["OPERATIONS"])
     chk("an owned deal is offered", "P1" in codes and "P4" in codes)
-    chk("a sold deal and a child property are not", "P2" not in codes and "P3" not in codes)
-    chk("a live pipeline deal is offered, a passed one is not", "N1" in codes and "N2" not in codes)
+    chk("a deal sold LAST year and a child property are not -- Deal Analysis's own rule",
+        "P2" not in codes and "P3" not in codes, codes)
+    chk("a deal sold THIS year still is, marked Sold as Deal Analysis marks it",
+        labels.get("P5") == "Sold This Year (P5) -- Sold", labels.get("P5"))
+    chk("a deal under a P000 code AND an entity-id code is offered once, as the P000",
+        "P0000064" in codes and "PADIRON" not in codes, codes)
+    chk("a deal with only an entity-id code keeps it", "P3RDAVE" in codes, codes)
+    chk("no pipeline deal is listed -- it is typed", "N1" not in codes and "N2" not in codes)
     chk("the purposes are accounting's six", len(o["purposes"]) == 6)
 
     print("\n3. Setup: the admin sets approvers; nobody approves themselves")
@@ -188,9 +221,33 @@ def main():
     nr = b["lines"][-1]["id"]
     call("PUT", "/reports/%d/lines/%d" % (rid, nr), "emp", {**GOOD, "receipt": "N",
                                                            "no_receipt_reason": "Lost"})
+    st, b = add(rid, deal_code="PIPELINE", deal_name="")
+    chk("a pipeline deal with no name blocks submit",
+        any("pipeline deal but not which one" in e for e in b["check"]["errors"]), b["check"]["errors"])
+    pl = b["lines"][-1]["id"]
+    st, b = call("PUT", "/reports/%d/lines/%d" % (rid, pl), "emp",
+                 {**GOOD, "deal_code": "PIPELINE", "deal_name": "Market at Poplar"})
+    got = [x for x in b["lines"] if x["id"] == pl][0]
+    chk("a typed pipeline deal is stored as its name, with no code",
+        got["deal_kind"] == "pipeline" and got["deal_name"] == "Market at Poplar"
+        and got["deal_code"] is None, got)
+    chk("...and is complete", not (b["check"]["by_line"].get(str(pl)) or
+                                   b["check"]["by_line"].get(pl))["errors"])
+    st, b = call("PUT", "/reports/%d/lines/%d" % (rid, pl), "emp",
+                 {**GOOD, "amount": "100", "splits": [
+                     {"deal_code": "P1", "amount": "70"},
+                     {"deal_code": "PIPELINE", "deal_name": "Pine Tree", "amount": "30"}]})
+    got = [x for x in b["lines"] if x["id"] == pl][0]
+    chk("a split may mix an owned deal and a typed pipeline deal",
+        sorted((x["deal_kind"], x["deal_name"]) for x in got["splits"])
+        == [("deal", "Apple Self Storage"), ("pipeline", "Pine Tree")], got["splits"])
+    st, b = add(rid, deal_code="P2")
+    chk("a deal not on asset management's list is refused at submit",
+        any("not on the deal list" in e for e in b["check"]["errors"]))
+    call("DELETE", "/reports/%d/lines/%d" % (rid, b["lines"][-1]["id"]), "emp")
     st, b = add(rid, category_account="MR53000000")
     chk("a roll-up header named as a category blocks submit",
-        any("not an MR5 expense account" in e for e in b["check"]["errors"]))
+        any("not on accounting's list" in e for e in b["check"]["errors"]))
     call("DELETE", "/reports/%d/lines/%d" % (rid, b["lines"][-1]["id"]), "emp")
 
     print("\n5. A draft is its owner's alone")

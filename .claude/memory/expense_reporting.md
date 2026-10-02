@@ -124,17 +124,21 @@ notes), `er_coding` (accounting's account, entity, description, original kept),
 
 ## Open questions
 
-Answered Oct 2 2026: approvers -> CFO; CEO or President as backup for any report;
-access stays the Admin's, via the existing section checkboxes; receipts upload
-exactly as lease documents do.
+Answered Oct 2 2026 (Jim):
+- Approvers -> CFO; CEO or President as backup for any report; access stays the
+  Admin's; receipts upload exactly as lease documents do.
+- **Owned vs pipeline is the employee's choice**: an owned property from asset
+  management's list, otherwise the pipeline deal's name typed. Phase 3's rule reads
+  `deal_kind`: `deal` -> interco to the owning entity, `pipeline` -> Deal Cost
+  Receivable (`MR11000012`), `operations` -> the category's account.
+- **Every report is reimbursed through TriNet payroll, `MR20000001`, ONE BATCH PER
+  PAYROLL DATE.**
+- **No caps or policy limits.** Everything is subject to manager approval.
+- **"FK - Benefits" is part of the process**: Fred's benefits reimbursement, recurring
+  monthly, added manually by accounting today. Phase 3/4: a recurring reimbursement
+  accounting adds to a batch (not an employee line), carried to each payroll batch.
 
-1. **FOR ACCOUNTING** — the deal rule (pipeline -> Deal Cost Receivable, owned -> interco, Operations ->
-   expense) — accounting to confirm, and the source of "owned" vs "pipeline".
-2. Always reimbursed via TriNet payroll (`MR20000001`)? Batch per payroll date?
-3. One approval step, or manager then accounting manager? Any thresholds or policy
-   limits (per-meal, alcohol), or out of scope?
-4. "FK - Benefits" $3,960.60 is a manual add in the coding workbook's totals — part of
-   this process or outside it?
+Still open: nothing blocking.
 
 ## Phase 1 as built (Oct 2 2026)
 
@@ -159,12 +163,23 @@ proved against five injected defects).
   read. Mileage rate — accounting writes. **No rate is seeded**: mileage lines are
   refused until accounting sets one (Sep 24's file implies $0.725, but Elaine used
   $0.76, so the rate is theirs to state).
-- **Categories are every MR5* account of TYPE I, as accounting asked** — which on
-  real data includes Payroll, Interest, Depreciation, Management Fee and Professional
-  Fees (52 accounts). Their template lists 15. Ask whether to narrow.
-- **The deals table carries some deals under two codes with one name** (Adirondack
-  RV Park = PADIRON and P0000064; City West; Orange Grove). Repeated names show the
-  code. Which code accounting books to is a phase 3 question.
+- **Categories are the FIFTEEN in accounting's template** (Jim, Oct 2 2026), named in
+  `CATEGORY_NAMES` and numbered from `gl_accounts` by name, so the chart stays the one
+  source of the number. All MR5* had been 52, carrying Payroll, Interest and
+  Depreciation. A template name the chart lacks is reported, not dropped. Measured
+  locally: all 15 resolve.
+- **Owned deals are asset management's own list** — `data_service.get_inv_display`,
+  the source behind Deal Analysis's dropdown, with its "Name (vcode)" label.
+  **ONE CODE PER DEAL**: where a name carries a P000 code and an entity-id code, only
+  the P000 is offered; an entity-id-only deal keeps its code (Jim: "If most are
+  P000... then use the P000 otherwise use the entity id version"). Measured locally:
+  that list is already 67 deals, all P000, so the rule changes nothing today — the
+  duplicates first seen came from reading the raw `deals` table, which this no
+  longer does. The rule stays as the stated policy.
+- **A pipeline deal is TYPED** (Jim: "otherwise, allow the employee to type the name
+  of the pipeline deal"). Stored `deal_kind = 'pipeline'`, no code, the name as typed;
+  the screen sends `PIPELINE` as the choice, never stored as a code. `prospect_deals`
+  is not read.
 - A line is a date or a date range; a split must foot to the line (percent entry is
   converted to amounts once, the last row taking the remainder); receipt Y/N with a
   reason required for N, exactly as accounting's template — phase 2 replaces Y with
