@@ -79,6 +79,17 @@ CAD_TO_USD_WORKBOOK = 0.695
 #: apart; the conversion itself keys off the column, not this set.
 NON_USD_NOTE = "Amounts converted to USD at $1.00 CAD = $0.73 USD."
 
+#: Footnote (2) on the CURRENT page marks the deal whose figures were converted.
+#: DERIVED from ``deals.Currency != 'USD'``, not listed — the conversion already
+#: keys off that column, so a hand-maintained marker list is a second answer to
+#: a question the data settles. Measured on the live table: exactly one deal is
+#: non-USD (P0000115 Apple - Bales Drive, ``CAD``) and no row has a blank
+#: currency, so the derivation reproduces the reference exactly.
+#:
+#: The SOLD page's (2) is a different footnote — City West's foreclosure — and
+#: stays hardcoded in ``ROW_MARKERS_SOLD``.
+NON_USD_MARKER = 2
+
 # ── footnotes ─────────────────────────────────────────────────────────────
 # Transcribed from the reference. Note (5), (6) and (7) on the Current page and
 # (1), (2) and (4) on the Sold page carry NO closing full stop there; that is
@@ -123,31 +134,89 @@ DISCLAIMER = (
 )
 
 # ── row markers ───────────────────────────────────────────────────────────
-#: vcode -> the footnote numbers printed after the deal's name, in order.
+#: vcode -> the footnote numbers printed after the deal's name.
+#:
+#: THREE OF THESE MARKERS ARE NO LONGER LISTED HERE, because the data settles
+#: them and a transcribed copy would be a second answer that goes stale the
+#: first time a deal ages past a boundary:
+#:
+#:   (2) on the Current page   -> ``deals.Currency != 'USD'``  (NON_USD_MARKER)
+#:   (5) on the Current page   -> invest date + 12 months > as-of (YOUNG_DEAL_*)
+#:   (4) on the Sold page      -> ``sale_date > as_of``   (SOLD_AFTER_AS_OF_MARKER)
+#:
+#: Everything else stays transcribed: (3) proceeds include a realization, (4) on
+#: the CURRENT page (Woodlands Square's lookback/claw-back terms — a different
+#: footnote from the Sold page's (4)), (6) under a quarter of operating history,
+#: (7) past the U/W hold, (8) the TIAA recapitalization, and the Sold page's (2)
+#: City West foreclosure. None of those is a rule the app's tables can express.
+#:
+#: Derived markers are MERGED with these and sorted, so Apple prints (2)(3)(5)
+#: from one hardcoded entry and two derivations.
 ROW_MARKERS_CURRENT = {
-    "P0000115": [2, 3, 5],   # Apple - Bales Drive
+    "P0000115": [3],         # Apple - Bales Drive   — (2) and (5) derived
     "P0000036": [3],         # PMAT Midwest
     "P0000031": [3],         # Old Kinderhook
-    "P0000044": [4],         # Woodlands Square
+    "P0000044": [4],         # Woodlands Square      — the CURRENT page's (4)
     "P0000037": [3],         # Pontchartrain Landing
     "P0000041": [3],         # The Gathering
     "P0000066": [8],         # Life Storage Staten Island
-    "P0000109": [5],         # Burton Retail Portfolio
-    "P0000110": [5],         # Trolley Square
-    "P0000114": [5],         # Jefferson Stephens
-    "P0000116": [5, 6],      # Plaza Del Mar
-    "P0000118": [5, 6],      # Hanestowne Village
-    "P0000119": [5, 6],      # Presidential Arms
-    "P0000120": [5, 6],      # Swartrz Creek Mini Storage
-    "P0000117": [5, 6],      # Fairview Center
+    "P0000109": [],          # Burton Retail Portfolio    — (5) derived
+    "P0000110": [],          # Trolley Square             — (5) derived
+    "P0000114": [],          # Jefferson Stephens         — (5) derived
+    "P0000116": [6],         # Plaza Del Mar              — (5) derived
+    "P0000118": [6],         # Hanestowne Village         — (5) derived
+    "P0000119": [6],         # Presidential Arms          — (5) derived
+    "P0000120": [6],         # Swartrz Creek Mini Storage — (5) derived
+    "P0000117": [6],         # Fairview Center            — (5) derived
 }
 
 ROW_MARKERS_SOLD = {
-    "P0000011": [2],         # City West
-    "P0000012": [4],         # Clima Secur
-    "P0000001": [4],         # 30 Bearfoot
-    "P0000049": [4],         # 870 Donald Lynch
+    "P0000011": [2],         # City West — foreclosure; NOT the currency note
+    # Clima Secur, 30 Bearfoot and 870 Donald Lynch carried (4) here and now
+    # derive it from their sale dates. See SOLD_AFTER_AS_OF_MARKER.
 }
+
+#: Footnote (4) on the SOLD page — "Deals sold after June 2026". DERIVED from
+#: ``sale_date > as_of``, which is the same test ``classify`` already relies on
+#: to keep those deals in the Sold table at all.
+#:
+#: Verified at as-of 2026-06-30 against the reference: the rule selects exactly
+#: Clima Secur (2026-07-01), 30 Bearfoot (2026-09-04) and 870 Donald Lynch
+#: (2026-09-04), and nothing else. The margin is five days — East Manchester
+#: sold 2026-06-25 and is correctly NOT marked — so the guardrail asserts the
+#: set rather than the count.
+SOLD_AFTER_AS_OF_MARKER = 4
+
+#: Footnote (5) — "less than 1 year of operating history". DERIVED: the deal's
+#: PSC Invest. Date plus ``YOUNG_DEAL_MONTHS`` calendar months falls after the
+#: as-of date.
+#:
+#: Verified at as-of 2026-06-30 against the reference: exactly the nine deals
+#: the reference marks (Apple, Burton, Trolley Square, Jefferson Stephens,
+#: Plaza Del Mar, Hanestowne, Presidential Arms, Swartz Creek, Fairview) and no
+#: others. The boundary is not tight — the newest UNMARKED deal is Green Valley
+#: Ranch at 16 months and the oldest marked one is Apple at 11.5 — so the rule
+#: is not balanced on a single day.
+#:
+#: (6) — under a QUARTER of operating history — stays hardcoded. Every (6) deal
+#: is also a (5) deal, so it selects no cell (5) has not already selected, and
+#: the reference's choice of which deals carry it is editorial.
+YOUNG_DEAL_MARKER = 5
+YOUNG_DEAL_MONTHS = 12
+
+#: What a (5) deal shows instead of its own figure: the PROJECTED year-1 CoC.
+#:
+#: NOTE WHAT THE REFERENCE ACTUALLY DOES. The printed note names only the
+#: "Act. Yr-1 CoC Returns column", but the table applies the projected value in
+#: THREE CoC columns — Apple prints 4.0% in Act. Yr-1, CoC Proj. Since Close and
+#: CoC Act. Since Close alike, all equal to its Proj Yr-1 CoC. The table is
+#: reproduced, and the wording of the note is reproduced verbatim beside it;
+#: neither is edited to agree with the other.
+#:
+#: ``proj_yr1_coc`` is the SOURCE and is never itself substituted.
+YOUNG_DEAL_SUBSTITUTED_COLUMNS = (
+    "act_yr1_coc", "proj_coc_since_close", "act_coc_since_close",
+)
 
 #: The Sold table's Total row carries (3) against its realized IRR — the Apple
 #: realization is inside that average while the deal itself is in neither
@@ -269,6 +338,59 @@ ROW_ORDER_SOLD = [
 FIRST_LIEN_BASIS = "summed_facility"
 FIRST_LIEN_FALLBACKS = ("earliest_loan", "earliest_isbs")
 
+#: THE FIRST LIEN IS THE LOAN THAT WAS ORIGINATED FIRST, when the data can say so.
+#:
+#: "First lien" means the senior mortgage, and seniority is settled at
+#: origination — so where MRI records an origination date on every one of a
+#: deal's loans, the first lien is the loan (or loans) sharing the EARLIEST one,
+#: and a later supplemental or mezzanine facility is not part of it.
+#:
+#: MATURITY IS NEVER A PROXY. ``dtEvent`` carries a maturity date on 83 of the 91
+#: live loan rows, and the existing ``earliest_loan`` basis sorts on it — so what
+#: it calls "the earliest loan" is the earliest-MATURING facility, which has no
+#: relationship to seniority. A five-year supplemental taken out in year three
+#: matures before a ten-year first mortgage taken out at closing.
+#:
+#: THE RULE, per deal, against the RAW loans frame:
+#:
+#:   * exactly one loan                      -> that loan;
+#:   * several loans AND an Origination row
+#:     on every one of them                  -> the sum of the loans sharing the
+#:                                              earliest origination date;
+#:   * anything else                         -> the basis above, unchanged, and
+#:                                              the LoanIDs with no origination
+#:                                              date are named in
+#:                                              ``first_lien_origination_missing``.
+#:
+#: PAID-OFF LOANS COUNT. The column is the capitalization AT STABILIZATION, which
+#: is a fact about how the deal was financed, not about what is outstanding now —
+#: so a facility since repaid is still part of it. This is why the report reads
+#: ``mri_loans_all`` rather than the filtered ``mri_loans_raw``.
+#:
+#: DEVELOPMENT DEALS ARE UNCHANGED: they take the committed facility, because a
+#: construction loan's origination tells you when the draw began, not what was
+#: committed.
+#:
+#: MEASURED BEFORE SHIPPING, on the live table at as-of 2026-06-30: 49 deals have
+#: exactly one loan, 16 have none, and 11 have several — and NOT ONE of the 11
+#: carries an origination date on every loan, because the whole live table holds
+#: only four Origination rows and all four sit on single-loan deals. So the rule
+#: changes no printed figure today. It is here so that the first loan loaded with
+#: an origination date is read as a first lien rather than as a maturity.
+FIRST_LIEN_FROM_ORIGINATION = True
+
+#: Which vcodes the origination search covers on a deal that has child
+#: properties. ``"deal"`` takes the earliest origination across the parent and
+#: every child together; ``"property"`` takes each property's own earliest and
+#: sums those.
+#:
+#: They differ only for a portfolio whose properties closed on different days.
+#: Both are computed on every row and published under
+#: ``alternates.first_lien_origination`` so the choice stays measurable; at
+#: as-of 2026-06-30 no deal reaches the origination path at all, so the two are
+#: identical on all 76 rows and neither ties the reference better than the other.
+FIRST_LIEN_CHILD_BASIS = "deal"
+
 #: Development deals. NO LONGER SELECTS THE FIRST-LIEN BASIS — kept because it
 #: is the population footnote (5)-era labelling refers to, and the guardrail
 #: asserts it agrees with the deals labelled ``Dev.`` in CELL_LABELS.
@@ -351,16 +473,67 @@ UNLOADED_FIGURES = {
         "note": "projected year-1 cash-on-cash is not held anywhere in MRI; "
                 "footnotes (5) and (6) cannot substitute without it",
     },
+    # SWITCHED ON. This column now PRINTS a derived figure — the one defined by
+    # `investment_metrics.act_year_one_coc_roe`: the One Pager's ROE engine,
+    # windowed to the deal's first twelve months.
+    #
+    # WHAT CHANGED, AND WHY IT IS NOT THE QUANTITY THE OLD NOTE REFUSED TO PRINT.
+    # The figure previously computed here was preferred return received in the
+    # first 365 days over funded-to-date. That is a coupon-collection ratio, not
+    # a return on equity: it ignores excess cash flow, ignores the capital
+    # actually at risk over the window, and returns 0.0% on ten deals that paid
+    # no pref in year one. The ROE-windowed figure is the same quantity the
+    # reference's column is headed with, measured the way the app measures ROE
+    # everywhere else.
+    #
+    # MEASURED AGAINST THE REFERENCE at as-of 2026-06-30, at display rounding:
+    #   ROE-windowed   24/76      <- shipped
+    #   pref / funded  23/76      <- the old alternate
+    #   pref / commit  23/76
+    # and the column as shipped BEFORE this change (always an em dash, labels
+    # only) scored 21/76. So it is three cells better than printing nothing.
+    #
+    # IT IS BIASED LOW: of the 51 rows where both sides carry a number, 40 come
+    # in below the reference and 11 above, mean -1.21pp. 21 are within 1pp and
+    # 30 within 2pp. The reference's own cells are typed-in constants on 75 of
+    # its 76 rows, so the gap is not a window that needs tuning — it is the
+    # difference between a derived figure and an editorial one, and it is
+    # reported rather than closed by fitting.
+    #
+    # Both older denominators are still carried in `alternates.act_yr1_coc`.
     "act_yr1_coc": {
-        "mode": "none",
+        "mode": "computed",
         "table": "deal_terms",
         "field": None,                       # TODO(alay): if actuals are loaded
-        "variant": "funded",                 # "funded" | "commitment"
+        "variant": "roe_window",             # "roe_window"|"funded"|"commitment"
         "label": "Act. Yr-1 CoC Returns",
-        "note": "the derived figure is a different quantity from the "
-                "reference's — kept in alternates, not rendered",
+        "note": "ROE over the deal's first twelve months, from the accounting "
+                "feed; the reference's cells are typed in and run higher",
     },
 }
+
+
+# ── as-of ─────────────────────────────────────────────────────────────────
+#: The quarter the report OPENS ON, pinned.
+#:
+#: WHY A PIN AND NOT A RULE. ``latest_quarter_end`` returns the most recent
+#: quarter end strictly before today, which on 2026-10-02 is 2026-09-30 — a
+#: quarter that closed two days ago and behind which there is no closed
+#: accounting. The report opened on it and every figure read as a quarter's
+#: worth of nothing.
+#:
+#: ``DEFAULT_QUARTER_LAG_DAYS`` is the rule that replaces this: open on the most
+#: recent quarter end that is at least this many days in the past. It is
+#: DELIBERATELY NOT WIRED UP — it is defined, asserted inert by the guardrail,
+#: and switched on by a separate decision. On 2026-10-02 it would select
+#: 2026-06-30, the same answer the pin gives.
+#:
+#: Set to None to go back to "the most recent quarter end that has finished".
+#: Every other quarter stays selectable; this names only which one opens.
+DEFAULT_QUARTER = "2026-06-30"
+
+#: Staged, UNUSED. See DEFAULT_QUARTER.
+DEFAULT_QUARTER_LAG_DAYS = 45
 
 
 # ── proceeds ──────────────────────────────────────────────────────────────
@@ -380,8 +553,22 @@ PROCEEDS_SUBTYPES_CURRENT = (1016, 1019, 1020, 1021)
 #: the question is what came back in total.
 PROCEEDS_MAJORTYPE_SOLD = "distri"
 
-#: Preferred Return — the subtype whose first 365 days make Year-1 CoC.
+#: Preferred Return — the subtype behind the legacy Year-1 CoC alternate.
 SUBTYPE_PREFERRED_RETURN = 1019
+
+#: How long after the quarter end a distribution may land and still count as
+#: proceeds for that quarter.
+#:
+#: ``None`` IS TODAY'S BEHAVIOUR AND THE DEFAULT. Proceeds to Date carries no
+#: date bound at all — the column is headed *To-Date* and the reference
+#: workbook's own formula has no cutoff either — so nothing is excluded and
+#: nothing is admitted late. The setting exists because the ROE engine's 45-day
+#: pref grace raises the obvious question for this column too, and the answer
+#: should be a named switch rather than a number buried in a filter.
+#:
+#: Setting it to an integer would mean: count distributions through
+#: ``as_of + N days``. It is inert while None, which the guardrail asserts.
+PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER = None
 
 # ── column headings and geometry, measured from the reference ─────────────
 # The heading text is transcribed exactly, including the ``(1)``/``(5)``/``(7)``
