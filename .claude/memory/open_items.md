@@ -58,6 +58,12 @@ Design, phases and measurements: `expense_reporting.md`.
   seeds it. Owner: **accounting**.
 - **17.4 The admin unticks Expenses** for anyone who should not see it, and sets every
   employee's name on reports and approver. Owner: **admin**.
+- **17.6 DECIDED (Jim, Oct 2 2026): Expense Coding's Void stays as it is.** It does not
+  check whether MRI already posted the batch (intercompany's void does). So it is safe
+  only for a file that was NEVER uploaded: voiding an uploaded batch releases its
+  reports to be batched and paid again. The batch list shows "posted" once the GL
+  carries the payroll credit; an uploaded batch is corrected in MRI with a reversing
+  entry, not voided. Told to the CFO via Jim. Do not change without Jim.
 - **17.5 No mileage rate is set** — mileage lines are refused until accounting sets one.
   Owner: **accounting**.
 - Until 17.1-17.2 are settled, accounting should check every intercompany row; every

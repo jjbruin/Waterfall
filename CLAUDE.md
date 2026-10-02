@@ -266,6 +266,16 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v561` = `9adfddd` (THE EXPENSE LINE OPENS AS A POP-UP AGAIN -- entry left,
+    receipt right, stacked under 900px -- and READ-ONLY for the approver and
+    accounting; Edit/Remove (View for anyone who cannot edit) moved to the FIRST
+    column. Jim thought v558 had removed the edit screen; it had not -- the new
+    dropdowns widened the table and the Edit link in the LAST column went off screen.
+    P1 BEFORE THE UPDATE CAUGHT CHARLENE'S `v560` = `1455419` (TGA VI on the Snapshot,
+    on origin/main) deployed after this work's span was taken -- deploying `779fb44`
+    would have rolled it back. Merged origin/main (`9adfddd`, zero lines of its own),
+    so the runtime delta vs live is ExpensesView.vue only and her six files are
+    byte-identical in the image. Served chunk carries the pop-up. Site 200.)
   - `v560` = `1455419` (THE SNAPSHOT PRINTS **TGA VI**, NOT **TGA6**, IN BOTH PLACES.
     Oct 2 2026, tag locked. THIS IS LIVE. The fund is PSC Ambassadors Fund TGA VI
     LLC (AMB6); the ownership traversal keys it `TGA6`, and that key is what every
