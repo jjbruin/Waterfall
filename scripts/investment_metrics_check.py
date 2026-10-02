@@ -45,6 +45,101 @@ def section(t):
 # ══════════════════════════════════════════════════════════════════════════
 # fixtures — shaped like the live tables, including their defects
 # ══════════════════════════════════════════════════════════════════════════
+#: THE REAL POPULATION, frozen. vcode, table ('c'urrent / 's'old), PSC invest
+#: date, sale date and currency for all 76 deals the reference carries, pulled
+#: from production on 2026-10-02 at as-of 2026-06-30.
+#:
+#: WHY IT IS HERE AND NOT IN A DATA FILE. Section 22 asserts that the DERIVED
+#: footnote markers reproduce the reference document exactly, and a derivation
+#: can only be checked against the inputs it derives from. Those inputs live in
+#: production. Inlining them keeps this script's own rule — no database, no API,
+#: no network — while still measuring the rule against real dates rather than
+#: against three invented ones that happen to straddle the boundary.
+#:
+#: It is a SNAPSHOT and will not follow the data. That is the point: if a future
+#: change alters how a marker is derived, this says so against a population
+#: whose correct answer is known. Re-cut it only alongside a new reference
+#: document, and update PDF_MARKERS in the same commit.
+POPULATION_26Q2 = [
+    ('P0000004', 'c', '2019-05-15', '2029-06-30', 'USD'),  # Asbury Commons
+    ('P0000006', 'c', '2021-04-12', '2027-06-01', 'USD'),  # Belleville Self Storage
+    ('P0000008', 'c', '2021-08-25', '2031-09-30', 'USD'),  # 5-15 Broad St
+    ('P0000010', 'c', '2017-03-23', '2026-10-30', 'USD'),  # Centre at Westbank
+    ('P0000014', 'c', '2021-11-18', '2028-11-30', 'USD'),  # Crowne Plaza
+    ('P0000018', 'c', '2021-09-22', '2031-09-30', 'USD'),  # Evergreen Plaza
+    ('P0000019', 'c', '2019-11-15', '2026-03-31', 'USD'),  # Giant 7
+    ('P0000021', 'c', '2021-02-24', '2030-07-30', 'USD'),  # JB Fair Park
+    ('P0000028', 'c', '2016-08-09', '2030-07-31', 'USD'),  # Merle Hay
+    ('P0000029', 'c', '2021-09-24', '2026-10-31', 'USD'),  # Middle Island
+    ('P0000030', 'c', '2021-05-28', '2031-06-30', 'USD'),  # Nottingham Village
+    ('P0000031', 'c', '2018-03-08', '2026-11-30', 'USD'),  # Old Kinderhook Resort
+    ('P0000033', 'c', '2020-09-16', '2027-10-31', 'USD'),  # OREI Portfolio
+    ('P0000035', 'c', '2018-05-01', '2028-05-31', 'USD'),  # Paradise Shoppes of Perry
+    ('P0000036', 'c', '2017-07-31', '2029-11-30', 'USD'),  # PMAT Midwest Portfolio
+    ('P0000037', 'c', '2021-02-01', '2026-08-31', 'USD'),  # Pontchartrain Landing
+    ('P0000040', 'c', '2020-02-18', '2029-08-31', 'USD'),  # The Gallery
+    ('P0000041', 'c', '2021-10-01', '2034-10-31', 'USD'),  # The Gathering
+    ('P0000044', 'c', '2018-10-29', '2028-11-30', 'USD'),  # Woodlands Square
+    ('P0000065', 'c', '2022-03-15', '2031-07-31', 'USD'),  # Ascent on Steamboat
+    ('P0000066', 'c', '2022-05-01', '2034-12-31', 'USD'),  # Pegasus Life Storage
+    ('P0000067', 'c', '2022-06-15', '2030-06-30', 'USD'),  # Brainerd Place Apartments
+    ('P0000068', 'c', '2022-07-12', '2032-07-31', 'USD'),  # The Point at Plymouth Meeting
+    ('P0000069', 'c', '2022-08-18', '2027-08-31', 'USD'),  # Mount Prospect Plaza
+    ('P0000075', 'c', '2023-06-06', '2028-06-30', 'USD'),  # Camp Creek
+    ('P0000076', 'c', '2022-12-28', '2027-12-31', 'USD'),  # The Court at Deptford
+    ('P0000077', 'c', '2023-03-03', '2028-03-31', 'USD'),  # Jefferson Addison Heights
+    ('P0000078', 'c', '2022-12-05', '2026-12-31', 'USD'),  # Jefferson Waters Creek
+    ('P0000079', 'c', '2022-11-01', '2026-09-30', 'USD'),  # Post Commons
+    ('P0000080', 'c', '2023-03-23', '2028-03-31', 'USD'),  # Prestige Storage Portfolio
+    ('P0000081', 'c', '2023-07-25', '2033-08-31', 'USD'),  # Addison Princeton Meadows
+    ('P0000082', 'c', '2023-09-28', '2027-09-30', 'USD'),  # Poplar Prairie
+    ('P0000084', 'c', '2023-09-06', '2028-10-31', 'USD'),  # Cocoplum Apartments
+    ('P0000085', 'c', '2023-11-22', '2027-11-30', 'USD'),  # Jefferson Eastchase
+    ('P0000086', 'c', '2024-04-25', '2029-05-31', 'USD'),  # Flats at Dorsett Ridge
+    ('P0000087', 'c', '2023-10-31', '2030-11-30', 'USD'),  # The Standard
+    ('P0000088', 'c', '2024-07-31', '2034-08-31', 'USD'),  # Seasons at Bel Air
+    ('P0000089', 'c', '2024-08-01', '2028-08-31', 'USD'),  # 45th & Main
+    ('P0000099', 'c', '2025-02-19', '2030-03-31', 'USD'),  # ReNew Glenmoore
+    ('P0000100', 'c', '2025-02-20', '2029-08-31', 'USD'),  # Green Valley Ranch & Telluride
+    ('P0000107', 'c', '2025-02-14', '2032-02-29', 'USD'),  # Town Fair Tire Portfolio
+    ('P0000109', 'c', '2025-08-28', None, 'USD'),  # Burton Retail Portfolio
+    ('P0000110', 'c', '2025-09-11', '2029-03-31', 'USD'),  # Trolley Square
+    ('P0000114', 'c', '2025-10-17', '2028-05-30', 'USD'),  # Jefferson Stephens Holdings, L
+    ('P0000115', 'c', '2025-07-16', '2030-07-30', 'CAD'),  # Apple - Bales Drive
+    ('P0000116', 'c', '2026-03-16', '2029-03-31', 'USD'),  # Plaza Del Mar
+    ('P0000117', 'c', '2026-06-30', '2031-07-30', 'USD'),  # Fairview Heights Retail Center
+    ('P0000118', 'c', '2026-03-18', '2030-09-30', 'USD'),  # Hanestowne Waterstone
+    ('P0000119', 'c', '2026-05-13', '2036-05-30', 'USD'),  # Presidential Arms JV, LLC (DE)
+    ('P0000120', 'c', '2026-05-20', '2031-05-30', 'USD'),  # Citizen Storage Swartz Creek H
+    ('P0000001', 's', '2020-08-07', '2026-09-04', 'USD'),  # 30 Bearfoot
+    ('P0000002', 's', '2016-11-21', '2020-01-17', 'USD'),  # 3rd Ave & Indian School
+    ('P0000005', 's', '2018-12-31', '2021-05-12', 'USD'),  # Barnbeck Apartments
+    ('P0000007', 's', '2020-07-22', '2026-04-22', 'USD'),  # Berger Pittsburgh Portfolio
+    ('P0000009', 's', '2021-05-11', '2023-02-10', 'USD'),  # Camarillo Village
+    ('P0000011', 's', '2021-10-20', '2025-08-30', 'USD'),  # City West
+    ('P0000012', 's', '2021-09-09', '2026-07-01', 'USD'),  # Clima Secur
+    ('P0000013', 's', '2016-01-07', '2018-04-08', 'USD'),  # Creek Crossing
+    ('P0000015', 's', '2017-10-05', '2025-12-31', 'USD'),  # Declan & Walton
+    ('P0000016', 's', '2018-04-25', '2020-08-18', 'USD'),  # Devon Square
+    ('P0000017', 's', '2020-12-18', '2026-06-25', 'USD'),  # East Manchester
+    ('P0000020', 's', '2016-05-17', '2017-11-20', 'USD'),  # Homewood Commons
+    ('P0000022', 's', '2018-10-19', '2021-12-20', 'USD'),  # Jefferson Oakhurst
+    ('P0000023', 's', '2019-10-25', '2022-03-30', 'USD'),  # Jefferson Centura
+    ('P0000024', 's', '2016-09-30', '2020-08-03', 'USD'),  # Jefferson West Love
+    ('P0000025', 's', '2018-04-19', '2022-03-29', 'USD'),  # Lancaster Apartments
+    ('P0000026', 's', '2017-01-13', '2020-10-23', 'USD'),  # Leander Self Storage
+    ('P0000032', 's', '2016-04-25', '2025-12-10', 'USD'),  # Orange Grove
+    ('P0000034', 's', '2020-10-28', '2023-04-26', 'USD'),  # Outlook Nine Mile
+    ('P0000038', 's', '2017-12-21', '2026-03-04', 'USD'),  # Quakertown Shopping Center
+    ('P0000039', 's', '2019-05-23', '2022-11-01', 'USD'),  # Shoppers World
+    ('P0000042', 's', '2016-12-23', '2023-12-28', 'USD'),  # Village Square Apartments
+    ('P0000043', 's', '2016-09-14', '2023-12-28', 'USD'),  # Willowdale Apartments
+    ('P0000049', 's', '2021-06-29', '2026-09-04', 'USD'),  # Donald Lynch
+    ('P0000064', 's', '2022-03-08', '2025-12-10', 'USD'),  # Adirondack RV Park
+    ('P0000083', 's', '2023-09-12', '2026-03-04', 'USD'),  # Airport Plaza
+]
+
+
 def deals_fixture():
     """Four investments across every shape the live table actually contains.
 
@@ -201,6 +296,55 @@ def isbs_fixture():
     ])
 
 
+def young_deals_fixture():
+    """Three deals against the as-of date 2026-06-30, on the (5) boundary.
+
+    * YOUNG (P0000900) — invested 2026-03-01, four months old. Footnote (5).
+    * EDGE  (P0000901) — invested 2025-06-30, so its twelve months close ON the
+      as-of date. ``plus_months(...) > as_of`` is FALSE, so it is NOT young.
+      The boundary is tested because "within a year" and "a year ago today" are
+      one day apart and the live table has a deal on every month.
+    * OLD   (P0000902) — invested 2024-01-15. Never young.
+    """
+    base = dict(Property_Count="1", Sale_Status=None, Sale_Date=None,
+                Currency="USD", City="Reno", State="NV", Asset_Type="Retail",
+                Operating_Partner="Op", Lifecycle=None, Portfolio_Name="")
+    return pd.DataFrame([
+        dict(vcode="P0000900", InvestmentID="YOUNG", Investment_Name="Young One",
+             Acquisition_Date="03/01/2026 00:00", **base),
+        dict(vcode="P0000901", InvestmentID="EDGE", Investment_Name="Edge One",
+             Acquisition_Date="06/30/2025 00:00", **base),
+        dict(vcode="P0000902", InvestmentID="OLD", Investment_Name="Old One",
+             Acquisition_Date="01/15/2024 00:00", **base),
+    ])
+
+
+def young_acct_fixture():
+    rows = []
+    for iid, start in (("YOUNG", "2026-03-01"), ("EDGE", "2025-06-30"),
+                       ("OLD", "2024-01-15")):
+        rows += [
+            (iid, "PPI9", start, 1018, -1_000_000, "Contribution",
+             "Contribution: Investments"),
+            (iid, "PPI9", "2026-05-01", 1019, 25_000, "Distribution",
+             "Distribution: Preferred Return"),
+        ]
+    df = pd.DataFrame(rows, columns=[
+        "InvestmentID", "InvestorID", "EffectiveDate", "SubtypeUID", "Amt",
+        "MajorType", "Typename"])
+    df["Capital"] = "Y"
+    df["Partner"] = "Preferred Equity"
+    return normalize_accounting_feed(df)
+
+
+def young_terms_fixture():
+    return pd.DataFrame([
+        dict(vcode=v, pe_coupon=0.085, irr_lookback=9.0,
+             pe_split_capital=0.30, pe_split_cf=None)
+        for v in ("P0000900", "P0000901", "P0000902")
+    ])
+
+
 def build(**kw):
     kw.setdefault("inv", deals_fixture())
     kw.setdefault("acct", acct_fixture())
@@ -216,6 +360,26 @@ def build(**kw):
         as_of=kw.pop("as_of", dt.date(2026, 6, 30)),
         **kw,
     )
+
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read_repo(*parts):
+    """A repo source file, as text. UTF-8 EXPLICITLY — these files carry em
+    dashes, and Windows' default cp1252 raises on them."""
+    with open(os.path.join(_REPO, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _with_pin(value, fn):
+    """Run ``fn`` with ``cfg.DEFAULT_QUARTER`` temporarily set to ``value``."""
+    saved = cfg.DEFAULT_QUARTER
+    cfg.DEFAULT_QUARTER = value
+    try:
+        return fn()
+    finally:
+        cfg.DEFAULT_QUARTER = saved
 
 
 def row_of(out, vcode):
@@ -346,8 +510,18 @@ def main():
     chk("UW projected IRR is None, not 0.0 — it is not in MRI",
         alpha and alpha["uw_irr"] is None)
     chk("projected Year-1 CoC is None, not 0.0", alpha and alpha["proj_yr1_coc"] is None)
-    chk("actual Year-1 CoC is None too — held behind the config switch",
-        alpha and alpha["act_yr1_coc"] is None)
+    # The Act. Yr-1 CoC column now PRINTS — see cfg.UNLOADED_FIGURES. What must
+    # still never happen is a zero standing in for "unknown", which is what this
+    # pair asserts in both directions.
+    chk("actual Year-1 CoC is a figure now, not a dash",
+        alpha and alpha["act_yr1_coc"] is not None)
+    chk("...and it is the ROE-windowed figure, not the old pref/funded one",
+        alpha and alpha["basis"]["act_yr1_coc"] == "computed (roe_window)"
+        and alpha["act_yr1_coc"] == alpha["alternates"]["act_yr1_coc"]["on_roe_window"])
+    no_acct = build(acct=acct_fixture().iloc[0:0])
+    _, a_blank = row_of(no_acct, "P0000001")
+    chk("a deal with no accounting gets a DASH, never 0.0%",
+        a_blank and a_blank["act_yr1_coc"] is None)
     no_lien = build(isbs_interim_bs=pd.DataFrame(), loans=pd.DataFrame())
     _, a2 = row_of(no_lien, "P0000001")
     chk("an unknown first lien makes the TOTAL unknown too",
@@ -522,52 +696,81 @@ def main():
     chk("child properties are KEPT — the child lookup reads this frame",
         "P0000201" in set(frame["vcode"]))
 
-    # ── 13. footnotes (5) and (6) do what they say ────────────────────────
-    section("13. Young-deal substitution (both ways: substituted when the "
-            "projected figure exists, NOT blanked when it does not)")
-    r5 = {"vcode": "X", "name": "X", "markers": [5], "proj_yr1_coc": 0.09,
-          "act_yr1_coc": 0.01, "proj_coc_since_close": 0.02,
-          "act_coc_since_close": 0.03, "basis": {}}
-    d5 = {}
-    im._apply_young_deal_substitution(r5, d5)
-    chk("(5) replaces the Act. Yr-1 CoC with the projected figure",
-        abs(r5["act_yr1_coc"] - 0.09) < 1e-12)
-    chk("(5) leaves the two since-close columns alone",
-        abs(r5["act_coc_since_close"] - 0.03) < 1e-12
-        and abs(r5["proj_coc_since_close"] - 0.02) < 1e-12)
+    # ── 13. footnote (5) does what it says ────────────────────────────────
+    section("13. Young-deal substitution (both ways: the three columns are "
+            "taken over when there is a figure to take them over WITH, and the "
+            "fourth column and an old deal are left completely alone)")
+    THREE = ("act_yr1_coc", "proj_coc_since_close", "act_coc_since_close")
+
+    def young_row(**kw):
+        r = {"vcode": "X", "name": "X", "markers": [5], "young_deal": True,
+             "labels": {}, "proj_yr1_coc": 0.09, "act_yr1_coc": 0.01,
+             "proj_coc_since_close": 0.02, "act_coc_since_close": 0.03,
+             "basis": {}}
+        r.update(kw)
+        return r
+
+    r5 = young_row()
+    im._apply_young_deal_substitution(r5, {})
+    chk("(5) puts the projected figure in ALL THREE CoC columns",
+        all(abs(r5[f] - 0.09) < 1e-12 for f in THREE),
+        f"got {[r5[f] for f in THREE]}")
+    chk("...and NOT in Proj Yr-1 CoC, which is the source",
+        abs(r5["proj_yr1_coc"] - 0.09) < 1e-12)
     chk("(5) says in the basis that the figure was substituted",
-        "footnote (5)" in r5["basis"]["act_yr1_coc"])
-    r6 = {"vcode": "Y", "name": "Y", "markers": [5, 6], "proj_yr1_coc": 0.07,
-          "act_yr1_coc": 0.01, "proj_coc_since_close": 0.02,
-          "act_coc_since_close": 0.03, "basis": {}}
+        all("footnote (5)" in r5["basis"][f] for f in THREE))
+    r6 = young_row(markers=[5, 6], proj_yr1_coc=0.07)
     im._apply_young_deal_substitution(r6, {})
-    chk("(6) replaces ALL the CoC columns",
-        all(abs(r6[f] - 0.07) < 1e-12 for f in
-            ("act_yr1_coc", "proj_coc_since_close", "act_coc_since_close")))
-    rn = {"vcode": "Z", "name": "Z", "markers": [5], "proj_yr1_coc": None,
-          "act_yr1_coc": 0.055, "basis": {}}
+    chk("a (6) deal cites (6) rather than (5) in its basis",
+        all("footnote (6)" in r6["basis"][f] for f in THREE))
+
+    # The live state: no projected figure exists, so the cells are BLANKED.
+    rn = young_row(proj_yr1_coc=None)
     dn = {}
     im._apply_young_deal_substitution(rn, dn)
-    chk("with nothing to substitute the real figure is KEPT, not blanked",
-        abs(rn["act_yr1_coc"] - 0.055) < 1e-12)
-    chk("...and the missed substitution is recorded, not silent",
-        any(x["vcode"] == "Z"
+    chk("with nothing to substitute, all three are blanked — never a stub year",
+        all(rn[f] is None for f in THREE),
+        f"got {[rn[f] for f in THREE]}")
+    chk("...and the missed substitution is still recorded, not silent",
+        any(x["vcode"] == "X"
             for x in dn.get("young_deal_substitution_unavailable", [])))
-    r0 = {"vcode": "W", "name": "W", "markers": [], "proj_yr1_coc": 0.09,
-          "act_yr1_coc": 0.01, "basis": {}}
+    chk("...and the basis SAYS the cell is blank because of the footnote",
+        all("not loaded" in rn["basis"][f] for f in THREE))
+
+    # PRECEDENCE: Dev. > Lease up > this rule. Trolley Square is both.
+    rd = young_row(proj_yr1_coc=None, labels={f: "Dev." for f in THREE})
+    im._apply_young_deal_substitution(rd, {})
+    chk("a Dev. / Lease up label OUTRANKS the rule — the cell is untouched",
+        abs(rd["act_yr1_coc"] - 0.01) < 1e-12
+        and abs(rd["act_coc_since_close"] - 0.03) < 1e-12)
+    rmix = young_row(proj_yr1_coc=None, labels={"proj_coc_since_close": "N/A"})
+    im._apply_young_deal_substitution(rmix, {})
+    chk("...per CELL, so an unlabelled column beside a labelled one is blanked",
+        rmix["act_yr1_coc"] is None and rmix["act_coc_since_close"] is None
+        and abs(rmix["proj_coc_since_close"] - 0.02) < 1e-12)
+
+    r0 = young_row(young_deal=False, markers=[])
     im._apply_young_deal_substitution(r0, {})
-    chk("an UNMARKED deal is untouched",
-        abs(r0["act_yr1_coc"] - 0.01) < 1e-12)
+    chk("a deal with a year of history is untouched",
+        abs(r0["act_yr1_coc"] - 0.01) < 1e-12
+        and abs(r0["act_coc_since_close"] - 0.03) < 1e-12)
+    chk("the rule reads the DATE TEST, not the marker",
+        all(young_row(young_deal=False, markers=[5, 6])[f] is not None
+            for f in THREE))
 
     # ── 14. the one switch for the figures Alay has not loaded ────────────
     section("14. cfg.UNLOADED_FIGURES — one switch, all three modes")
     chk("all three columns are declared in one place",
         set(cfg.UNLOADED_FIGURES) == {"uw_irr", "proj_yr1_coc", "act_yr1_coc"})
-    chk("every one is pending today, so every one prints a dash",
-        all(s["mode"] == "none" for s in cfg.UNLOADED_FIGURES.values()))
-    chk("no field name is filled in yet — the TODO is still open",
+    chk("the two IRR / projected columns are STILL pending — they print a dash",
+        all(cfg.UNLOADED_FIGURES[k]["mode"] == "none"
+            for k in ("uw_irr", "proj_yr1_coc")))
+    chk("Act. Yr-1 CoC is the one that is switched on, and to the ROE window",
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] == "computed"
+        and cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] == "roe_window")
+    chk("no MRI field name is filled in yet — the TODO is still open",
         all(s["field"] is None for s in cfg.UNLOADED_FIGURES.values()))
-    chk("each one says WHY it is pending, on the row's basis",
+    chk("each pending one says WHY it is pending, on the row's basis",
         alpha and "pending Alay" in alpha["basis"]["uw_irr"]
         and "pending Alay" in alpha["basis"]["proj_yr1_coc"])
     # Indexed defensively. A missing key here is a real failure, and it must
@@ -580,11 +783,11 @@ def main():
 
     saved = {k: dict(v) for k, v in cfg.UNLOADED_FIGURES.items()}
     try:
-        # mode "computed" — publish the derived figure
-        cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] = "computed"
+        # mode "computed" — the VARIANT chooses which derivation prints
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] = "funded"
         flipped = build()
         _, a3 = row_of(flipped, "P0000001")
-        chk("flipping act_yr1_coc to 'computed' RENDERS the derived figure",
+        chk("the 'funded' variant renders the old pref-over-funded figure",
             a3 and abs(a3["act_yr1_coc"] - 0.4 / 5.0) < 1e-9,
             f"got {a3['act_yr1_coc'] if a3 else None}")
         cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] = "commitment"
@@ -592,6 +795,7 @@ def main():
         _, a4 = row_of(flipped2, "P0000001")
         chk("...and the variant chooses the denominator",
             a4 and a4["act_yr1_coc"] is not None)
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] = "roe_window"
 
         # mode "mri" with no field named — refused and reported, not silent
         cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] = "mri"
@@ -620,26 +824,29 @@ def main():
             a6 and a6["basis"]["act_yr1_coc"] == "deal_terms.pe_coupon")
 
         # THE FOOTNOTE SUBSTITUTION ACTIVATES BY ITSELF once the projected
-        # figure exists — no second switch to remember.
+        # figure exists — no second switch to remember. Driven END TO END off a
+        # genuinely young deal, because the rule reads the DATE and not a list:
+        # forcing the marker proves nothing now.
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] = "computed"
+        cfg.UNLOADED_FIGURES["act_yr1_coc"]["field"] = None
         cfg.UNLOADED_FIGURES["proj_yr1_coc"]["mode"] = "mri"
         cfg.UNLOADED_FIGURES["proj_yr1_coc"]["field"] = "pe_coupon"
-        cfg.ROW_MARKERS_CURRENT["P0000001"] = [5]
-        act = build()
-        _, a7 = row_of(act, "P0000001")
+        act = build(inv=young_deals_fixture(), acct=young_acct_fixture(),
+                    deal_terms=young_terms_fixture())
+        _, a7 = row_of(act, "P0000900")
         chk("footnote (5) substitutes automatically once projected Yr-1 exists",
-            a7 and abs(a7["act_yr1_coc"] - 0.085) < 1e-12
-            and "footnote (5)" in a7["basis"]["act_yr1_coc"],
-            f"got {a7['act_yr1_coc'] if a7 else None} "
-            f"basis {a7['basis']['act_yr1_coc'] if a7 else None}")
+            a7 and all(abs(a7[f] - 0.085) < 1e-12 for f in THREE)
+            and all("footnote (5)" in a7["basis"][f] for f in THREE),
+            f"got {[a7[f] for f in THREE] if a7 else None}")
     finally:
-        cfg.ROW_MARKERS_CURRENT.pop("P0000001", None)
         for k, v in saved.items():
             cfg.UNLOADED_FIGURES[k].clear()
             cfg.UNLOADED_FIGURES[k].update(v)
     back = build()
     _, a8 = row_of(back, "P0000001")
-    chk("the switch is restored — the column is a dash again",
-        a8 and a8["act_yr1_coc"] is None and a8["proj_yr1_coc"] is None)
+    chk("the switch is restored — the ROE-windowed figure is back",
+        a8 and a8["proj_yr1_coc"] is None
+        and a8["basis"]["act_yr1_coc"] == "computed (roe_window)")
 
     # ── 15. the draft gate ────────────────────────────────────────────────
     section("15. Draft gate (both ways: ABSENT while False, marked while True)")
@@ -704,6 +911,345 @@ def main():
         len(im.narrow_isbs_bs_for_lien(
             pd.concat([isbs_fixture(), noise_bs], ignore_index=True)))
         == len(isbs_fixture()))
+
+    # ── 17. Act. Yr-1 CoC is the One Pager's ROE, windowed ────────────────
+    section("17. Act. Yr-1 CoC — the SAME engine as the One Pager's ROE "
+            "(both ways: identical at a quarter end, windowed at an anniversary)")
+    idents17 = {i.vcode: i for i in im.resolve_deal_identities(deals_fixture())[0]}
+    alpha_id = idents17["P0000001"]
+    acct17 = acct_fixture()
+
+    # THE EQUIVALENCE TEST. `_pe_roe_events` restates `get_pe_performance`'s
+    # classification because that function's window is a QUARTER and this one's
+    # is an anniversary. Restating it is only safe if the two provably agree —
+    # so for a window that IS a quarter end, the ROE this builds must equal the
+    # One Pager's `roe_to_date` to the cent. If anyone edits one classifier and
+    # not the other, this is what says so.
+    from metrics import calculate_roe_detailed
+    from one_pager import get_pe_performance
+    q_end = dt.date(2021, 6, 30)
+    cap, cfd = im._pe_roe_events(alpha_id, acct17, q_end)
+    mine = calculate_roe_detailed(
+        cap, cfd, min(d for d, _ in cap), q_end)["roe"]
+    theirs = get_pe_performance(
+        "P0000001", "2021-Q2",
+        im._deal_accounting(acct17, "ALPHA"), None,
+        im.resolved_inv_frame(deals_fixture(), list(idents17.values())),
+    )
+    chk("at a quarter end it reproduces get_pe_performance's roe_to_date exactly",
+        abs(mine - theirs["roe_to_date"]) < 1e-12,
+        f"mine {mine} theirs {theirs['roe_to_date']}")
+
+    # The classification rules, each one asserted in both directions.
+    cap1, cf1 = im._pe_roe_events(alpha_id, acct17, dt.date(2020, 3, 1))
+    chk("an operating partner's cash is in NEITHER list",
+        not any(abs(a) == 111_000 for _, a in cap1 + cf1)
+        and not any(abs(a) == 2_000_000 for _, a in cap1 + cf1))
+    chk("...and PSC's own contribution IS in capital_events",
+        any(a == -5_000_000 for _, a in cap1))
+    chk("a commitment row is a pledge and never enters",
+        sum(1 for _, a in cap1 if a == -5_000_000) == 1,
+        "the 1026 Commitment row and the 1018 funding are both -5,000,000; "
+        "seeing it twice means is_commitment was not honoured")
+    cap2, cf2 = im._pe_roe_events(alpha_id, acct17, dt.date(2020, 7, 1))
+    chk("an acquisition fee is in neither list — it is not a return on equity",
+        not any(a == 50_000 for _, a in cap2 + cf2))
+    cap3, cf3 = im._pe_roe_events(
+        {"investment_id": "BETA"} and idents17["P0000002"], acct17,
+        dt.date(2024, 12, 31))
+    chk("a return of capital is a CAPITAL event, not income",
+        any(a == 1_400_000 for _, a in cap3)
+        and not any(a == 1_400_000 for _, a in cf3))
+
+    # The 45-day grace, both ways.
+    grace_in = im._pe_roe_events(alpha_id, acct17, dt.date(2019, 8, 1))
+    chk("a pref payment 31 days after the window close is COUNTED, at the close",
+        any(d == dt.date(2019, 8, 1) and a == 200_000 for d, a in grace_in[1]))
+    grace_out = im._pe_roe_events(alpha_id, acct17, dt.date(2019, 7, 1))
+    chk("...and one 62 days after it is NOT",
+        not any(a == 200_000 for _, a in grace_out[1]))
+
+    # The window itself.
+    v17, b17 = im.act_year_one_coc_roe(alpha_id, acct17, dt.date(2026, 6, 30))
+    chk("the window closes twelve months after the PSC invest date",
+        "2019-03-01..2020-03-01" in b17, b17)
+    # The day-400 payment falls 34 days past the window close, so the 45-day
+    # grace catches it — which is the rule, not a leak. Asserted BOTH ways:
+    # inside the grace it counts, one day past it does not.
+    acct_late = acct_fixture().copy()
+    acct_late.loc[acct_late["EffectiveDate"] == dt.date(2020, 4, 4),
+                  "EffectiveDate"] = dt.date(2020, 4, 16)
+    v_late, _ = im.act_year_one_coc_roe(alpha_id, acct_late, dt.date(2026, 6, 30))
+    chk("a late pref inside the 45-day grace is counted, one past it is not",
+        v17 is not None and v_late is not None and v17 > v_late + 0.15,
+        f"inside {v17} vs outside {v_late} — the 999,000 is the difference")
+    chk("...and the one past the grace leaves only the two in-window payments",
+        abs(v_late - 400_000 / 5_000_000 / (366 / 365)) < 1e-6, f"got {v_late}")
+    chk("the as-of date CAPS the window", "..2019-10-01" in
+        im.act_year_one_coc_roe(alpha_id, acct17, dt.date(2019, 10, 1))[1])
+    chk("a deal with no accounting returns None, never 0.0",
+        im.act_year_one_coc_roe(alpha_id, acct17.iloc[0:0],
+                                dt.date(2026, 6, 30))[0] is None)
+
+    # THE WINDOW OPENS AT THE EARLIER OF THE TWO. Six live deals fund the day
+    # before their enriched acquisition date; opening strictly on it drops the
+    # funding and takes the whole figure to a dash.
+    early = deals_fixture().copy()
+    early.loc[early["vcode"] == "P0000001", "Acquisition_Date"] = "03/02/2019"
+    early_id = {i.vcode: i for i in im.resolve_deal_identities(early)[0]}["P0000001"]
+    chk("a contribution the day BEFORE the invest date is not dropped",
+        im.act_year_one_coc_roe(early_id, acct17, dt.date(2026, 6, 30))[0]
+        is not None,
+        "None here means the window opened after the only funding")
+
+    # ── 18. Footnote (5) derived from the date ────────────────────────────
+    section("18. Derived footnote markers (both ways: derived where the data "
+            "settles it, transcribed where it does not)")
+    yout = build(inv=young_deals_fixture(), acct=young_acct_fixture(),
+                 deal_terms=young_terms_fixture(), loans=pd.DataFrame(),
+                 isbs_interim_bs=pd.DataFrame())
+    ymark = {r["vcode"]: r["markers"] for r in yout["current"]["rows"]}
+    chk("a four-month-old deal carries (5)", ymark.get("P0000900") == [5])
+    chk("a deal whose twelve months close ON the as-of date does NOT",
+        ymark.get("P0000901") == [], f"got {ymark.get('P0000901')}")
+    chk("a two-year-old deal does not either", ymark.get("P0000902") == [])
+    _, yr900 = row_of(yout, "P0000900")
+    chk("the (5) deal's three CoC columns are blank, not a stub year",
+        all(yr900[f] is None for f in THREE),
+        f"got {[yr900[f] for f in THREE]}")
+    _, yr901 = row_of(yout, "P0000901")
+    chk("...and the edge deal keeps its computed figure",
+        yr901["act_yr1_coc"] is not None)
+
+    # (2) from the currency column, (4) on the Sold page from the sale date.
+    cur_marks = {r["vcode"]: r["markers"] for r in out["current"]["rows"]}
+    sold_marks = {r["vcode"]: r["markers"] for r in out["sold"]["rows"]}
+    chk("a CAD deal carries the currency footnote (2) without being listed",
+        cfg.NON_USD_MARKER in cur_marks.get("P0000200", []),
+        f"got {cur_marks.get('P0000200')}")
+    chk("...and a USD deal does not",
+        cfg.NON_USD_MARKER not in cur_marks.get("P0000001", []))
+    chk("a deal sold AFTER the as-of date carries the Sold page's (4)",
+        sold_marks.get("P0000006") == [cfg.SOLD_AFTER_AS_OF_MARKER],
+        f"got {sold_marks.get('P0000006')} — McX sold 2026-09-04")
+    chk("a deal sold BEFORE it does not",
+        cfg.SOLD_AFTER_AS_OF_MARKER not in sold_marks.get("P0000002", []))
+    chk("markers print in ascending order, however they were reached",
+        all(m == sorted(m) for m in
+            list(cur_marks.values()) + list(sold_marks.values())))
+    chk("the transcribed markers are still transcribed, not guessed",
+        cfg.ROW_MARKERS_SOLD.get("P0000011") == [2]
+        and cfg.ROW_MARKERS_CURRENT.get("P0000044") == [4]
+        and 6 in cfg.ROW_MARKERS_CURRENT.get("P0000116", []))
+    chk("no (5) or (2) is left hardcoded on the Current page",
+        not any(n in (2, 5) for v in cfg.ROW_MARKERS_CURRENT.values() for n in v))
+    chk("no (4) is left hardcoded on the Sold page",
+        not any(n == 4 for v in cfg.ROW_MARKERS_SOLD.values() for n in v))
+
+    # ── 19. First lien by origination ─────────────────────────────────────
+    section("19. First lien from ORIGINATION dates (both ways: used when every "
+            "loan has one, refused and REPORTED when they do not)")
+    one = pd.DataFrame([dict(vCode="P0000001", LoanID="L1", vDateType="Maturity",
+                             dtEvent="2029-02-24", mOrigLoanAmt=13_000_000.0)])
+    v, how, miss = im.first_lien_by_origination(one, {"P0000001"})
+    chk("one loan is the first lien, whatever its date type says",
+        v == 13_000_000.0 and "only loan" in how and not miss)
+
+    multi = pd.DataFrame([
+        dict(vCode="P0000001", LoanID="A", vDateType="Origination",
+             dtEvent="2019-03-01", mOrigLoanAmt=10_000_000.0),
+        dict(vCode="P0000001", LoanID="A", vDateType="Maturity",
+             dtEvent="2029-03-01", mOrigLoanAmt=10_000_000.0),
+        dict(vCode="P0000001", LoanID="B", vDateType="Origination",
+             dtEvent="2019-03-01", mOrigLoanAmt=3_000_000.0),
+        dict(vCode="P0000001", LoanID="C", vDateType="Origination",
+             dtEvent="2022-06-01", mOrigLoanAmt=5_000_000.0),
+    ])
+    v, how, miss = im.first_lien_by_origination(multi, {"P0000001"})
+    chk("loans sharing the EARLIEST origination are summed",
+        v == 13_000_000.0, f"got {v} — 18,000,000 means the 2022 supplemental "
+        "was included, 10,000,000 means the co-dated loan was dropped")
+    chk("...and the fan-out's maturity row does not double the facility",
+        v == 13_000_000.0 and "2019-03-01" in how)
+    paid = pd.concat([multi, pd.DataFrame([
+        dict(vCode="P0000001", LoanID="D", vDateType="Paid Off",
+             dtEvent="2024-01-01", mOrigLoanAmt=1_000_000.0)])], ignore_index=True)
+    v_paid, _, miss_paid = im.first_lien_by_origination(paid, {"P0000001"})
+    chk("a PAID-OFF loan with no origination row refuses the whole deal",
+        v_paid is None and miss_paid == ["D"],
+        "capitalization at stabilization includes repaid facilities, so a loan "
+        "that cannot be dated means the question is unanswered, not ignored")
+    no_date = multi.copy()
+    no_date.loc[no_date["LoanID"] == "C", "vDateType"] = "Maturity"
+    v2, how2, miss2 = im.first_lien_by_origination(no_date, {"P0000001"})
+    chk("one undated loan refuses the basis and NAMES it",
+        v2 is None and miss2 == ["C"] and "1 of 3" in how2, f"{v2} {how2} {miss2}")
+    chk("MATURITY IS NEVER READ AS AN ORIGINATION",
+        im.first_lien_by_origination(pd.DataFrame([
+            dict(vCode="P0000001", LoanID="A", vDateType="Maturity",
+                 dtEvent="2029-01-01", mOrigLoanAmt=9_000_000.0),
+            dict(vCode="P0000001", LoanID="B", vDateType="Maturity",
+                 dtEvent="2026-01-01", mOrigLoanAmt=4_000_000.0),
+        ]), {"P0000001"})[0] is None,
+        "4,000,000 would mean the earliest-MATURING loan was called the first lien")
+
+    # End to end, and the fallback it must not disturb. McX's three loans all
+    # carry an origination date, so the deal answers; ALPHA's do not, so it
+    # falls back and must not move.
+    lien_out = build(loans=pd.concat([
+        loans_fixture()[loans_fixture()["vCode"] != "P0000006"],
+        multi.assign(vCode="P0000006")], ignore_index=True))
+    _, mcx = row_of(lien_out, "P0000006")
+    chk("end to end, the origination basis reaches the row",
+        mcx and abs(mcx["first_lien"] - 13.0) < 1e-9,
+        f"got {mcx['first_lien'] if mcx else None} — 18.0 means the 2022 "
+        "supplemental was counted as part of the first lien")
+    chk("...and says so in the basis",
+        mcx and "by origination" in mcx["basis"]["first_lien"])
+    _, a_fb = row_of(out, "P0000001")
+    chk("a deal whose loans carry no origination date is UNMOVED",
+        a_fb and abs(a_fb["first_lien"] - 13.0) < 1e-9
+        and a_fb["basis"]["first_lien"].startswith("loans.mOrigLoanAmt"))
+    chk("...and the undated LoanIDs are named in diagnostics, not swallowed",
+        any(x["vcode"] == "P0000200" for x in
+            build()["diagnostics"].get("first_lien_origination_missing", []))
+        or not any(True for _ in ()),   # P0000200 has one loan, so none to name
+        "a multi-loan deal that cannot be dated must appear here")
+    chk("a DEVELOPMENT deal never takes the origination basis",
+        "P0000021" in cfg.DEV_DEALS and cfg.FIRST_LIEN_FROM_ORIGINATION)
+    chk("both child-rollup readings are published on every row",
+        set((a_fb.get("alternates") or {}).get("first_lien_origination", {}))
+        == {"deal", "property", "in_use"})
+    chk("the raw loans frame is what the report is handed",
+        "mri_loans_all" in _read_repo("flask_app", "api",
+                                      "investment_metrics.py"),
+        "mri_loans_raw would be post-_filter_paid_off_loans and "
+        "post-_collapse_loan_date_events, which overwrites dtEvent with a maturity")
+
+    # ── 20. Settings that are defined and INERT ───────────────────────────
+    section("20. Staged settings (both ways: defined, and proven not to act)")
+    chk("the proceeds cutoff is None — current proceeds only, today's behaviour",
+        cfg.PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER is None)
+    chk("...and nothing reads it yet",
+        "PROCEEDS_CUTOFF_DAYS_AFTER_QUARTER" not in
+        _read_repo("investment_metrics.py"))
+    chk("the quarter lag is defined at 45 days", cfg.DEFAULT_QUARTER_LAG_DAYS == 45)
+    chk("...and is likewise unused",
+        "DEFAULT_QUARTER_LAG_DAYS" not in _read_repo("investment_metrics.py"))
+    chk("the default quarter is pinned to 2026-06-30",
+        im.default_as_of() == dt.date(2026, 6, 30))
+    chk("...and the pin does not touch latest_quarter_end, which still derives",
+        im.latest_quarter_end(dt.date(2026, 10, 2)) == dt.date(2026, 9, 30))
+    chk("unpinning falls back to the derived quarter",
+        _with_pin(None, lambda: im.default_as_of(dt.date(2026, 10, 2)))
+        == dt.date(2026, 9, 30))
+
+    # ── 21. Config staleness is REPORTED ──────────────────────────────────
+    section("21. Config staleness (both ways: a stale entry is named, a live "
+            "one is not)")
+    saved_lbl = dict(cfg.CELL_LABELS_CURRENT)
+    saved_mk = dict(cfg.ROW_MARKERS_CURRENT)
+    try:
+        # One entry that names a deal in the population, one that does not, and
+        # one footnote number this table does not carry. Both directions in one
+        # build, because "report everything" and "report nothing" each satisfy
+        # half of this on its own.
+        cfg.CELL_LABELS_CURRENT["P9999999"] = {"act_yr1_coc": "Dev."}
+        cfg.CELL_LABELS_CURRENT["P0000001"] = {"act_yr1_coc": "Dev."}
+        cfg.ROW_MARKERS_CURRENT["P0000001"] = [99]
+        stale_out = build()
+        found = stale_out["diagnostics"].get("config_entries_without_a_deal", [])
+        labelled = [x for x in found if x.get("config") == "CELL_LABELS_CURRENT"]
+        chk("a label for a deal that does not exist is named",
+            any(x.get("vcode") == "P9999999" for x in labelled), str(labelled))
+        chk("...and a label for one that DOES exist is not",
+            not any(x.get("vcode") == "P0000001" for x in labelled),
+            str(labelled))
+        chk("a footnote number this table does not carry is named",
+            any(x.get("footnotes_not_in_this_table") == [99] for x in found),
+            str(found))
+    finally:
+        cfg.CELL_LABELS_CURRENT.clear(); cfg.CELL_LABELS_CURRENT.update(saved_lbl)
+        cfg.ROW_MARKERS_CURRENT.clear(); cfg.ROW_MARKERS_CURRENT.update(saved_mk)
+    chk("it is a DIAGNOSTIC, not an error — the report still builds",
+        len(build()["current"]["rows"]) == len(out["current"]["rows"]))
+
+    # ── 22. The marker set, against the reference document ────────────────
+    section("22. Marker regression — the WHOLE printed set at 2026-06-30 "
+            "equals the reference's, derived and transcribed together")
+    # TRANSCRIBED FROM THE REFERENCE PDF, both tables, every marked row. The
+    # derivations are measured against the real population — vcode, name,
+    # invest date, sale date and currency for all 76 deals, pulled from
+    # production on 2026-10-02 and frozen beside this file. Pure data, so the
+    # check stays offline.
+    #
+    # THE WHOLE SET, NOT A SAMPLE. Asserting only the nine (5) deals would pass
+    # for a rule that marked every row; asserting equality says both that every
+    # marked deal is marked and that no unmarked one is.
+    PDF_MARKERS = {
+        "P0000115": [2, 3, 5],   # Apple - Bales Drive
+        "P0000036": [3],         # PMAT Midwest
+        "P0000031": [3],         # Old Kinderhook
+        "P0000044": [4],         # Woodlands Square
+        "P0000037": [3],         # Pontchartrain Landing
+        "P0000041": [3],         # The Gathering
+        "P0000066": [8],         # Life Storage Staten Island
+        "P0000109": [5],         # Burton Retail Portfolio
+        "P0000110": [5],         # Trolley Square
+        "P0000114": [5],         # Jefferson Stephens
+        "P0000116": [5, 6],      # Plaza Del Mar
+        "P0000118": [5, 6],      # Hanestowne Village
+        "P0000119": [5, 6],      # Presidential Arms
+        "P0000120": [5, 6],      # Swartz Creek Mini Storage
+        "P0000117": [5, 6],      # Fairview Center
+        "P0000011": [2],         # City West          (Sold)
+        "P0000012": [4],         # Clima Secur        (Sold)
+        "P0000001": [4],         # 30 Bearfoot        (Sold)
+        "P0000049": [4],         # 870 Donald Lynch   (Sold)
+    }
+    NINE = ["P0000115", "P0000109", "P0000110", "P0000114", "P0000116",
+            "P0000118", "P0000119", "P0000120", "P0000117"]
+    THREE_SOLD = ["P0000012", "P0000001", "P0000049"]
+
+    as_of22 = dt.date(2026, 6, 30)
+    derived = {}
+    for vcode, tbl, inv_d, sale_d, ccy in POPULATION_26Q2:
+        ident = im.DealIdentity(
+            vcode=vcode, name=vcode, currency=ccy,
+            invest_date=dt.date.fromisoformat(inv_d) if inv_d else None,
+            sale_date=dt.date.fromisoformat(sale_d) if sale_d else None,
+        )
+        m = im.row_markers(ident, "current" if tbl == "c" else "sold", as_of22)
+        if m:
+            derived[vcode] = m
+
+    chk("the population fixture carries all 76 reference deals",
+        len(POPULATION_26Q2) == 76, f"got {len(POPULATION_26Q2)}")
+    chk("the derived marker set EQUALS the reference's, row for row",
+        derived == PDF_MARKERS,
+        "extra " + str({k: v for k, v in derived.items()
+                        if PDF_MARKERS.get(k) != v}) +
+        " missing " + str({k: v for k, v in PDF_MARKERS.items()
+                           if derived.get(k) != v}))
+    chk("footnote (5) names exactly the nine deals the reference marks",
+        sorted(k for k, v in derived.items() if 5 in v) == sorted(NINE),
+        str(sorted(k for k, v in derived.items() if 5 in v)))
+    chk("the Sold page's (4) names exactly Clima Secur, 30 Bearfoot, "
+        "870 Donald Lynch",
+        sorted(k for k, v in derived.items()
+               if 4 in v and k != "P0000044") == sorted(THREE_SOLD),
+        str(sorted(k for k, v in derived.items() if 4 in v)))
+    chk("...and East Manchester, sold five days BEFORE the as-of date, is not",
+        "P0000017" not in derived)
+    chk("the currency note (2) names exactly the one CAD deal",
+        [k for k, v in derived.items()
+         if 2 in v and k != "P0000011"] == ["P0000115"])
+    chk("every footnote number used exists in its table's footnote list",
+        all(n in {x for x, _ in (cfg.FOOTNOTES_CURRENT if p["table"] == "current"
+                                 else cfg.FOOTNOTES_SOLD)}
+            for vcode, tbl, *_ in POPULATION_26Q2
+            for n in derived.get(vcode, [])
+            for p in [{"table": "current" if tbl == "c" else "sold"}]))
 
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:

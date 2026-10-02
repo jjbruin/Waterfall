@@ -137,6 +137,31 @@ def _to_int(value: Any) -> Optional[int]:
 # ══════════════════════════════════════════════════════════════════════════
 # as-of date
 # ══════════════════════════════════════════════════════════════════════════
+def plus_months(d: _dt.date, n: int) -> _dt.date:
+    """``d`` plus ``n`` CALENDAR months, clamped to the end of the month.
+
+    Calendar months, not 365 days, because footnote (5) says "less than 1 year"
+    and a year is what a reader means by it. The two agree on every live deal at
+    as-of 2026-06-30 — both select exactly the nine the reference marks — but
+    they part company on a 29 February and on any deal whose anniversary falls
+    within a day of the as-of date, and the calendar reading is the one the
+    footnote states.
+    """
+    y, m = divmod(d.month - 1 + n, 12)
+    y, m = d.year + y, m + 1
+    last = [31, 29 if (y % 4 == 0 and (y % 100 or y % 400 == 0)) else 28,
+            31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+    return _dt.date(y, m, min(d.day, last))
+
+
+def default_as_of(today: Optional[_dt.date] = None) -> _dt.date:
+    """The quarter the report OPENS on. See ``cfg.DEFAULT_QUARTER``."""
+    pinned = getattr(cfg, "DEFAULT_QUARTER", None)
+    if pinned:
+        return _dt.date.fromisoformat(pinned)
+    return latest_quarter_end(today)
+
+
 def latest_quarter_end(today: Optional[_dt.date] = None) -> _dt.date:
     """The most recent quarter end STRICTLY BEFORE ``today``.
 
@@ -384,6 +409,38 @@ def classify(ident: DealIdentity, as_of: _dt.date) -> str:
     return SOLD if ident.is_sold else CURRENT
 
 
+def is_young_deal(ident: DealIdentity, as_of: _dt.date) -> bool:
+    """Footnote (5): under a year of operating history at the as-of date."""
+    if ident.invest_date is None:
+        return False
+    return plus_months(ident.invest_date, cfg.YOUNG_DEAL_MONTHS) > as_of
+
+
+def row_markers(ident: DealIdentity, table: str, as_of: _dt.date) -> List[int]:
+    """The footnote numbers printed after a deal's name, hardcoded + derived.
+
+    Three markers are DERIVED and the rest transcribed — see the note on
+    ``cfg.ROW_MARKERS_CURRENT`` for which and why. Merged and sorted, so a
+    hardcoded ``[3]`` plus a derived currency note and a derived young-deal note
+    print as ``(2)(3)(5)``, which is the order the reference prints them in.
+
+    SORTING IS THE WHOLE MERGE RULE. The reference prints markers in ascending
+    numeric order on every one of its 76 rows, so there is nothing else to
+    preserve, and a hand-ordered list would be one more thing to keep in step.
+    """
+    if table == CURRENT:
+        marks = set(cfg.ROW_MARKERS_CURRENT.get(ident.vcode, []))
+        if norm_id(ident.currency) not in ("", "USD"):
+            marks.add(cfg.NON_USD_MARKER)
+        if is_young_deal(ident, as_of):
+            marks.add(cfg.YOUNG_DEAL_MARKER)
+    else:
+        marks = set(cfg.ROW_MARKERS_SOLD.get(ident.vcode, []))
+        if ident.sale_date and ident.sale_date > as_of:
+            marks.add(cfg.SOLD_AFTER_AS_OF_MARKER)
+    return sorted(marks)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # capitalization
 # ══════════════════════════════════════════════════════════════════════════
@@ -565,11 +622,118 @@ def capitalization_sources(
     return out
 
 
+#: ``vDateType`` spellings. MRI carries exactly three on the live table:
+#: ``Maturity`` (83 rows), ``Origination`` (4) and ``Paid Off`` (4).
+_ORIGINATION = "origination"
+
+
+def _loan_columns(loans: Optional[pd.DataFrame]):
+    """``(vcode, LoanID, vDateType, dtEvent, mOrigLoanAmt)``, or None."""
+    if loans is None or loans.empty:
+        return None
+    cols = {c.lower(): c for c in loans.columns}
+    need = ("loanid", "vdatetype", "dtevent", "morigloanamt")
+    vc = cols.get("vcode")
+    if not vc or any(k not in cols for k in need):
+        return None
+    return (vc, cols["loanid"], cols["vdatetype"], cols["dtevent"],
+            cols["morigloanamt"])
+
+
+def first_lien_by_origination(
+    loans: Optional[pd.DataFrame], want: set,
+) -> Tuple[Optional[float], str, List[Any]]:
+    """The loans originated FIRST, summed. ``(value, how, loans_without_a_date)``.
+
+    Returns ``(None, reason, missing)`` whenever the deal's loans cannot settle
+    the question, and the caller falls back. ``missing`` names the LoanIDs with
+    no Origination row so the gap is reportable rather than inferred from a
+    silent fallback.
+
+    THE RAW FRAME IS REQUIRED and the caller supplies it. This reads
+    ``mri_loans_all`` — MRI's rows before ``_filter_paid_off_loans`` and
+    ``_collapse_loan_date_events``, both of which would destroy the input: the
+    first drops a repaid facility that was still part of the capitalization at
+    stabilization, and the second KEEPS ONE ROW PER FACILITY AND OVERWRITES ITS
+    ``dtEvent`` WITH A MATURITY DATE, which is the one value this must never
+    read as an origination. Neither function is touched; this just reads
+    upstream of them, which the report already did.
+    """
+    cc = _loan_columns(loans)
+    if cc is None:
+        return None, "loans frame has no date-event columns", []
+    vc, lid, dtc, evc, amtc = cc
+    m = loans[loans[vc].map(norm_id).isin(want)]
+    if m.empty:
+        return None, "no loans on record", []
+
+    ids = list(dict.fromkeys(m[lid].tolist()))
+    if len(ids) == 1:
+        total = pd.to_numeric(
+            m.drop_duplicates(subset=[lid])[amtc], errors="coerce"
+        ).fillna(0.0).sum()
+        return (float(total) or None), "the deal's only loan", []
+
+    kind = m[dtc].astype(str).str.strip().str.lower()
+    orig = m[kind == _ORIGINATION].copy()
+    orig["_d"] = pd.to_datetime(orig[evc], errors="coerce")
+    orig = orig.dropna(subset=["_d"])
+    dated = set(orig[lid].tolist())
+    missing = [i for i in ids if i not in dated]
+    if missing:
+        return (None,
+                f"{len(missing)} of {len(ids)} loans carry no origination date",
+                missing)
+
+    first = orig["_d"].min()
+    take = orig[orig["_d"] == first].drop_duplicates(subset=[lid])
+    total = pd.to_numeric(take[amtc], errors="coerce").fillna(0.0).sum()
+    return (float(total) or None,
+            f"{len(take)} of {len(ids)} loans originated "
+            f"{first.date().isoformat()}, summed", [])
+
+
+def first_lien_origination_variants(
+    ident: DealIdentity, loans: Optional[pd.DataFrame],
+    child_vcodes: Optional[List[str]],
+) -> Dict[str, Any]:
+    """Both child-rollup readings of the origination rule, measured together.
+
+    ``deal`` takes the earliest origination across the parent and its children
+    as ONE date; ``property`` takes each property's own earliest and sums those.
+    They differ only for a portfolio whose properties closed on different days,
+    and which is right is a question for the data — so both are computed on
+    every row and published. ``cfg.FIRST_LIEN_CHILD_BASIS`` names the one in use.
+    """
+    own = {norm_id(v) for v in (ident.vcode, ident.shadow_vcode) if v}
+    kids = [norm_id(v) for v in (child_vcodes or []) if v and norm_id(v) not in own]
+
+    deal_v, deal_how, deal_missing = first_lien_by_origination(
+        loans, own | set(kids))
+
+    per: List[Tuple[str, Optional[float], str, list]] = []
+    for group in [own] + [{k} for k in kids]:
+        per.append((sorted(group)[0],) + first_lien_by_origination(loans, group))
+    have = [p[1] for p in per if p[1] is not None]
+    prop_v = sum(have) if (have and len(have) == len(per)) else None
+
+    return {
+        "deal": {"value": deal_v, "how": deal_how, "missing": deal_missing},
+        "property": {"value": prop_v,
+                     "how": f"per-property earliest origination, {len(per)} "
+                            f"propert{'y' if len(per) == 1 else 'ies'} summed",
+                     "parts": [{"vcode": v, "value": x, "how": h}
+                               for v, x, h, _ in per]},
+        "in_use": cfg.FIRST_LIEN_CHILD_BASIS,
+    }
+
+
 def first_lien(
     ident: DealIdentity,
     loans: Optional[pd.DataFrame],
     isbs_interim_bs: Optional[pd.DataFrame],
     child_vcodes: Optional[List[str]] = None,
+    diag: Optional[dict] = None,
 ) -> Tuple[Optional[float], str]:
     """The first mortgage at stabilization, in dollars, plus its basis.
 
@@ -603,7 +767,31 @@ def first_lien(
     structural: "underwritten capitalization at stabilization" is an
     underwriting ASSUMPTION, and MRI records loans and balances, not
     assumptions. Every basis is published on the row so the gap stays visible.
+
+    ORIGINATION FIRST, WHERE THE DATA CAN SAY SO. "First lien" means the senior
+    mortgage and seniority is settled at origination, so a deal whose loans all
+    carry an Origination date is answered by the loans sharing the earliest one
+    — see ``first_lien_by_origination`` and the note on
+    ``cfg.FIRST_LIEN_FROM_ORIGINATION``. A DEVELOPMENT deal is exempt: it takes
+    the committed facility, because a construction loan's origination says when
+    the draw began and not what was committed. On the live table today no deal
+    with several loans reaches this path, so no printed figure moves; the ones
+    that cannot answer are named in ``first_lien_origination_missing`` rather
+    than falling back silently.
     """
+    if cfg.FIRST_LIEN_FROM_ORIGINATION and ident.vcode not in cfg.DEV_DEALS:
+        variants = first_lien_origination_variants(ident, loans, child_vcodes)
+        chosen = variants.get(cfg.FIRST_LIEN_CHILD_BASIS) or variants["deal"]
+        if chosen.get("value") is not None:
+            return chosen["value"], f"first lien by origination — {chosen['how']}"
+        if diag is not None and variants["deal"].get("missing"):
+            diag.setdefault("first_lien_origination_missing", []).append({
+                "vcode": ident.vcode, "name": ident.name,
+                "loan_ids": [str(i) for i in variants["deal"]["missing"]],
+                "reason": variants["deal"]["how"],
+                "fell_back_to": cfg.FIRST_LIEN_BASIS,
+            })
+
     for basis in (cfg.FIRST_LIEN_BASIS,) + tuple(cfg.FIRST_LIEN_FALLBACKS):
         value, note = _lien_basis(basis, ident, loans, isbs_interim_bs,
                                   child_vcodes)
@@ -837,6 +1025,152 @@ def act_year_one_coc(
     )
 
 
+#: The ROE engine's look-forward window for a pref payment that lands late.
+#: Mirrors ``one_pager.get_pe_performance``; see ``_pe_roe_events``.
+ROE_GRACE_DAYS = 45
+
+
+def _pe_roe_events(
+    ident: DealIdentity, acct: pd.DataFrame, through: _dt.date,
+) -> Tuple[List[Tuple[_dt.date, float]], List[Tuple[_dt.date, float]]]:
+    """``(capital_events, cf_distributions)`` on the One Pager's definitions.
+
+    THIS IS A TRANSCRIPTION OF ``one_pager.get_pe_performance``, NOT A SECOND
+    OPINION, and the reason it is a transcription rather than a call is worth
+    stating. That function takes a QUARTER STRING and derives its window from
+    it; Year-1 CoC needs a window that ends on the deal's own anniversary, which
+    is almost never a quarter end. The alternative was to widen
+    ``get_pe_performance``'s signature — code the One Pager, the Portfolio
+    Snapshot and the CoC Since Close columns all read — so the narrower change
+    is to restate the classification here and PROVE the two agree.
+
+    ``scripts/investment_metrics_check.py`` does exactly that: for a window that
+    IS a quarter end it asserts this function's ROE equals
+    ``get_pe_performance``'s ``roe_to_date`` to the cent, on fixtures carrying
+    every branch below. A divergence fails the build rather than printing.
+
+    The rules, each one load-bearing:
+
+    * **PSC's side only** — an operating partner's cash is not PSC's return.
+    * **Commitment rows are pledges**, not cash, and never enter.
+    * **Contributions are signed**: a POSITIVE contribution row is a correction
+      and must reduce capital, not add to it.
+    * **Return of capital and realized gain** are capital events but not income
+      — they reach ``capital_events`` and never ``cf_distributions``.
+    * **An acquisition fee is in neither.** It is cash PSC received (so it is a
+      proceed, and ``proceeds_to_date`` counts it) and it is not a return on
+      equity.
+    * **A negative CF distribution** reduces income but must NOT reach
+      ``capital_events``, where it would inflate weighted average capital.
+    * **The 45-day grace**: a pref payment contractually due within 30 days of
+      the window close routinely lands after it. It is counted, dated AT the
+      window close so the annualisation uses the boundary and not the payment
+      date.
+    """
+    rows = _deal_accounting(acct, ident.investment_id)
+    if rows.empty:
+        return [], []
+    r = rows.copy()
+    r["_d"] = pd.to_datetime(r["EffectiveDate"], errors="coerce")
+    r = r.dropna(subset=["_d"])
+    if r.empty:
+        return [], []
+    r = r[r["InvestorID"].map(is_psc_side)]
+    if "is_commitment" in r.columns:
+        r = r[~r["is_commitment"].fillna(False)]
+    if r.empty:
+        return [], []
+
+    r["_mt"] = r["MajorType"].fillna("").astype(str).str.strip().str.lower()
+    name_col = "TypeName" if "TypeName" in r.columns else (
+        "Typename" if "Typename" in r.columns else None)
+    r["_tn"] = (r[name_col].fillna("").astype(str).str.strip().str.lower()
+                if name_col else "")
+    r["_amt"] = pd.to_numeric(r["Amt"], errors="coerce").fillna(0.0)
+    r["_tid"] = (pd.to_numeric(r["TypeID"], errors="coerce").fillna(0.0)
+                 if "TypeID" in r.columns else 0.0)
+
+    capital: List[Tuple[_dt.date, float]] = []
+    cf: List[Tuple[_dt.date, float]] = []
+
+    for _, x in r[r["_d"].dt.date <= through].iterrows():
+        d, a, mt, tn = x["_d"].date(), float(x["_amt"]), x["_mt"], x["_tn"]
+        if "contrib" in mt:
+            capital.append((d, a))
+        elif "distri" in mt:
+            if "return of capital" in tn or "realized gain" in tn:
+                capital.append((d, a))
+            elif "acquisition fee" not in tn:
+                if a >= 0:
+                    capital.append((d, a))
+                cf.append((d, a))
+
+    grace_end = through + _dt.timedelta(days=ROE_GRACE_DAYS)
+    late = r[(r["_d"].dt.date > through) & (r["_d"].dt.date <= grace_end)]
+    for _, x in late.iterrows():
+        if "distri" not in x["_mt"]:
+            continue
+        tn = x["_tn"]
+        if not (float(x["_tid"]) == 1019.0 or "preferred return" in tn
+                or "pref return" in tn):
+            continue
+        a = float(x["_amt"])
+        if a >= 0:
+            capital.append((through, a))
+        cf.append((through, a))
+
+    return capital, cf
+
+
+def act_year_one_coc_roe(
+    ident: DealIdentity, acct: pd.DataFrame, as_of: _dt.date,
+) -> Tuple[Optional[float], str]:
+    """Return on equity over the deal's FIRST TWELVE MONTHS. ONE ENGINE.
+
+    The arithmetic is ``metrics.calculate_roe_detailed`` — the same call the One
+    Pager's ROE to Date goes through — and the only thing this changes is the
+    window: it opens at the PSC Invest. Date and closes twelve calendar months
+    later, or at the as-of date if that comes first.
+
+    THE WINDOW OPENS AT THE EARLIER OF THE INVEST DATE AND THE FIRST CASH EVENT,
+    and that is not a detail. ``deals.Acquisition_Date`` is overwritten at load
+    time with the earliest accounting entry for the investment across ALL
+    investors (see ``data_service._enrich_acquisition_dates``), and on six live
+    deals PSC's own first contribution is dated the day BEFORE it — Evergreen
+    Plaza, Giant-7, Mount Prospect, OREI, Pontchartrain and 870 Donald Lynch.
+    Opening strictly on the invest date drops that contribution, which takes
+    total contributions in the window to zero, which takes the whole figure to
+    an em dash. Measured: starting on the invest date alone produced no figure
+    at all on seven of 76 deals and sent Cocoplum to 36.0% against a reference
+    4.98%, because the denominator had lost nearly all its capital.
+
+    A PARTIAL WINDOW IS STILL RETURNED, and the caller decides. A deal under a
+    year old has a year-1 CoC that is arithmetically true and useless, and
+    footnote (5) is what handles it — see ``_apply_young_deal_substitution``.
+    Returning the stub here and suppressing it there keeps the suppression in
+    one place instead of two.
+    """
+    if ident.invest_date is None:
+        return None, "no PSC invest date"
+    end = min(plus_months(ident.invest_date, cfg.YOUNG_DEAL_MONTHS), as_of)
+    capital, cf = _pe_roe_events(ident, acct, end)
+    if not capital:
+        return None, "no PSC capital events in the first twelve months"
+    start = min(ident.invest_date, min(d for d, _ in capital))
+    from metrics import calculate_roe_detailed
+    detail = calculate_roe_detailed(capital, cf, start, end)
+    # A ZERO WEIGHTED AVERAGE IS "NOT PRICED", NOT "RETURNED NOTHING".
+    # calculate_roe_detailed zero-fills when the window holds no contribution,
+    # and 0.0% is a real figure on this column — Plaza Del Mar prints it.
+    if not detail.get("weighted_avg_capital"):
+        return None, f"no capital at risk between {start} and {end}"
+    return detail["roe"], (
+        f"ROE over {start.isoformat()}..{end.isoformat()} "
+        f"({cfg.YOUNG_DEAL_MONTHS} months from the PSC invest date, capped at "
+        f"the as-of date), {ROE_GRACE_DAYS}-day pref grace"
+    )
+
+
 def realized_irr(ident: DealIdentity, acct: pd.DataFrame) -> Optional[float]:
     """XIRR over PSC's contributions and distributions. ONE ENGINE: ``metrics.xirr``.
 
@@ -914,7 +1248,7 @@ def build_investment_metrics(
     today: Optional[_dt.date] = None,
 ) -> Dict[str, Any]:
     """Assemble the Current and Sold tables, their totals and the grand total."""
-    as_of = as_of or latest_quarter_end(today)
+    as_of = as_of or default_as_of(today)
 
     # ── done ONCE, not once per deal ──────────────────────────────────────
     # Both of these are pure narrowing: the rows every consumer below sees are
@@ -937,6 +1271,7 @@ def build_investment_metrics(
 
     dt_index = _deal_terms_index(deal_terms)
     rows_by_table: Dict[str, List[dict]] = {CURRENT: [], SOLD: []}
+    ident_by_vcode: Dict[str, DealIdentity] = {}
 
     for ident in identities:
         # Excluded BY NAME, with the reason, and reported. A deal the
@@ -951,6 +1286,7 @@ def build_investment_metrics(
                  "reason": cfg.EXCLUDED_DEALS[ident.vcode]})
             continue
         table = classify(ident, as_of)
+        ident_by_vcode[ident.vcode] = ident
         rows_by_table[table].append(
             _build_row(ident, table, as_of, acct, commitments, dt_index,
                        loans, isbs_interim_bs, inv_resolved, isbs_pe,
@@ -974,16 +1310,16 @@ def build_investment_metrics(
         "diagnostics": diag,
     }
 
-    for table, order, markers, title, footnotes in (
-        (CURRENT, cfg.ROW_ORDER_CURRENT, cfg.ROW_MARKERS_CURRENT,
-         cfg.TITLE_CURRENT, cfg.FOOTNOTES_CURRENT),
-        (SOLD, cfg.ROW_ORDER_SOLD, cfg.ROW_MARKERS_SOLD,
-         cfg.TITLE_SOLD, cfg.FOOTNOTES_SOLD),
+    for table, order, title, footnotes in (
+        (CURRENT, cfg.ROW_ORDER_CURRENT, cfg.TITLE_CURRENT,
+         cfg.FOOTNOTES_CURRENT),
+        (SOLD, cfg.ROW_ORDER_SOLD, cfg.TITLE_SOLD, cfg.FOOTNOTES_SOLD),
     ):
         rows = _ordered(rows_by_table[table], order, diag, table)
         for r in rows:
-            r["markers"] = markers.get(r["vcode"], [])
+            r["markers"] = row_markers(ident_by_vcode[r["vcode"]], table, as_of)
             _apply_young_deal_substitution(r, diag)
+        _check_config_population(rows, table, footnotes, diag)
         out[table] = {
             "title": title,
             "rows": rows,
@@ -1006,7 +1342,14 @@ def build_investment_metrics(
                                else cfg.VERTICAL_RULES_SOLD),
         }
     out[SOLD]["total_markers"] = cfg.SOLD_TOTAL_MARKERS
-    out["grand_total"] = _grand_total(out[CURRENT]["rows"] + out[SOLD]["rows"])
+    all_rows = out[CURRENT]["rows"] + out[SOLD]["rows"]
+    _check_config_population_any(all_rows, diag)
+    for vcode in cfg.EXCLUDED_DEALS:
+        if vcode not in {i.vcode for i in identities}:
+            diag.setdefault("config_entries_without_a_deal", []).append(
+                {"config": "EXCLUDED_DEALS", "vcode": vcode,
+                 "reason": "named for exclusion but no such deal exists"})
+    out["grand_total"] = _grand_total(all_rows)
     return out
 
 
@@ -1055,51 +1398,133 @@ def resolve_unloaded(key: str, terms: dict, computed: Dict[str, Optional[float]]
     return None, f"pending Alay — {spec.get('note')}"
 
 
-#: Footnote (5): under a year of operating history, so the Act. Yr-1 CoC
-#: column shows the PROJECTED year-1 figure instead.
-#: Footnote (6): under a quarter, so ALL FOUR CoC columns do.
-_YOUNG_DEAL_SUBSTITUTION = {
-    5: ("act_yr1_coc",),
-    6: ("proj_yr1_coc", "act_yr1_coc", "proj_coc_since_close",
-        "act_coc_since_close"),
-}
-
-
 def _apply_young_deal_substitution(row: dict, diag: dict) -> None:
-    """Do what footnotes (5) and (6) say, rather than only printing them.
+    """Do what footnote (5) says, rather than only printing it.
 
     A deal three months old has an actual cash-on-cash return that is
     arithmetically true and useless — it annualises a stub period — so the
-    reference substitutes the projected year-1 figure and says so in a
+    reference substitutes the PROJECTED year-1 figure and says so in a
     footnote. Printing the footnote while leaving the actual figure in place
-    would be the worst of both: the note tells the reader one thing and the
-    cell shows another.
+    would be the worst of both: the note tells the reader one thing and the cell
+    shows another.
 
-    THIS IS INERT UNTIL ALAY LOADS THE PROJECTED YEAR-1 CoC. With nothing to
-    substitute, the cell keeps its own value rather than being blanked —
-    replacing a real figure with an em dash on the strength of a footnote
-    would lose information rather than correct it. Every substitution that
-    could not be made is recorded so the gap is countable.
+    THE RULE IS THE DATE TEST, NOT THE MARKER. ``row['young_deal']`` is set from
+    ``is_young_deal``; the marker is derived from the same test, so the two
+    cannot disagree, and a deal ages out of the rule on its own rather than when
+    somebody remembers to edit a list.
+
+    PRECEDENCE: ``Dev.`` > ``Lease up`` > this rule > the computed figure. A
+    cell carrying a label in ``cfg.CELL_LABELS_*`` is left completely alone —
+    Trolley Square and Jefferson Stephens are both development deals AND under a
+    year old, and the reference prints ``Dev.`` for them, not a CoC.
+
+    WITH NOTHING TO SUBSTITUTE, THE CELL IS BLANKED. This is the one judgement
+    here and it reverses what this function used to do. ``proj_yr1_coc`` is
+    still in ``"none"`` mode, so there is no projected figure to put in — and
+    the alternative is to leave a stub-period actual sitting under a heading the
+    footnote has just told the reader means something else. Presidential Arms
+    funded in May and its first twelve months close in May 2027; its ROE over
+    seven weeks is not a year-1 return, and 8.0% on the page is a number
+    somebody will quote. An em dash says the app has no figure, which is true.
+
+    Every substitution that could not be made is still recorded in
+    ``young_deal_substitution_unavailable``, so the gap stays countable, and the
+    moment ``proj_yr1_coc`` is switched on the projected figure flows into these
+    same three cells with no further change.
     """
+    if not row.get("young_deal"):
+        return
     src = row.get("proj_yr1_coc")
-    fields: set = set()
-    for marker in row.get("markers", ()):
-        fields.update(_YOUNG_DEAL_SUBSTITUTION.get(marker, ()))
+    labels = row.get("labels") or {}
+    fields = [f for f in cfg.YOUNG_DEAL_SUBSTITUTED_COLUMNS if not labels.get(f)]
     if not fields:
         return
+    note = "(6)" if 6 in (row.get("markers") or ()) else "(5)"
     if src is None:
+        for f in fields:
+            row[f] = None
+            row.setdefault("basis", {})[f] = (
+                f"under a year of operating history — footnote {note} "
+                f"substitutes the projected Year-1 CoC, which is not loaded")
         diag.setdefault("young_deal_substitution_unavailable", []).append(
             {"vcode": row["vcode"], "name": row["name"],
-             "markers": row["markers"],
-             "reason": "projected Year-1 CoC is not loaded into MRI"})
+             "markers": row.get("markers"), "columns": list(fields),
+             "reason": "projected Year-1 CoC is not loaded into MRI; the "
+                       "cells are blank rather than showing a partial year"})
         return
-    for f in sorted(fields):
-        if f == "proj_yr1_coc":
-            continue
+    for f in fields:
         row[f] = src
         row.setdefault("basis", {})[f] = (
-            f"projected Year-1 CoC, substituted under footnote "
-            f"({'6' if 6 in row['markers'] else '5'})")
+            f"projected Year-1 CoC, substituted under footnote {note}")
+
+
+#: Every config dict keyed by vcode that this report reads, by table.
+_VCODE_CONFIGS = {
+    CURRENT: (("ROW_MARKERS_CURRENT", "ROW_MARKERS_CURRENT"),
+              ("CELL_LABELS_CURRENT", "CELL_LABELS_CURRENT"),
+              ("ROW_ORDER_CURRENT", "ROW_ORDER_CURRENT")),
+    SOLD: (("ROW_MARKERS_SOLD", "ROW_MARKERS_SOLD"),
+           ("CELL_LABELS_SOLD", "CELL_LABELS_SOLD"),
+           ("ROW_ORDER_SOLD", "ROW_ORDER_SOLD"),
+           ("REALIZED_IRR_SUPPRESSED", "REALIZED_IRR_SUPPRESSED")),
+}
+
+#: Keyed by vcode but not by table — checked against BOTH populations at once.
+_VCODE_CONFIGS_ANY = ("DEV_DEALS", "LEASE_UP_DEALS", "EXCLUDED_DEALS")
+
+
+def _check_config_population(rows: List[dict], table: str, footnotes,
+                             diag: dict) -> None:
+    """A transcribed vcode that no longer names a deal, and a marker with no note.
+
+    A REPORTED FINDING, NOT AN ERROR. Every entry in this file's hand-maintained
+    config was correct the day it was written, and the way it goes wrong is
+    silent: a deal is renamed, re-keyed, sold, or dropped from MRI, and the
+    entry simply stops matching. Nothing on the page says so — the footnote
+    marker just stops printing, or the ``Dev.`` label quietly becomes a number.
+    That is precisely the failure mode this whole file exists to avoid, so the
+    config is checked against the population it claims to describe, every build.
+
+    Two questions, both answered against THIS table's rows:
+
+    * does every vcode named in the config appear in the report's population?
+    * does every footnote number printed after a name exist in this table's
+      footnote list?
+
+    The second is not hypothetical: the Current and Sold pages have different
+    footnote (2)s and different (4)s, and a marker moved from one table's config
+    to the other would print a number that refers to the wrong note or to no
+    note at all.
+    """
+    present = {r["vcode"] for r in rows}
+    known = {n for n, _ in footnotes}
+    stale: List[dict] = []
+    for attr, label in _VCODE_CONFIGS[table]:
+        for vcode in getattr(cfg, attr, {}) or {}:
+            if vcode not in present:
+                stale.append({"config": label, "vcode": vcode, "table": table})
+    for r in rows:
+        unknown = [n for n in (r.get("markers") or []) if n not in known]
+        if unknown:
+            stale.append({"config": "row markers", "vcode": r["vcode"],
+                          "table": table, "name": r["name"],
+                          "footnotes_not_in_this_table": unknown})
+    if stale:
+        diag.setdefault("config_entries_without_a_deal", []).extend(stale)
+
+
+def _check_config_population_any(all_rows: List[dict], diag: dict) -> None:
+    """The table-agnostic vcode configs, against the whole population."""
+    present = {r["vcode"] for r in all_rows}
+    stale = [{"config": attr, "vcode": v}
+             for attr in _VCODE_CONFIGS_ANY
+             for v in (getattr(cfg, attr, ()) or ())
+             # EXCLUDED_DEALS is the one config whose vcodes are SUPPOSED to be
+             # absent from the tables — it is what removed them. It is checked
+             # against the identities instead, by the caller.
+             if attr != "EXCLUDED_DEALS" and v not in present]
+    if stale:
+        diag.setdefault("config_entries_without_a_deal", []).extend(stale)
 
 
 def _display_as_of(d: _dt.date) -> str:
@@ -1139,7 +1564,9 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     cap_alts = capitalization_sources(ident, acct, commitments)
     pref_usd, floss_usd, cap_basis = pref_and_first_loss(
         ident, acct, commitments, sources=cap_alts)
-    lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children)
+    lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children,
+                                      diag=diag)
+    lien_orig = first_lien_origination_variants(ident, loans, children)
 
     fx = cfg.CAD_TO_USD if norm_id(ident.currency) == "CAD" else 1.0
     to_m = lambda v: None if v is None else (v * fx) / MILLION  # noqa: E731
@@ -1166,6 +1593,7 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
 
     funded = _funded_to_date(ident, acct, as_of)
     proceeds = to_m(proceeds_to_date(ident, acct, table))
+    act_yr1_roe, yr1_roe_basis = act_year_one_coc_roe(ident, acct, as_of)
     act_yr1, yr1_basis = act_year_one_coc(ident, acct, funded)
     act_yr1_on_commit = (None if (pref_usd in (None, 0) or funded in (None, 0))
                          else (act_yr1 * funded / pref_usd if act_yr1 is not None else None))
@@ -1185,8 +1613,8 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
         "proj_yr1_coc", terms, {}, diag, ident.vcode)
     act_yr1_v, act_yr1_mode = resolve_unloaded(
         "act_yr1_coc", terms,
-        {"funded": act_yr1, "commitment": act_yr1_on_commit,
-         "default": act_yr1},
+        {"roe_window": act_yr1_roe, "funded": act_yr1,
+         "commitment": act_yr1_on_commit, "default": act_yr1_roe},
         diag, ident.vcode)
 
     row = {
@@ -1223,6 +1651,10 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
         "residual_cf_split_source": "deal_terms.pe_split_capital",
         "irr_lookback": _as_rate(terms.get("irr_lookback")),
         "labels": labels,
+        # Footnote (5)'s population, from the DATE and not from a list. The
+        # marker is derived from the same test in `row_markers`, so the note
+        # printed after the name and the cells that get blanked cannot disagree.
+        "young_deal": is_young_deal(ident, as_of),
         "basis": {
             "capitalization": cap_basis,
             "first_lien": lien_basis,
@@ -1244,10 +1676,17 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
             # agreed data rule, `commitment` is what the reference workbook
             # divides by.
             "act_yr1_coc": {
+                "on_roe_window": act_yr1_roe,
+                "roe_basis": yr1_roe_basis,
                 "on_funded": act_yr1,
                 "on_commitment": act_yr1_on_commit,
                 "basis": yr1_basis,
             },
+            # Both child-rollup readings of the origination rule — see
+            # `first_lien_origination_variants`. Published on every row so the
+            # default (`deal`) can be checked against the alternative rather
+            # than argued about.
+            "first_lien_origination": lien_orig,
             # ALL THREE bases, every row, with the one in use flagged. The
             # column is the report's weakest and the choice between them was
             # made on a count — publishing only the runner-up would hide the
