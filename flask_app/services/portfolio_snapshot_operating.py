@@ -608,7 +608,7 @@ def assemble_operating(investor_code: str, quarter: str, *,
     ``one_pager_provider(vcode, quarter)`` returns a One Pager payload.
     """
     from flask_app.services.portfolio_snapshot_service import (
-        group_total_label, PORTFOLIO_TOTAL_LABEL,
+        group_display_label, group_total_label, PORTFOLIO_TOTAL_LABEL,
     )
 
     loader = comment_loader or _default_comment_loader
@@ -916,6 +916,10 @@ def assemble_operating(investor_code: str, quarter: str, *,
         # every existing consumer — the component, the guardrails, a frozen
         # payload — keeps reading `groups` as {name: [rows]} unchanged.
         "group_labels": {g: group_total_label(g) for g in groups},
+        # The HEADER label, separate from the total label — see
+        # portfolio_snapshot_service.GROUP_DISPLAY_LABELS. Sent for every group
+        # so the component never has to know which ones differ from their key.
+        "group_display_labels": {g: group_display_label(g) for g in groups},
         "subtotals": {g: operating_subtotal(rows, group_total_label(g))
                       for g, rows in groups.items()},
         "total": operating_subtotal(

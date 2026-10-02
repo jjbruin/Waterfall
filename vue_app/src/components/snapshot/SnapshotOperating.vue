@@ -31,6 +31,17 @@ const emit = defineEmits<{
 }>()
 
 const groups = computed<Record<string, any[]>>(() => props.data?.groups || {})
+/**
+ * The group's HEADER label. The server sends `group_display_labels` keyed by the
+ * same group key as `groups`; it differs from the key only where the fund's
+ * printed name does (TGA6 -> "TGA VI"). Falling back to the key keeps every
+ * other fund rendering exactly as before, and keeps this working against a
+ * frozen payload saved before the field existed.
+ */
+function groupHeader(g: string): string {
+  return (props.data?.group_display_labels || {})[g] || g
+}
+
 const flaggedRows = computed<any[]>(() => props.data?.ownership_flagged || [])
 const diag = computed(() => props.data?.diagnostics || {})
 
@@ -134,7 +145,7 @@ const allRows = computed(() => {
 
         <template v-for="blk in allRows" :key="blk.group">
           <tbody>
-            <tr class="grouprow"><td class="sticky-l" colspan="8">{{ blk.group }}</td></tr>
+            <tr class="grouprow"><td class="sticky-l" colspan="8">{{ groupHeader(blk.group) }}</td></tr>
             <tr v-for="r in blk.rows" :key="r.vcode">
               <td class="sticky-l">
                 <!-- `&nbsp;` INSIDE the span, and the span jammed against the
