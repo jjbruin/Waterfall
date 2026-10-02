@@ -65,6 +65,8 @@ Employee: draft -> submitted ----> Manager: approved -> Accounting: coded -> bat
 5. **Submit** to the employee's approver. **Every submitter must have one** — submit is
    refused otherwise, and nobody approves their own report. Decided (Jim, Oct 2 2026):
    - **an approver's own report goes to the CFO** (the `cfo` role);
+   - **the CFO may approve ANY report too** (Jim, Oct 2 2026) — recorded as "CFO in
+     place of …" when it was sent to someone else;
    - **the CEO or the President may approve ANY report** when its approver is out —
      the `ceo` / `president` review roles that already exist in `review_roles`
      (One Pager chain), not new roles. Whoever approved is recorded, and an approval

@@ -269,7 +269,9 @@ def main():
     chk("it is on the manager's to-approve list",
         rid in [r["id"] for r in call("GET", "/reports?scope=to_approve", "mgr")[1]["reports"]])
     chk("the CEO may decide it", call("GET", "/reports/%d" % rid, "ceo")[1]["permissions"]["decide_as"] == "ceo")
-    for who in ("other", "acct", "cfo"):
+    chk("the CFO may decide any employee's report (Jim, Oct 2 2026)",
+        call("GET", "/reports/%d" % rid, "cfo")[1].get("permissions", {}).get("decide_as") == "cfo")
+    for who in ("other", "acct"):
         chk("%s gets 404 on a submitted report not theirs to decide" % who,
             call("GET", "/reports/%d" % rid, who)[0] == 404)
     chk("the owner cannot change it while submitted", add(rid)[0] == 403)
@@ -299,13 +301,19 @@ def main():
         call("POST", "/reports/%d/decide" % rid, "mgr", {"action": "return", "note": "x"})[0] == 403)
     chk("another employee still gets 404", call("GET", "/reports/%d" % rid, "other")[0] == 404)
 
-    print("\n8. The backups: the CEO or President in place of an absent approver")
+    print("\n8. The backups: the CFO, CEO or President in place of an absent approver")
     r2 = new_report("emp", "2026-10-01", "2026-10-31")
     add(r2)
     call("POST", "/reports/%d/submit" % r2, "emp")
     st, b = call("POST", "/reports/%d/decide" % r2, "pres", {"action": "approve"})
     chk("the President approves another's report",
         st == 200 and b["decided_basis"] == "President in place of Max Manager", b.get("decided_basis"))
+    r2b = new_report("emp", "2026-12-01", "2026-12-31")
+    add(r2b)
+    call("POST", "/reports/%d/submit" % r2b, "emp")
+    st, b = call("POST", "/reports/%d/decide" % r2b, "cfo", {"action": "approve"})
+    chk("the CFO approves another's report, recorded in place of the approver",
+        st == 200 and b["decided_basis"] == "CFO in place of Max Manager", b.get("decided_basis"))
 
     print("\n9. An approver's report goes to the CFO; the CFO's to the CEO or President")
     r3 = new_report("mgr")

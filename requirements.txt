@@ -18,7 +18,10 @@ Authlib>=1.6
 python-dotenv>=1.2
 
 # Data & computation
-pandas>=2.3
+# Bounded (Oct 2 2026): production has resolved pandas 3 since 3.0.0 (Jan 21
+# 2026) while local dev ran 2.3.3; 3.1.0rc0 shipped Sep 30. The bound keeps the
+# 3.0.x production already runs and stops 3.1 arriving unannounced (see v524).
+pandas>=2.3,<3.1
 numpy>=2.4
 scipy>=1.17
 openpyxl>=3.1

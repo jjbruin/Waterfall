@@ -692,7 +692,7 @@ onMounted(async () => {
       <p class="muted">
         The name an employee carries on their reports and the journal entry, and who approves
         them. An approver's own report goes to the CFO, and the CFO's to the CEO or President;
-        the CEO or President may approve any report when its approver is out.
+        the CFO, CEO or President may approve any report when its approver is out.
         <template v-if="!isAdminRole"> Only the admin changes these.</template>
       </p>
       <table class="data-table">

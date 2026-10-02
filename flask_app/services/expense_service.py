@@ -16,7 +16,7 @@ WHO APPROVES (Jim, Oct 2 2026):
   * an approver's OWN report goes to the CFO -- anyone holding the ``cfo``
     role -- and the CFO's own goes to the CEO or President;
   * the CEO or the President may approve ANY report, for when its approver is
-    out. They are the ``ceo`` / ``president`` REVIEW roles already in
+    out -- and so may the CFO (Jim, Oct 2 2026). They are the ``ceo`` / ``president`` REVIEW roles already in
     ``review_roles`` (the One Pager chain), not new login roles.
   Nobody decides their own report, whatever roles they hold. The route is
   COMPUTED at submit and stored on the report, so who may decide it does not
@@ -318,7 +318,9 @@ def decide_basis(engine, actor: dict, report: dict, holders=None) -> Optional[st
     if kind == "approver" and report.get("approver_user_id") and \
             int(report["approver_user_id"]) == int(actor["id"]):
         return "approver"
-    if kind == "cfo" and actor.get("role") == "cfo":
+    # The CFO may sign off ANY employee's report (Jim, Oct 2 2026), as the CEO
+    # and President may -- not only the approvers' own, which route to the CFO.
+    if actor.get("role") == "cfo":
         return "cfo"
     holders = holders if holders is not None else _review_role_holders(engine)
     held = holders.get(int(actor["id"])) or set()
@@ -984,7 +986,9 @@ def decide(engine, actor, report_id, action: str, note: Optional[str]) -> dict:
              "cfo": "the CFO", "ceo_president": "the CEO or President"}.get(r["route_kind"], "")
     recorded = {"approver": "approver", "cfo": "CFO", "ceo": "CEO",
                 "president": "President"}[basis]
-    in_place = (basis in BACKUP_REVIEW_ROLES and r["route_kind"] != "ceo_president")
+    # Signing off a report sent to someone else says so, whoever does it.
+    in_place = ((basis in BACKUP_REVIEW_ROLES and r["route_kind"] != "ceo_president")
+                or (basis == "cfo" and r["route_kind"] != "cfo"))
     basis_text = recorded + (" in place of %s" % named if in_place else "")
     now = _now()
     with engine.begin() as c:
