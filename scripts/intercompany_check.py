@@ -171,6 +171,15 @@ def section_fixture():
     chk("AMB24 Investigate at a 0.10 tolerance", tight["AMB24"]["status"] == "Investigate")
 
     chk("PSC Manager is not a row of its own", MGR not in rows)
+    # PANDAS 3 READS A SQL NULL AS NaN, NOT None (production, Oct 2 2026: an
+    # entity called NAN on the reconciliation). Tested on the values directly,
+    # so it fails here under pandas 2 too, where the read itself gives None.
+    import math
+    chk("a missing segment is blank, whether None, NaN or pd.NA",
+        ic._norm(None) == "" and ic._norm(math.nan) == "" and ic._norm(pd.NA) == ""
+        and ic._norm(" ppi2 ") == "PPI2")
+    chk("no reconciliation row is an entity called NAN",
+        not [e for e in rows if e in ("NAN", "NONE", "<NA>")], sorted(rows))
     ck = {x["key"]: x for x in res["checks"]}
     chk("opening present for 2026", ck["opening"]["ok"])
     chk("blank segment nets to 0 -> OK", ck["blank_segment"]["ok"]

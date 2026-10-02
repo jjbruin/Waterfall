@@ -225,7 +225,17 @@ def _has_table(engine, table: str) -> bool:
 
 
 def _norm(v) -> str:
-    return str(v).strip().upper() if v is not None else ""
+    # A MISSING VALUE IS BLANK, WHATEVER SHAPE IT ARRIVES IN. Under pandas 3 a
+    # SQL NULL comes back as NaN, not None, and `str(nan)` is "nan" -- so PSC
+    # Manager's unsegmented MR15000001 became an entity called NAN on the
+    # reconciliation (production, 202609 and 202610, Oct 2 2026) instead of the
+    # blank-segment check, and could have been offered a payment.
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except (TypeError, ValueError):     # pd.isna of a list-like
+        pass
+    return str(v).strip().upper()
 
 
 def _accounts(v) -> List[str]:
