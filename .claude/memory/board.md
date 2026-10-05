@@ -1,7 +1,6 @@
-# Board section (Phase 0 built Oct 5 2026, NOT deployed)
+# Board section (Phase 0 LIVE at v572, Oct 5 2026)
 
-**Status, Oct 5 2026:** Phase 0 is built on `feat/board-phase0`. Delete this paragraph
-when it ships. The plan is in Claude Docs, "Board Package — Development Plan":
+The plan is in Claude Docs, "Board Package — Development Plan":
 https://claude.ai/code/artifact/71e5c89f-933f-4b88-9e3e-f1b2e1d7a5b9. It records the
 seven decisions Jim made on Oct 5.
 

@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v571** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v572** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v571 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v572 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,22 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v572` = `1d97985` (BOARD SECTION, PHASE 0 -- an OPT-IN section granted only by the
+    admin USERNAME (optionally with an end date), permissions by username (editor,
+    package builder, salary view/edit) that need the section, the append-only access
+    log, comp_*/access_audit/user_permissions never exposed through Data Explorer, the
+    export or the assistant, and meetings with an as-of date per schedule. No figures.
+    Span vs live `06b451c`: `a58e16b`, `1d97985` (found IN THE PRE-FLIGHT REVIEW: the
+    expires_at column is added on each worker's first request, and with two workers the
+    loser's ALTER would 500 one click -- now race-safe, guardrailed; the first attempt at
+    that fix did not land and the new check is what showed it), docs, a zero-line merge.
+    Build `cang` 2m25s, tag locked, P1 re-run before the update (still v571).
+    VERIFIED ON PRODUCTION, read-only: expires_at present on user_section_access; 16
+    users, Board denied to all 16 (the admin username has it by name). Healthy, root
+    200, /api/board 401 without a token, BoardView in the served bundle, 0 tracebacks.
+    board_access_check in the container: sections 1-6 clean, then section 7 CRASHED on
+    the missing vue_app source (the image ships none -- the v527 trap); fixed after to
+    skip with a reason. Run it locally for the screen checks.)
   - `v571` = `06b451c` (ACCOUNTING'S ALLOCATION OVERRIDES on the PE Exposure report --
     one entity's split, for one investment, from a date, entered as AMOUNTS funded
     (accounting's BRNERD at PPIBPA/INVBPS, JBFAIR and NOTTNV at PSC3). Applied inside

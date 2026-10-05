@@ -269,11 +269,17 @@ def main():
     chk("a meeting no longer in draft refuses edits (409)", r.status_code == 409, r.status_code)
 
     print("\n7. The screen agrees with the server")
-    auth_ts = (ROOT / "vue_app/src/stores/auth.ts").read_text(encoding="utf-8")
-    vue_optin = set(re.findall(r"'([a-z_]+)'", re.search(r"OPT_IN_SECTIONS = \[([^\]]*)\]", auth_ts).group(1)))
-    chk("the Vue opt-in list is the registry's", vue_optin == set(S.opt_in_keys()), (vue_optin, S.opt_in_keys()))
-    side = (ROOT / "vue_app/src/components/layout/AppSidebar.vue").read_text(encoding="utf-8")
-    chk("the sidebar's Board link is gated on the section", "auth.hasSection('board')" in side)
+    auth_path = ROOT / "vue_app/src/stores/auth.ts"
+    if not auth_path.exists():
+        # The runtime image ships no vue_app/ source (Dockerfile copies only the
+        # built dist). SKIPPED, said so -- skip is not pass; run it locally.
+        print("   skip the Vue source is not in this tree (the container image ships none)")
+    else:
+        auth_ts = auth_path.read_text(encoding="utf-8")
+        vue_optin = set(re.findall(r"'([a-z_]+)'", re.search(r"OPT_IN_SECTIONS = \[([^\]]*)\]", auth_ts).group(1)))
+        chk("the Vue opt-in list is the registry's", vue_optin == set(S.opt_in_keys()), (vue_optin, S.opt_in_keys()))
+        side = (ROOT / "vue_app/src/components/layout/AppSidebar.vue").read_text(encoding="utf-8")
+        chk("the sidebar's Board link is gated on the section", "auth.hasSection('board')" in side)
 
     print("\n8. The end-date column arrives on production's existing table, race-safe")
     from sqlalchemy import create_engine, inspect as sa_inspect
