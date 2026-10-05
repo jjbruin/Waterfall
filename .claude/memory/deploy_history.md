@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v568** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v569** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v568 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v569 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,68 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v569` = `6f33f0a` (TWO LOAN-SUBTAB HARDCODES RETIRED BECAUSE THEIR REASONS
+    LAPSED, not because the page was wrong. Oct 5 2026, image
+    `waterfall-xirr:6f33f0a`, digest `sha256:bf151ece...`, tag locked, build `cand`.
+    ONE runtime file, `portfolio_snapshot_loan.py`, +15/-11.
+    (1) `KNOWN_LOAN_SUBTOTAL_DIFFS` loses `("Total PSC TGA 2022 LLC", "ltv")`. It
+    documented a diff that no longer exists: the published 60.4% reproduced only
+    while Jefferson Waters Creek's real 57.5% LTV was weighted in, and that
+    exception was retired 2026-09-01 so every development deal shows "Dev". With
+    Waters Creek out of the denominator the total is 61.6% and the entry described
+    a cost already paid. `snapshot_subtotal_method_check` asserts a KNOWN entry is
+    still LIVE and had been FAILING on this one -- an entry that outlives its diff
+    turns the check into noise, which is how a real diff gets missed. It now passes
+    **33/33**, NOT 34/34: removing the entry removes its assertion, so the
+    denominator falls with the numerator. A check whose total drops is not a check
+    that was skipped.
+    (2) Citizen Storage `P0000120` loses its `ytd_dscr` seed and KEEPS its LTV and
+    Debt Yield. Measured on live 26Q3 before the change: the deal now carries a
+    full YTD Interim IS (`ytd_noi` 142,682.78) and the engine computes **1.6735x**,
+    so the seeded 1.5x had stopped filling a gap and started OVERRIDING a real
+    figure -- the one thing the seeds exist not to do. LTV and Debt Yield stay
+    because those reasons DO hold: `valuation` is None, and `quarter_noi` and
+    `annualised_noi` are both None. The other five seeded deals are byte-identical,
+    verified key by key.
+    THE SUBTOTALS MOVED, AND THAT IS CORRECT -- recorded in full because it
+    contradicts a comment still in the same file. Row-level diff across BOTH
+    investor pages (OWPSC 55 rows, TGAM 38) is SIX FIELDS, all of them
+    P0000120's DSCR manual-state fields; no other deal, no other column. But the
+    debt-weighted means containing that deal moved with its displayed figure:
+
+        OWPSC  PSC1  ytd_dscr   1.5946575 -> 1.5954366   (typed_n 4 -> 3)
+        OWPSC  total ytd_dscr   1.6237423 -> 1.6243495
+        TGAM   TGA25 ytd_dscr   1.8514554 -> 1.8578197   (typed_n 2 -> 1)
+        TGAM   total ytd_dscr   1.7578363 -> 1.7586545
+
+    `aggregation_value` (`:595`) weights THE FIGURE A ROW DISPLAYS -- the typed
+    entry where there is one, the computed figure otherwise -- deliberately since
+    2026-09-02, so that a fund total can be re-derived from the rows printed above
+    it. A displayed DSCR rising 1.5 -> 1.6735 therefore moves every mean it is in.
+    **A COMMENT AT `:313` SAYS THE OPPOSITE** ("A typed cell contributes to no
+    aggregate") and is stale; it was read as authoritative in a hardcode inventory
+    earlier the same day and produced a wrong statement about this page. Two
+    contradicting comments now live in one file -- `open_items.md` 20.10, docs-only,
+    deliberately NOT bundled into this deploy.
+    VERIFIED ON LIVE after cutover: v569 alone at 100%, root 200, Citizen Storage's
+    cell reads the computed figure, and its payload shape matches every other
+    computed row (raw float, `fmtX` renders 1.67x) rather than the formatted string
+    a typed cell carries. Built from a CLEAN WORKTREE, gated on the tag and on run
+    `cand` succeeding for this SHA, P1 re-run immediately before cutover (still
+    v568 = `e399d92`, an ancestor). `SQLAlchemy>=2.0,<2.1` and `pandas>=2.3,<3.1`
+    intact, NOT bumped.
+    GUARDRAILS COMPARED AGAINST A PRISTINE `origin/main` WORKTREE so nothing
+    pre-existing was misread as new: `snapshot_subtotal_method_check` FAILS on
+    baseline and PASSES here; `freeze_as_sent_check` 104/0 on both;
+    `snapshot_loan_manual_cells_check`, `snapshot_dev_display_check` and
+    `snapshot_manual_input_no_reload_check` fail IDENTICALLY on both -- they import
+    the absent `live_api` harness, open_items section 15.
+    NOT DONE, DELIBERATELY: `portfolio_snapshot_values` row id 86 -- a `draft` test
+    row on `R000`/`BATCH`/`2099-Q4` -- is LEFT IN PLACE. The app has NO delete path
+    for a typed value (`PUT /value` with null stores a NULL, a deliberately CLEARED
+    cell, it does not remove the row), so removing it needs a direct production
+    DELETE and the firewall stayed shut. Confirmed it is the only test row; the
+    other 85 are TGAM/2026-Q2 plus one KCREIT/2026-Q1.)
   - `v568` = `e399d92` (THE ISBS SUPPLEMENT SUPERSEDE KEY WAS BUILT ON RAW VALUES,
     AND MOUNT PROSPECT'S PUBLISHED BUDGET NOI WAS EXACTLY DOUBLE. Oct 5 2026, image
     `waterfall-xirr:e399d92`, digest `sha256:6631b064...`, tag locked, build `canc`.
