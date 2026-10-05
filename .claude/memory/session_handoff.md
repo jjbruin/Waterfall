@@ -1,4 +1,92 @@
-# Session Handoff — through Oct 2 2026 (v564 live)
+# Session Handoff — through Oct 5 2026 (v565 live)
+
+## Oct 5 2026 — v565: THE PE EXPOSURE TRACKER, MARKET RATES, LOCAL DATA FROM PRODUCTION
+
+**Live: `v565` = `032fa27`. `main` = `bd1a48a` (v565 + its docs), level with live.**
+`fix/treasury-mri-text` (`8ac9fe9`) is still pushed and unmerged -- see the Oct 2
+section's "Next". Full detail of v565 is in CLAUDE.md's deploy history and its two new
+Key Concepts sections ("PSC Preferred Equity Exposure", "Market rates").
+
+### What shipped (v565)
+
+| Feature | Where | The point |
+|---|---|---|
+| **PSC Preferred Equity Exposure** | Reports, open to everyone | Accounting's `PSC Preferred Equity Tracker - <date>.xlsx` from our MRI copy, Spreadsheet Server links and typed percentages gone |
+| **Market Rates** | Data Management | Bank of Canada USD/CAD, CORRA, policy rate; NY Fed SOFR (+30/90/180-day, index), EFFR, OBFR. Free, official, no key |
+| `scripts/pull_production_db.py` | (on main since `40c6796`) | Copies production PostgreSQL into a local `waterfall.db`; instructions in CLAUDE.md "Refreshing local data from production" |
+
+**The tracker reuses engines; the only new arithmetic is summing IA non-cash rows.**
+Cost = Pref Balance Detail capital balance + realized losses; FMV = Cost + unrealized;
+the seven investor columns = `ownership_chain_service.group_shares` (commitments in force
+on the date, amounts multiplied down -- a new as-of mode of the Ownership walker; its
+default path is unchanged); Future Funding = the One Pager's `remaining_to_fund`; CAD via
+`market_rates`. Layout as the workbook: current exposure, Net Invested Equity, future
+funding below, Total Equity Invested / Committed. Any quarter end or **Live** (today).
+
+**Measured against accounting's 26Q2 tracker on production data** (and re-verified on
+production after deploy, equal to the dollar): Cost 52/53, FMV 53/53, investor split
+51/53, grand total **725,204,338 vs 724,660,963**. Every difference is the tracker's own
+typed input: Nottingham (its Cost view omits a $2.92M June contribution its FMV view
+includes), Brainerd (typed funded-to-date split; its side note gives ours 25.59/74.41),
+Bel Air (two typed constants). Apple is now derived (MRI's figures, converted at Bank of
+Canada 1.4210), not typed.
+
+### Lessons -- each cost something today
+
+1. **`groupby` silently drops null keys** -- a measurement script made 1,767 real IA rows
+   (non-cash, no Effective Date) look missing from production, "a $81.2M import gap",
+   traced as far as querying MRI before seeing the rows were never missing. Measure with
+   `dropna=False`; count grouped vs source rows (memory `groupby-drops-null-keys`).
+2. **SQLite compares dates as TEXT.** The first pull wrote `2026-06-30T00:00:00`, which
+   sorts after `2026-06-30 23:59:59` -- all 879 IA rows dated 6/30 fell outside "through
+   6/30". Fixed in the script (plain date / space before a time) and repaired in place
+   (`--repair-dates`, 1,124,271 values).
+3. **`git add -A` swept a 186 MB database backup into a commit.** Caught at pre-flight P2's
+   `--stat`; never pushed; the branch was rebuilt as one commit on main and `.gitignore`
+   now excludes `waterfall.db.bak-*` / `*.db.pulling`. Read the `--stat` of the whole span.
+4. **The app's "Export Database" exports production's EMPTY SQLite**, not PostgreSQL --
+   it never could produce a local copy (open_items 19.1).
+5. **A write-off is a non-cash realized loss.** The `accounting` feed has no non-cash rows,
+   so the pref engine alone carries Adirondack and City West (sold) at full capital;
+   accounting's Cost counts the loss. Cost = balance + realized losses, stated as a column.
+6. **InvestmentID is not unique** (Donald Lynch = MCCORD under two vcodes); ask the pref
+   engine under the vcode `build_investmentid_to_vcode` gives, or it answers 0.
+7. **Each PowerShell tab has its own variables** -- the pull failed once because the
+   `DATABASE_URL` line ran in another tab. The documented command is one line.
+
+### Open -- with owners
+
+- **Jim -- the investor-group STOPS** (`pe_exposure_service.STOPS`, from accounting's
+  Mapping tab) are a fixed list of entity ids, and Ambassadors is recognised by an `AMB`
+  name prefix. A new TIAA vehicle or PSC fund must be added by hand or lands in F&F.
+  Suggested: a small table accounting maintains.
+- **Jim -- Investment Metrics' own CAD rate** (`CAD_TO_USD = 0.73`) vs the published
+  rate; switching moves its figures (open_items 19.2).
+- **Accounting -- Apple's cost convention**, historical vs quarter-end rate (19.3).
+- **Accounting / MRI -- 27 `relationships` entities at 0%** (BRN-1..9, BURT-1..4, TFT-1,
+  INV23-P/INV24-P, PSCIF1, PPI2, PSCMAN): affects the RELATIONSHIPS-based traces
+  (Upstream, Portfolio Analysis, PSCKOC), not this report (19.4).
+- **Jim -- forward yield curves** for refi estimates: Treasury's free par curve +
+  bootstrapped forwards + a spread input; SOFR forwards are licensed. Not built (19.5).
+- **Charlene** -- instructions written (`docs/Refresh_Local_Database_Instructions.md`)
+  for Jim to send; her IP may need the PostgreSQL firewall.
+- **Possible**: Future Funding for a deal with several holders (Pegasus) is shown whole,
+  not split; in Live it is the current quarter's figure (labelled on screen).
+- **Possible**: a first FULL rates load took 200s on PostgreSQL (row-by-row); fine now
+  (incremental ~80 rows) but a fresh database's first Refresh button press would approach
+  the 240s ingress limit.
+- **Jim's call**: rotate the Google Maps key seen in Terminal 1's scrollback.
+
+### Where things are
+
+- Guardrails added: `scripts/pe_exposure_check.py` (28; two injected defects each caught),
+  `scripts/market_rates_check.py` (18; the unsorted-fetch bug reproduces). Both run in the
+  container (28/0, 18/0 on v565).
+- Local `waterfall.db` now holds production data as of Oct 5 morning (~1.4 GB); previous
+  file kept as `waterfall.db.bak-20261005-095933` (untracked).
+- Review copy of the 6/30 workbook: `docs/review/PSC_PE_Exposure_2026-06-30.xlsx`
+  (untracked).
+
 
 ## Oct 2 2026 — v552 -> v564: SECTION ACCESS, EXPENSES, INTERCOMPANY PAY; ONE OUTAGE; PANDAS 3; MRI DESCRIPTION RULE; ONE ADMIN
 
