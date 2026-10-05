@@ -22,6 +22,23 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 19. Local data, rates, and the PE exposure tracker (Oct 5 2026)
+
+- **19.1 Database Tools "Export Database" does not export production.**
+  `database.export_all_tables_to_zip` reads a SQLite file (`sqlite_master`), so on
+  Azure it zips the container's empty local file and none of PostgreSQL. The button
+  looks like it works. Use `scripts/pull_production_db.py` for a local copy; the
+  button needs a PostgreSQL branch or removing. Owner: **Jim's call**.
+- **19.2 Investment Metrics carries its own CAD rate** (`investment_metrics_config.
+  CAD_TO_USD = 0.73`) now that `market_rates` holds Bank of Canada's published rate
+  (6/30/26: 1.4210 CAD per USD = 0.7037). Two sources for one number; switching it
+  MOVES Investment Metrics figures, so it needs measuring and Jim's call. Owner: **Jim**.
+- **19.3 Apple's cost convention** -- historical rate per contribution, or the
+  quarter-end rate? The tracker converts at the quarter-end Bank of Canada rate until
+  accounting says otherwise. Owner: **accounting**.
+
+---
+
 ## 18. Production runs pandas 3; every guardrail runs on pandas 2 (Oct 2 2026)
 
 `requirements.txt` has `pandas>=2.3`. Pandas 3.0.0 shipped Jan 21 2026, so every
