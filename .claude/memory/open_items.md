@@ -170,15 +170,22 @@ long as it sits here.
     `as_of=committed_as_of(ident, as_of)`; both sides of the stack move together, and a
     deal sold on or before the as-of is read at its last held quarter. Two files:
     `investment_metrics.py` and `scripts/investment_metrics_check.py`.
+  - **`a610267` pushed to `origin/feat/investment-metrics-quarter-dropdown` on Oct 5
+    2026 (was local-only).** Until then it existed in one clone and nowhere else, so
+    losing that machine would have lost it. Pushing changes NOTHING else: it is still
+    unmerged, still undeployed, and **still needs the measurement and Jim's call
+    below.** No pull request has been opened, deliberately.
   - **`docs/compact-claude-md-clean` does NOT contain it.** The first compaction branch
     did, because it was cut from `a610267` and would have carried a runtime change into
     a docs merge; the clean branch is cut from `origin/main` and is docs-only. **Merging
     the compaction does not ship this fix, and must not be read as having done so.**
   - **Not on main**: `git merge-base --is-ancestor a610267 origin/main` fails, and
     `git show origin/main:investment_metrics.py | grep -c committed_as_of` returns **0**.
-  - **BEWARE THE BRANCH NAME `fix/investment-metrics-committed-as-of`.** It sounds like
-    this work and is NOT: its tip is `06061b0` — a stale copy of main — and it contains
-    zero occurrences of `committed_as_of`. Verified Oct 5 2026.
+  - **`fix/investment-metrics-committed-as-of` WAS A DECOY AND IS DELETED** (local,
+    Oct 5 2026). It sounded like this work and was not: its tip was `06061b0`, a stale
+    copy of main, an ancestor of `origin/main` with no commit of its own and **zero**
+    occurrences of `committed_as_of`. It never existed on the remote, so nothing was
+    deleted there. Recorded in case anyone recreates it from an old clone.
   - **IT NEEDS ITS OWN FIGURE MEASUREMENT BEFORE IT MERGES.** The commit message claims
     8 values move on live and 0 get worse; that was measured by its author and has not
     been re-measured since. It changes a REPORTED figure, so CLAUDE.md's standing rule
