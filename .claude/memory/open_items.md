@@ -72,7 +72,7 @@ in a revision note and tracked nowhere else. Every one was **re-checked against 
 working tree** before being written down here; the ones that turned out to be closed
 are recorded as closed rather than carried forward.
 
-**Standing: seven open — 20.1-20.5, plus 20.8 and 20.9 (housekeeping, low priority).**
+**Standing: eight open — 20.1-20.5, plus 20.8, 20.9 and 20.10 (housekeeping, low priority).**
 20.7 is not an item but the record of four things the archive called open and that
 turned out to be shipped, kept so nobody re-opens them.
 
@@ -251,6 +251,42 @@ verified against history before being deleted: all four extracted ranges of
 pre-compaction CLAUDE.md) are present in it verbatim. `pr_docs_compaction.md` went
 with it, both MEMORY.md index lines and CLAUDE.md's pointer row with them. The
 pre-compaction text remains reachable at **`a610267`**.
+
+### 20.10 Two contradicting comments about Loan subtotals in one file — docs-only, unassigned
+
+`flask_app/services/portfolio_snapshot_loan.py:313` says of the manual ratio seeds:
+
+> the raw computed `ltv` / `ytd_dscr` / `debt_yield` are LEFT ALONE, so the fund
+> subtotals, the portfolio total, every guardrail and any frozen payload keep
+> reading the computed truth. **A typed cell contributes to no aggregate**
+
+`aggregation_value` at `:595` — the code that actually runs — says the opposite,
+and says why:
+
+> a subtotal aggregates the figure the row DISPLAYS — the typed entry where there
+> is one, the computed figure otherwise — so a fund total can always be
+> re-derived from the rows printed above it.
+
+**`:595` is right and `:313` is stale.** The behaviour changed deliberately on
+2026-09-02, because weighting the computed figure alone left the TGA25 and TGA6 LTV
+totals blank while their members displayed typed LTVs, and left TGA6's DSCR reading
+3.81x above a Presidential Arms row printing 1.1x. The comment at `:313` was not
+updated with it.
+
+**IT HAS ALREADY MISLED ONCE.** A hardcode inventory of the Loan subtab on Oct 5
+2026 quoted `:313` as authoritative and stated that the seeds are excluded from
+subtotals. They are not. `v569` then moved four subtotals by removing one seed —
+PSC1 1.5946575 -> 1.5954366, OWPSC total 1.6237423 -> 1.6243495, TGA25 1.8514554 ->
+1.8578197, TGAM total 1.7578363 -> 1.7586545 — which the inventory had said could
+not happen. The figures were right; the explanation given for them was not.
+
+- **The work:** correct `:313` to match `:595`, and say that a typed cell DOES enter
+  the aggregate in the displayed unit (percentages divided by 100, DSCR passed
+  through), with the three skip cases `aggregation_value` lists.
+- **Do NOT "fix" it by changing the behaviour** — `:595` is the deliberate rule and
+  the one the fund totals are auditable against.
+- **Docs-only.** Deliberately not bundled into `v569`, which was a behaviour change.
+- **Owner:** unassigned.
 
 ---
 
