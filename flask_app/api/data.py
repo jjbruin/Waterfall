@@ -217,11 +217,10 @@ def _without_hidden_tables(zip_bytes: bytes) -> bytes:
 
 
 def _hidden_table_refusal(table_name):
-    need = table_section(table_name)
+    from flask_app.auth.sections import hidden_table_message
     return jsonify({
         "error": "Forbidden",
-        "message": "'%s' is visible only to users with access to the %s "
-                   "section." % (table_name, label_for(need)),
+        "message": hidden_table_message(table_name),
     }), 403
 
 

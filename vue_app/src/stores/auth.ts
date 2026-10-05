@@ -103,9 +103,15 @@ export const useAuthStore = defineStore('auth', () => {
     return grp ? grp.filter(k => k !== key) : []
   }
 
+  // Sections ticked for NOBODY until granted (auth/sections.py `opt_in`). Before
+  // the user's sections have loaded, everything else reads as allowed and these
+  // do not -- so the Board link never flashes up for a user without it.
+  const OPT_IN_SECTIONS = ['board']
+
   function hasSection(key: string) {
     const s = user.value?.sections
-    return !s || s.includes(key)
+    if (!s) return !OPT_IN_SECTIONS.includes(key)
+    return s.includes(key)
   }
 
   // The section owning a screen path, '' if none does. Prefix match, so

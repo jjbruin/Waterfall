@@ -43,7 +43,14 @@ import pandas as pd
 from sqlalchemy import create_engine, inspect, text
 
 #: Never copied: the local accounts stay the local accounts.
-SKIP_TABLES = {"users", "password_reset_tokens", "user_section_access"}
+SKIP_TABLES = {"users", "password_reset_tokens", "user_section_access",
+               # Who holds what, and the trail of it -- not laptop material.
+               "user_permissions", "access_audit"}
+
+#: Compensation and payroll planning (Board plan, Oct 5 2026): left on the
+#: server unless asked for by name with --include-compensation, which only a
+#: salary-planning holder should ever pass.
+SKIP_PREFIXES = ("comp_",)
 CHUNK = 50_000
 
 
@@ -119,6 +126,8 @@ def main() -> int:
                     help="leave binary columns (stored PDFs, images) empty")
     ap.add_argument("--repair-dates", action="store_true",
                     help="only fix 'YYYY-MM-DDT..' dates written by the first version, in place")
+    ap.add_argument("--include-compensation", action="store_true",
+                    help="also copy comp_* tables (salary-planning holders only)")
     args = ap.parse_args()
 
     if args.repair_dates:
@@ -159,7 +168,9 @@ def main() -> int:
     lite = sqlite3.connect(work)
 
     insp = inspect(pg)
-    tables = sorted(t for t in insp.get_table_names() if t not in SKIP_TABLES)
+    include_comp = args.include_compensation
+    tables = sorted(t for t in insp.get_table_names() if t not in SKIP_TABLES
+                    and (include_comp or not t.lower().startswith(SKIP_PREFIXES)))
     local = {r[0] for r in lite.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     print(f"{len(tables)} production tables to copy into a copy of {args.dest} "
           f"(skipping {', '.join(sorted(SKIP_TABLES))}).")

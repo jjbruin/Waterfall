@@ -23,6 +23,14 @@ do: it reads every section header out of AppSidebar.vue, every route out of
 the Vue router and every endpoint out of the running Flask app, and demands
 each one is assigned.
 
+AN OPT-IN SECTION IS THE EXCEPTION (Board, Oct 5 2026). Jim: Board is "off by
+default and granted only by the admin account, by name". For a section marked
+``opt_in`` the storage is inverted -- only a GRANT is stored (``allowed = TRUE``)
+and no row means DENIED -- so deploying it shows it to nobody, and a user created
+tomorrow does not have it. A grant may carry an end date (``expires_at``, for
+outside advisors); past it the grant reads as absent. Every change to a box is
+written to the access log (``flask_app/auth/audit.py``).
+
 A NEW SECTION IS CHECKED FOR EVERYONE BY CONSTRUCTION. Only an UNCHECKED box
 is stored (`user_section_access.allowed = FALSE`); no row means allowed. So a
 section added tomorrow appears in the table already ticked for every existing
@@ -80,8 +88,27 @@ SECTIONS = (
     # expense_service -- not a change to section access.
     {"key": "expenses", "label": "Expenses",
      "routes": ("/expenses",)},
+    # The Board section (Oct 5 2026). OPT-IN: ticked for nobody until the
+    # admin USERNAME grants it by name -- the admin ROLE alone gets nothing.
+    # What a holder may DO inside it is a separate permission
+    # (flask_app/auth/permissions.py): editor, package builder, salary view/edit.
+    {"key": "board", "label": "Board", "opt_in": True,
+     "routes": ("/board",)},
 )
 SECTION_KEYS = tuple(s["key"] for s in SECTIONS)
+
+
+def opt_in_keys() -> tuple:
+    """Sections nobody has until granted. Read live, not frozen at import, so a
+    test that swaps ``SECTIONS`` sees its own."""
+    return tuple(s["key"] for s in SECTIONS if s.get("opt_in"))
+
+
+def default_keys() -> list:
+    """What a user with no rows at all may open: every section that is not
+    opt-in, in sidebar order."""
+    oi = set(opt_in_keys())
+    return [k for k in SECTION_KEYS if k not in oi]
 
 #: Vue paths that belong to no section. /settings is the user's own account
 #: (change password) and must stay reachable for someone with nothing else --
@@ -130,6 +157,7 @@ API_SECTIONS = (
     ("/api/data/table-definitions", ("data_management",)),
     ("/api/data/mri", ("data_management",)),
     ("/api/market-rates", ("data_management",)),
+    ("/api/board", ("board",)),
 )
 
 #: API prefixes every signed-in user may call. Shared plumbing every screen
@@ -151,10 +179,21 @@ OPEN_API_PREFIXES = (
 #: raw table contents: Data Explorer, the database export, the MRI query
 #: download/run, and the assistant's SQL tool. The accounting screens read
 #: them too, and need nothing extra -- they are already behind the section.
+#: A table mapped to NEVER is shown through NONE of those paths, to anyone --
+#: the admin username included, and the assistant even for holders. Board plan,
+#: Oct 5 2026: compensation lives in its own tables and "never appears in Data
+#: Explorer, the database export, MRI downloads or the AI assistant". Its own
+#: screens read it, server-side, and send a viewer only a total. The access log
+#: and the permission grants are NEVER too: who holds salary access is itself
+#: sensitive, and the admin reads both on the Board > Access screen.
+NEVER = "_never_"
+
 RESTRICTED_TABLES = {
     "gl_accounts": "accounting",
     "gl_detail": "accounting",
     "ia_transactions": "accounting",
+    "access_audit": NEVER,
+    "user_permissions": NEVER,
 }
 
 #: Whole table FAMILIES, by name prefix (Jim, Oct 1 2026: "add the treasury,
@@ -170,6 +209,10 @@ RESTRICTED_TABLE_PREFIXES = {
     # receipts. Raw-table paths would otherwise show all of them to anyone with
     # Data Management, past the per-report rule the Expenses screens enforce.
     "er_": "accounting",
+    # Board meetings, schedules and narrative drafts.
+    "board_": "board",
+    # Compensation and payroll planning -- never through a raw-table path.
+    "comp_": NEVER,
 }
 
 #: Sections granted TOGETHER. Jim, Oct 1 2026: "people with access to asset
@@ -234,6 +277,13 @@ def _ensure_table(engine):
                 PRIMARY KEY (user_id, section)
             )
         """))
+    # An opt-in grant may end (outside advisors). Added in place on a table
+    # that already exists in production; asked first, never a blind ALTER.
+    from sqlalchemy import inspect
+    cols = {c["name"].lower() for c in inspect(engine).get_columns("user_section_access")}
+    if "expires_at" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE user_section_access ADD COLUMN expires_at DATE"))
     _TABLE_READY.add(key)
 
 
@@ -242,17 +292,53 @@ def _engine():
     return get_engine()
 
 
+def _today():
+    from datetime import date
+    return date.today()
+
+
+def _as_date(v):
+    from datetime import date, datetime
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+
+
+def _grant_live(allowed, expires_at) -> bool:
+    if not allowed:
+        return False
+    end = _as_date(expires_at)
+    return end is None or end >= _today()
+
+
 def denied_sections(user_id: int, engine=None) -> set:
-    """The sections this user is UNCHECKED for. Empty means everything."""
+    """The sections this user may NOT open. Empty means everything.
+
+    Ordinary sections: denied only where an untick is stored. Opt-in sections:
+    denied unless a grant is stored and has not passed its end date.
+    """
     engine = engine or _engine()
     _ensure_table(engine)
     with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT section FROM user_section_access "
-            "WHERE user_id = :u AND allowed = :f"),
-            {"u": int(user_id), "f": False}).fetchall()
-    # A stored key for a section since removed from the registry is ignored.
-    return {r[0] for r in rows if r[0] in SECTION_KEYS}
+            "SELECT section, allowed, expires_at FROM user_section_access "
+            "WHERE user_id = :u"), {"u": int(user_id)}).fetchall()
+    oi = set(opt_in_keys())
+    denied = set(oi)
+    for sec, allowed, expires_at in rows:
+        # A stored key for a section since removed from the registry is ignored.
+        if sec not in SECTION_KEYS:
+            continue
+        if sec in oi:
+            if _grant_live(allowed, expires_at):
+                denied.discard(sec)
+        elif not allowed:
+            denied.add(sec)
+    return denied
 
 
 def allowed_sections(user: dict) -> list:
@@ -289,26 +375,38 @@ def has_accounting_authority(user: dict, engine=None) -> bool:
 
 
 def all_users_access() -> dict:
-    """{user_id: [denied section keys]} for the User Management table."""
+    """{user_id: [denied section keys]} for the User Management table --
+    every user, since an opt-in section is denied to a user with no rows."""
     engine = _engine()
     _ensure_table(engine)
     with engine.connect() as conn:
+        ids = [int(r[0]) for r in conn.execute(text("SELECT id FROM users")).fetchall()]
+    return {uid: sorted(denied_sections(uid, engine)) for uid in ids}
+
+
+def section_grant_ends(engine=None) -> dict:
+    """{user_id: {section: 'YYYY-MM-DD'}} for opt-in grants that carry an end date."""
+    engine = engine or _engine()
+    _ensure_table(engine)
+    with engine.connect() as conn:
         rows = conn.execute(text(
-            "SELECT user_id, section FROM user_section_access "
-            "WHERE allowed = :f"), {"f": False}).fetchall()
+            "SELECT user_id, section, expires_at FROM user_section_access "
+            "WHERE allowed = :t AND expires_at IS NOT NULL"), {"t": True}).fetchall()
     out = {}
-    for uid, sec in rows:
-        if sec in SECTION_KEYS:
-            out.setdefault(int(uid), []).append(sec)
+    for uid, sec, end in rows:
+        out.setdefault(int(uid), {})[sec] = str(_as_date(end))
     return out
 
 
-def set_user_sections(user_id: int, sections: dict, updated_by: str) -> list:
+def set_user_sections(user_id: int, sections: dict, updated_by: str,
+                      expires: dict | None = None) -> list:
     """Apply {section_key: bool}. Unknown keys raise. Returns the denied list.
 
     Checked is stored as the ABSENCE of a row, so re-checking deletes rather
     than writing TRUE -- that is what keeps "no row means allowed" true for
-    every section, including ones added after this call.
+    every section, including ones added after this call. An OPT-IN section is
+    the mirror image: a grant is a TRUE row (with ``expires.get(key)`` as its
+    end date, if any) and an untick deletes it. Every change is logged.
     """
     unknown = [k for k in sections if k not in SECTION_KEYS]
     if unknown:
@@ -321,22 +419,46 @@ def set_user_sections(user_id: int, sections: dict, updated_by: str) -> list:
                 raise ValueError("%s and %s are granted together"
                                  % (label_for(key), label_for(other)))
             sections[other] = allowed
+    expires = expires or {}
+    for key, end in expires.items():
+        if key not in opt_in_keys():
+            raise ValueError("Only an opt-in section's grant can carry an end date")
+        if end not in (None, "") and _as_date(end) < _today():
+            raise ValueError("An end date in the past would grant nothing")
     engine = _engine()
     _ensure_table(engine)
+    before = denied_sections(user_id, engine)
+    oi = set(opt_in_keys())
     with engine.begin() as conn:
         for key, allowed in sections.items():
             conn.execute(text(
                 "DELETE FROM user_section_access "
                 "WHERE user_id = :u AND section = :s"),
                 {"u": int(user_id), "s": key})
-            if not allowed:
+            if key in oi and allowed:
+                conn.execute(text(
+                    "INSERT INTO user_section_access "
+                    "(user_id, section, allowed, updated_by, expires_at) "
+                    "VALUES (:u, :s, :t, :by, :end)"),
+                    {"u": int(user_id), "s": key, "t": True, "by": updated_by,
+                     "end": _as_date(expires.get(key))})
+            elif key not in oi and not allowed:
                 conn.execute(text(
                     "INSERT INTO user_section_access "
                     "(user_id, section, allowed, updated_by) "
                     "VALUES (:u, :s, :f, :by)"),
                     {"u": int(user_id), "s": key, "f": False,
                      "by": updated_by})
-    return sorted(denied_sections(user_id))
+    after = denied_sections(user_id, engine)
+    from flask_app.auth import audit
+    for key in sorted(sections):
+        if (key in before) != (key in after) or key in expires:
+            audit.log(updated_by,
+                      "section_granted" if key not in after else "section_removed",
+                      target_user_id=user_id,
+                      detail={"section": key, "expires_at": expires.get(key)},
+                      engine=engine)
+    return sorted(after)
 
 
 def forget_user(user_id: int):
@@ -373,6 +495,16 @@ def table_section(table_name: str):
     return None
 
 
+def hidden_table_message(table_name: str) -> str:
+    """Why a raw-table path refused ``table_name``, in words a user can act on."""
+    need = table_section(table_name)
+    if need == NEVER:
+        return ("'%s' is never shown through Data Explorer, the export or the "
+                "assistant; it is read only on its own screen." % table_name)
+    return ("'%s' is visible only to users with access to the %s section."
+            % (table_name, label_for(need)))
+
+
 def can_see_table(table_name: str) -> bool:
     need = table_section(table_name)
     return need is None or need in current_allowed()
@@ -382,6 +514,8 @@ def any_hidden() -> bool:
     """Whether the current user is barred from any restricted table at all."""
     allowed = current_allowed()
     secs = set(RESTRICTED_TABLES.values()) | set(RESTRICTED_TABLE_PREFIXES.values())
+    # NEVER is in no one's allowed set, so this is True for everyone -- the
+    # export is always filtered, the admin username's included.
     return any(s not in allowed for s in secs)
 
 
@@ -412,6 +546,8 @@ def linked(keys) -> set:
 
 
 def label_for(key: str) -> str:
+    if key == NEVER:
+        return "no"
     for s in SECTIONS:
         if s["key"] == key:
             return s["label"]

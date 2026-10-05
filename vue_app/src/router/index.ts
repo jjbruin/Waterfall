@@ -82,6 +82,11 @@ const routes = [
     component: () => import('../views/ExpensesView.vue'),
   },
   {
+    path: '/board',
+    name: 'Board',
+    component: () => import('../views/BoardView.vue'),
+  },
+  {
     path: '/investment-metrics',
     name: 'Investment Metrics',
     component: () => import('../views/InvestmentMetricsView.vue'),

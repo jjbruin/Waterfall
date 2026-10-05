@@ -648,6 +648,16 @@ function toggleCollapsed() {
         Expenses
       </router-link>
 
+      <!-- Board — OPT-IN: shown only to users the admin account has granted it -->
+      <router-link
+        v-if="auth.hasSection('board')"
+        to="/board"
+        class="nav-section-link"
+        :class="{ active: route.path.startsWith('/board') }"
+      >
+        Board
+      </router-link>
+
       <!-- Data Management -->
       <div v-if="auth.hasSection('data_management')" class="nav-section">
         <button

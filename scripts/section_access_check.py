@@ -217,6 +217,9 @@ def behaviour_checks():
         return 200, set(zipfile.ZipFile(io.BytesIO(r.data)).namelist())
 
     all_keys = list(S.SECTION_KEYS)
+    # No rows = every section EXCEPT the opt-in ones (Board), which nobody has
+    # until granted. The admin USERNAME still has all_keys.
+    default = S.default_keys()
 
     # A 403 from a path that matches NO route would prove only that the gate
     # runs before routing -- the before_request hook fires for a 404 too. Every
@@ -231,8 +234,9 @@ def behaviour_checks():
             return False
 
     print("\n2a. Default: every section, for every user")
-    chk("an analyst with no rows has every section", me("ana") == all_keys)
-    chk("an admin-role user with no rows has every section", me("boss") == all_keys)
+    chk("an analyst with no rows has every non-opt-in section", me("ana") == default)
+    chk("an admin-role user with no rows has every non-opt-in section, and NOT Board",
+        me("boss") == default and "board" not in me("boss"))
     st, names = tables("ana")
     chk("Data Explorer lists gl_detail to a user with Accounting",
         st == 200 and "gl_detail" in names, st)
@@ -241,7 +245,7 @@ def behaviour_checks():
     r = put("ana", {"accounting": False})
     chk("the admin user can untick a section", r.status_code == 200, r.status_code)
     chk("me() no longer lists accounting", "accounting" not in me("ana"))
-    chk("me() keeps the other sections", len(me("ana")) == len(all_keys) - 1)
+    chk("me() keeps the other sections", len(me("ana")) == len(default) - 1)
     for path in ("/api/workpapers/cycles", "/api/treasury/accounts",
                  "/api/gl-ia-query/gl/options", "/api/intercompany/periods"):
         chk("%s refused (403)" % path, real(path)
@@ -291,7 +295,7 @@ def behaviour_checks():
 
     print("\n2c. Re-ticking restores it (and stores nothing)")
     put("ana", {"accounting": True})
-    chk("accounting is back", me("ana") == all_keys)
+    chk("accounting is back", me("ana") == default)
     st, names = tables("ana")
     chk("gl_detail is listed again", "gl_detail" in names)
     chk("the treasury family is listed again", "tr_x_check" in names)

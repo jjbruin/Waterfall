@@ -453,7 +453,9 @@ def get_sections():
     """
     return jsonify({
         "sections": [{"key": s["key"], "label": s["label"],
-                      "routes": list(s["routes"])}
+                      "routes": list(s["routes"]),
+                      # Ticked for nobody until granted (Board).
+                      "opt_in": bool(s.get("opt_in"))}
                      for s in section_registry.SECTIONS],
         "superuser": SUPERUSER,
         "linked": [list(grp) for grp in section_registry.LINKED_SECTIONS],
@@ -647,6 +649,8 @@ def remove_user(user_id):
     if not ok:
         return jsonify({"error": "User not found"}), 404
     forget_user(user_id)
+    from flask_app.auth import permissions
+    permissions.forget_user(user_id)
     return jsonify({"message": "User deleted"})
 
 

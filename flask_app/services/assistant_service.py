@@ -1020,14 +1020,12 @@ def _tool_query_database(inp):
 
     # Section access: a restricted table (gl_detail and friends) is refused
     # for a user who could not open it in Data Explorer either.
-    from flask_app.auth.sections import (
-        sql_names_hidden_table, table_section, label_for)
+    # Compensation tables and the access log are refused to EVERYONE here,
+    # holders included (sections.NEVER).
+    from flask_app.auth.sections import sql_names_hidden_table, hidden_table_message
     hidden = sql_names_hidden_table(sql)
     if hidden:
-        return json.dumps({"error": f"Table {hidden} is visible only to users "
-                                    f"with access to the "
-                                    f"{label_for(table_section(hidden))} "
-                                    f"section, and this user does not have it."})
+        return json.dumps({"error": hidden_table_message(hidden)})
 
     from flask_app.db import get_engine
     engine = get_engine()

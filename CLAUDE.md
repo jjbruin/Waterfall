@@ -243,8 +243,8 @@ row above and a check there whenever a new engine takes ownership of a number.
 ### The rest
 - **A NEW SECTION GOES IN THE REGISTRY** (Jim, Oct 1 2026). Adding a sidebar section
   means adding it to `SECTIONS` in `flask_app/auth/sections.py` and gating its block on
-  `auth.hasSection('<key>')`; it then appears in Settings > User Management, ticked for
-  everyone. Every new Vue route, `/api` route and assistant tool must be assigned too.
+  `auth.hasSection('<key>')`; it then appears in User Management, ticked for everyone --
+  or for NOBODY if `opt_in` (Board). Every Vue route, `/api` route and tool is assigned.
   `scripts/section_access_check.py` and the pre-commit hook fail until they are.
 - **Every file in `queries/` uses `UNION ALL`, never `UNION`: the GL is a journal and
   one key legitimately carries many rows that consumers SUM.** A `UNION` silently
@@ -362,7 +362,7 @@ Narrative: `.claude/memory/market_rates.md`. The rules:
 | Intercompany — Due to/from PSC Manager | `intercompany.md` |
 | Employee expense reports | `expense_reporting.md` |
 | GL / IA Query — the CFO's filters | `gl_ia_query.md` |
-| Section access by username | `section_access.md` |
+| Section access by username; Board's opt-in section, permissions and access log | `section_access.md`, `board.md` |
 | Valuation Budget Review — line mapping, the levered columns | `valuation_budget.md` |
 | Lease review AND lease risk analysis — extraction, terms, validation, recoveries, exclusives ("bound by" is not "holds"), and why the risk analysis must NOT take the lease's date | `lease_review.md` |
 | PSC Preferred Equity Exposure — the tracker, the stops, the measurement | `pe_exposure.md` |

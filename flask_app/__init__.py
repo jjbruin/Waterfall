@@ -204,6 +204,10 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.investment_metrics import investment_metrics_bp
     app.register_blueprint(investment_metrics_bp)
 
+    # Board section (Phase 0, Oct 5 2026) -- opt-in; see auth/sections.py.
+    from flask_app.api.board import board_bp
+    app.register_blueprint(board_bp)
+
     # Health check
     @app.route("/health")
     def health():
