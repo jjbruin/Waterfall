@@ -72,7 +72,7 @@ in a revision note and tracked nowhere else. Every one was **re-checked against 
 working tree** before being written down here; the ones that turned out to be closed
 are recorded as closed rather than carried forward.
 
-**Standing: eight open — 20.1-20.5, plus 20.8, 20.9 and 20.10 (housekeeping, low priority).**
+**Standing: nine open — 20.1-20.5, plus 20.8-20.11 (housekeeping, low priority).**
 20.7 is not an item but the record of four things the archive called open and that
 turned out to be shipped, kept so nobody re-opens them.
 
@@ -287,6 +287,30 @@ not happen. The figures were right; the explanation given for them was not.
   the one the fund totals are auditable against.
 - **Docs-only.** Deliberately not bundled into `v569`, which was a behaviour change.
 - **Owner:** unassigned.
+
+### 20.11 A standing PostgreSQL firewall rule exists for Charlene's machine — FYI, Jim
+
+`local-dev-cbui` → `76.99.107.120/32` was added to `psql-waterfall-dev` on **Oct 5
+2026** and **deliberately left in place**, matching the per-machine convention already
+on the server (`local-dev`, `local-dev-2`, `local-dev-3`, `local-dev-4`,
+`local-dev-current` — six rules before this one). Jim's own guide,
+`docs/Refresh_Local_Database_Instructions.md`, names adding the IP as the normal
+remedy for the connection timeout.
+
+**Why it was needed:** `scripts/pull_production_db.py` connects directly to
+PostgreSQL, and the Q3 readiness investigation is impractical any other way.
+`az containerapp exec` is the alternative and it does not scale for this: its
+`--command` payload 404s above roughly 1.5 KB, and it rate-limits to **HTTP 429 with
+`retry-after: 600`** after a handful of connections. Six execs were enough to trigger
+a ten-minute lockout.
+
+- **It is a single /32**, not a range, and grants nothing beyond what an `az login`
+  with secret-read already allows.
+- **Remove it** with `az postgres flexible-server firewall-rule delete -g
+  rg-waterfall-dev -s psql-waterfall-dev -n local-dev-cbui --yes` if the convention
+  changes, or when the machine does.
+- **Note `--rule-name` is not valid on this CLI version** — the flag is `-n`.
+- **Owner:** Jim, to confirm the rule should stand.
 
 ---
 

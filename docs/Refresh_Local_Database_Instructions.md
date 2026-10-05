@@ -84,6 +84,8 @@ Don't use **Data Management → Database Tools → Export Database** for this. O
 
 ---
 
-The full technical notes are in `CLAUDE.md` under **"Refreshing local data from production."**
+The full technical notes are in `.claude/memory/azure_deployment.md` under **"Refreshing
+local data from production."** (They were in `CLAUDE.md` until Oct 5 2026; the compaction
+moved the detail out and left the command itself in CLAUDE.md under Local Development.)
 
 Jim
