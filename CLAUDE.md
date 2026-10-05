@@ -15,8 +15,13 @@ The pointer table at the foot of this file says which one holds what.
   evidence and an owner. Run `/open-items` to triage it. Close items there as they ship
   rather than letting them drift back into session narratives.
 - **Date-stamp anything describing work in flight, and delete it when the work ships.**
-  A section saying a branch is unmerged reads as authoritative for as long as it sits
-  here, and nothing distinguishes it from a current one. It has gone wrong twice.
+  A section that says a branch is unmerged reads as authoritative for as long as it sits
+  here, and nothing distinguishes it from a current one. On Sep 11 2026 this file still
+  carried a 69-line section declaring `feat/onepager-chart-window` "not merged, not
+  deployed" — it had been on main for over a month (`window_end_quarter` at
+  `financials_service.py:177`). It happened again on Oct 1 2026: a "NOT deployed" stamp
+  on section access, which shipped the next day and then sat stale.
+  **Shipped work belongs in the deploy history, not in standing instructions.**
 
 ## Project Overview
 
@@ -79,8 +84,8 @@ matter — the date format that silently broke a "through 6/30" filter, `--repai
 ## Deploying Changes
 
 **BEFORE DEPLOYING ANY COMMIT: review it for symptom repair, and tell Jim first.**
-(Jim's standing instruction, after a commit shipped an override that zeroed correct
-data on 12 deals.)
+(Jim's standing instruction, Sep 1 2026, after `50695d9` shipped an override that
+zeroed correct data on 12 deals.)
 
 Fix problems, not symptoms. Read the diff and ask what the commit is actually doing:
 
@@ -137,9 +142,10 @@ with affected deals and figures, and get his call. Clean → build.
 to the registry `acrwaterfalldev` and the container app `app-waterfall-dev-v2` only, not
 the resource group. `AcrPush` is NOT sufficient for `az acr build`: it grants only
 `pull/read` and `push/write`, while the build needs `scheduleRun/action` and
-`listBuildSourceUploadUrl/action`. All deploys use Azure CLI;
-`.github/workflows/deploy.yml` is **deliberately not wired up** — it triggers on push to
-main (shipping without this pre-flight) and deploys `:latest` (untraceable).
+`listBuildSourceUploadUrl/action`. All deploys use Azure CLI (GitHub Actions secrets are
+not configured). `.github/workflows/deploy.yml` exists but is **deliberately not wired
+up** — it triggers on push to main, which would ship code without this pre-flight, and it
+deploys `:latest`, which is untraceable. **Do not enable it without changing both.**
 
 ### Build, lock, deploy
 **Tag every image with the commit SHA it was built from, and deploy that tag — never
@@ -203,11 +209,12 @@ long form*; the bracketed revision points at that revision's own entry there.
 ## Standing rules
 
 ### ONE NUMBER, ONE ENGINE
-**Jim's standing instruction:** "We should not have conflicting calculation results… Make
-sure the vetted calculation engines are used consistently and we do not have separate
-calculation engines for the same number. The only differences in results should come from
-changes in time frames or projections that we are running through the engines." (In full
-in `MEMORY.md` § Standing rules.)
+**Jim's standing instruction, Sep 18 2026:** "We should not have conflicting
+calculation results. It will cause doubt in the accuracy of the entire work. Make
+sure the vetted calculation engines are used consistently and we do not have
+separate calculation engines for the same number. The only differences in results
+should come from changes in time frames or projections that we are running through
+the engines. The calculations should be reliable."
 
 Before writing any calculation, find out whether the app already answers it. If it does,
 **call that engine** — do not re-derive, do not "simplify for this screen", do not write
@@ -234,11 +241,14 @@ the aggregate delta to Jim. Guardrail: `scripts/one_engine_per_number_check.py` 
 row above and a check there whenever a new engine takes ownership of a number.
 
 ### The rest
-- **A NEW SECTION GOES IN THE REGISTRY.** Adding a sidebar section means adding it to
-  `SECTIONS` in `flask_app/auth/sections.py` and gating its block on
+- **A NEW SECTION GOES IN THE REGISTRY** (Jim, Oct 1 2026). Adding a sidebar section
+  means adding it to `SECTIONS` in `flask_app/auth/sections.py` and gating its block on
   `auth.hasSection('<key>')`; it then appears in Settings > User Management, ticked for
   everyone. Every new Vue route, `/api` route and assistant tool must be assigned too.
   `scripts/section_access_check.py` and the pre-commit hook fail until they are.
+- **Every file in `queries/` uses `UNION ALL`, never `UNION`: the GL is a journal and
+  one key legitimately carries many rows that consumers SUM.** A `UNION` silently
+  de-duplicates them and the figures come out low.
 - **`PROTECTED_TABLES` is for a table the APP writes and holds the only copy of.**
   Protection without a write path is a LOCKOUT, not a safeguard; where a CSV is the
   source of record, `replace` is the designed refresh.
@@ -317,14 +327,14 @@ Full detail — column names, fallbacks, why each rule has the shape it has — 
 | Engine detail: dates, pref, capital calls, abatements, loans, parcel sales, sale overrides, ISBS, At Close, occupancy, forecasts, the cutoff, account classes | `engine_reference.md` |
 | Which function answers which question — read before writing any calculation | `function_index.md` |
 | What each app tab displays, the AI assistant's tools, the sidebar map | `app_reference.md` |
-| Accounting workpapers, the statement engine, who may edit the section | `accounting_workpapers.md` |
+| Accounting workpapers, the statement engine, WHO MAY EDIT the section, and the `queries/` rules (`UNION ALL`, never `UNION`) | `accounting_workpapers.md` |
 | Treasury — PNC import, the three-way tie, the matcher, the JE files | `treasury.md` |
 | Intercompany — Due to/from PSC Manager | `intercompany.md` |
 | Employee expense reports | `expense_reporting.md` |
 | GL / IA Query — the CFO's filters | `gl_ia_query.md` |
 | Section access by username | `section_access.md` |
 | Valuation Budget Review — line mapping, the levered columns | `valuation_budget.md` |
-| Lease review — extraction, terms, validation, recoveries | `lease_review.md` |
+| Lease review AND lease risk analysis — extraction, terms, validation, recoveries, exclusives ("bound by" is not "holds"), and why the risk analysis must NOT take the lease's date | `lease_review.md` |
 | Rent roll specification and the IC exhibit | `rent_roll_exhibit.md` |
 | Shared UI patterns | `ui_patterns.md` |
 | This file as it read before the Oct 2026 compaction, for the prose that was cut | `claude_md_prose_archive.md` |

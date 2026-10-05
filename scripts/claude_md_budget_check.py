@@ -47,13 +47,18 @@ CLAUDE_MD = os.path.join(ROOT, 'CLAUDE.md')
 #: The budget. Raising this is a decision, not a convenience -- the point of the
 #: number is that it has to be argued for.
 #:
-#: SET TO 330 ON OCT 5 2026, against a file of ~316 lines, so there is room for a
-#: genuine new RULE or two without a negotiation. It is NOT room for history: 14 spare
-#: lines is about one deploy note, which is exactly what this check exists to keep out.
-#: The first compaction set it at 350 with the file at 349, which is no headroom at
-#: all -- the next legitimate rule would have had to raise the limit to land, and a
-#: limit raised reflexively is not a limit.
-MAX_LINES = 330
+#: 350 -> 330 -> 340. The first compaction set it at 350 with the file at 349, which is
+#: no headroom at all: the next legitimate rule would have had to raise the limit to
+#: land, and a limit raised reflexively is not a limit. It went to 330 against a file of
+#: 316, then to 340 on Oct 5 2026 when an audit found the compaction had cut the REASONS
+#: off four standing rules -- the date-stamp rule lost both of its worked examples, ONE
+#: NUMBER lost two sentences of Jim's own words, and the `queries/` UNION ALL rule had
+#: no pointer at all. Restoring them cost 20 lines and was worth every one: a rule
+#: without its reason is a rule people argue with.
+#:
+#: 340 is the agreed ceiling. It is room for a RULE, not for history -- four spare lines
+#: is well under one deploy note, which is what this check exists to keep out.
+MAX_LINES = 340
 
 #: A revision suffix: `v349` .. `v563` and onward, optionally with a trailing letter
 #: (`v556r`). Three digits minimum so `v16` and `Vue 3` cannot match.
