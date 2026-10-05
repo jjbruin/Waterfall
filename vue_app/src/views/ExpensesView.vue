@@ -127,8 +127,9 @@ const blankLine = () => ({
 })
 const editing = ref<any>(null)
 
-function newLine() { editing.value = blankLine() }
+function newLine() { wiz.value = null; editing.value = blankLine() }
 function editLine(ln: any) {
+  wiz.value = null          // a route measured for another line must not follow this one
   editing.value = {
     ...blankLine(), ...ln,
     line_date_end: ln.line_date_end || '', vendor: ln.vendor || '',
@@ -138,6 +139,8 @@ function editLine(ln: any) {
     deal_name: ln.deal_kind === 'pipeline' ? (ln.deal_name || '') : '',
     receiptChoice: ln.receipt_id ? ln.receipt_id : (ln.receipt === 'N' ? 'N' : ''),
     receipt_page: ln.receipt_page || 1, extracted: ln.extracted || null,
+    // the miles a stored measurement gave, so editing them away drops the route
+    route_miles: ln.route_id ? String(ln.miles) : undefined,
     isPeriod: !!ln.line_date_end, isMileage: ln.miles != null, recurring: !!ln.recurring,
     isSplit: (ln.splits || []).length > 0,
     splits: (ln.splits || []).map((s: any) => ({
@@ -187,6 +190,21 @@ function applyPercents() {
 
 async function saveLine() {
   const e = editing.value
+  // SAVE DOES THE WORK (Jim, Oct 5 2026: an employee pressed Save without
+  // "Use miles" and had to reopen the line). A route typed into the wizard but
+  // never measured is measured now; a failed measurement stops the save and
+  // says why rather than saving the line without miles.
+  if (e.isMileage && wiz.value && !wiz.value.result
+      && wiz.value.stops.filter((x: string) => x.trim()).length >= 2) {
+    await measureRoute()
+    if (!wiz.value?.result?.miles) return
+  }
+  // Miles typed over a measurement are the employee's figure, not Google's:
+  // the line keeps the number and drops the measured route it no longer matches.
+  if (e.route_id && e.route_miles !== undefined && String(e.route_miles) !== String(e.miles)) {
+    e.route_id = ''
+    e.route = null
+  }
   const body: any = {
     line_date: e.line_date, line_date_end: e.isPeriod ? e.line_date_end : '',
     category_account: e.category_account, purpose: e.purpose,
@@ -226,19 +244,21 @@ async function measureRoute() {
       { stops: w.stops, round_trip: w.round_trip })).data
     w.result = r
     if (r.error) w.error = r.error
+    // Measuring FILLS the miles: no second button to forget.
+    else if (r.miles) applyRoute()
   } catch (e: any) { w.error = e?.response?.data?.error || String(e) }
   finally { w.busy = false }
 }
-function useRoute() {
+function applyRoute() {
   const e = editing.value, r = wiz.value.result
   e.miles = String(r.miles)
+  e.route_miles = String(r.miles)
   e.route_id = r.route_id
   e.route = { summary: wiz.value.stops.filter((x: string) => x.trim()).join(' → ') +
     (wiz.value.round_trip ? ' → ' + wiz.value.stops[0] : '') + `, ${r.miles} mi measured` }
   // Accounting's template records mileage as "no receipt"; say so for them.
   if (e.receiptChoice === '') { e.receiptChoice = 'N' }
   if (e.receiptChoice === 'N' && !e.no_receipt_reason) e.no_receipt_reason = 'Mileage — measured route'
-  wiz.value = null
 }
 
 // ---- inline Purpose / Deal on the table (Jim, Oct 2 2026) ----
@@ -668,7 +688,7 @@ onMounted(async () => {
           <div v-if="wiz.result?.miles" class="row">
             <strong>{{ wiz.result.miles }} miles</strong>
             <span v-if="wiz.result.legs?.length > 1" class="muted">({{ wiz.result.legs.join(' + ') }})</span>
-            <button class="btn-primary" @click="useRoute">Use {{ wiz.result.miles }} miles</button>
+            <span class="ok-text">filled in above — Save line keeps it</span>
           </div>
         </div>
         <div v-if="editing.isSplit" class="splits">
@@ -723,9 +743,9 @@ onMounted(async () => {
         <div class="row">
           <strong>Receipts</strong>
           <template v-if="report.permissions.edit">
-            <label class="btn-secondary file-btn">Upload files
+            <label class="btn-primary file-btn">Upload files
               <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
-            <label class="btn-secondary file-btn">Upload a folder
+            <label class="btn-primary file-btn">Upload a folder
               <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
             <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
               Read {{ pendingCount }} waiting</button>
@@ -1017,7 +1037,19 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
 .receipt-col > * { flex: 1; }
 .receipts { margin: 10px 0; }
 .data-table.compact td { padding: 3px 8px; }
-.file-btn { display: inline-flex; flex-direction: row; cursor: pointer; padding: 4px 10px; font-size: 12.5px; color: var(--color-text); }
+.file-btn { display: inline-flex; flex-direction: row; align-items: center; }
+/* The page used these two classes without ever styling them, so the key actions
+   rendered as plain text (Jim, Oct 5 2026: "the upload files and upload folder
+   are key buttons but only look like links"). */
+.btn-primary, .btn-secondary {
+  padding: 5px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--color-primary, #2f6f4f); line-height: 1.3; }
+.btn-primary { background: var(--color-primary, #2f6f4f); color: #fff; font-weight: 600; }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.btn-secondary { background: var(--color-surface, #fff); color: var(--color-primary, #2f6f4f); }
+.btn-secondary:hover:not(:disabled) { background: rgba(47, 111, 79, .08); }
+.btn-primary:disabled, .btn-secondary:disabled { opacity: .55; cursor: default; }
+.ok-text { color: var(--color-primary, #2f6f4f); font-size: 12.5px; }
 
 .splits { border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .wizard { border: 1px solid var(--color-border); border-radius: 6px; padding: 6px 10px; margin: 6px 0; background: var(--color-surface); }
