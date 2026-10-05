@@ -369,4 +369,3 @@ Narrative: `.claude/memory/market_rates.md`. The rules:
 | Market rates — Bank of Canada / NY Fed, what `rate_on` will and will not answer | `market_rates.md` |
 | Rent roll specification and the IC exhibit | `rent_roll_exhibit.md` |
 | Shared UI patterns | `ui_patterns.md` |
-| This file as it read before the Oct 2026 compaction, for the prose that was cut | `claude_md_prose_archive.md` |

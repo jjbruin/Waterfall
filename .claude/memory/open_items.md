@@ -231,11 +231,12 @@ nothing" is checkable without going to git, which matters while the branch is in
 and not after: once `docs/compact-claude-md` is on main, git history holds the same text
 and a second copy is just another thing to keep in step.
 
-- **Before deleting, verify it matches history** rather than assuming — the
-  pre-compaction CLAUDE.md is in the parent of `bb91c1d`, and that SHA goes in the
-  deletion commit message so the content stays reachable by name.
-- **Status as of Oct 5 2026:** not merged; do not delete yet.
-- **Owner:** unassigned, with the merge.
+**DONE Oct 5 2026.** The compaction merged to main as `3e55316`, and the archive was
+verified against history before being deleted: all four extracted ranges of
+`a610267:CLAUDE.md` (the parent of `bb91c1d`, and the last commit holding the
+pre-compaction CLAUDE.md) are present in it verbatim. `pr_docs_compaction.md` went
+with it, both MEMORY.md index lines and CLAUDE.md's pointer row with them. The
+pre-compaction text remains reachable at **`a610267`**.
 
 ---
 
