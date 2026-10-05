@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v569** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v570** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v569 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v570 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,20 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v570` = `cdfaa4c` (EXPENSES: SAVE MEASURES THE ROUTE, AND THE UPLOAD BUTTONS
+    LOOK LIKE BUTTONS. Jim, Oct 5 2026, after a second employee ran the process: one
+    pressed Save without "Use N miles" and had to reopen the line, and Upload files /
+    Upload a folder read as links. The Use button is gone -- measuring fills the miles,
+    and Save measures a typed-but-unmeasured route first (stopping, with Google's
+    error, if it cannot). Miles typed over a measurement are kept and the measured
+    route dropped. The wizard resets when a line opens. `btn-primary`/`btn-secondary`
+    were used on the page and never styled. Span vs live `6f33f0a`: `f3c4b93` plus
+    Charlene's docs commit and two merges with no lines of their own; runtime delta
+    is ExpensesView.vue only. The first "pushed" did not reach GitHub, so the build
+    waited until `cdfaa4c` was on origin. Built `cane` 2m34s from the clean deploy
+    worktree, tag gated and locked, P1 re-run before the update (still v569).
+    Verified: served chunk `ExpensesView-BrHanLjK.js` carries the new text, root 200,
+    0 errors in the boot log. Locally: expense_report 98/0, expense_distance 26/0.)
   - `v569` = `6f33f0a` (TWO LOAN-SUBTAB HARDCODES RETIRED BECAUSE THEIR REASONS
     LAPSED, not because the page was wrong. Oct 5 2026, image
     `waterfall-xirr:6f33f0a`, digest `sha256:bf151ece...`, tag locked, build `cand`.
