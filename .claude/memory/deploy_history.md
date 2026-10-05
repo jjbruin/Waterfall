@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v567** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v568** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v567 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v568 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,63 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v568` = `e399d92` (THE ISBS SUPPLEMENT SUPERSEDE KEY WAS BUILT ON RAW VALUES,
+    AND MOUNT PROSPECT'S PUBLISHED BUDGET NOI WAS EXACTLY DOUBLE. Oct 5 2026, image
+    `waterfall-xirr:e399d92`, digest `sha256:6631b064...`, tag locked, build `canc`.
+    `_append_isbs_supplements` runs inside `_assemble_isbs`, ONE LINE BEFORE
+    `_normalize_isbs` lower-cases vcode and parses dtEntry. MRI writes `p0000069` /
+    `2026-01-31T00:00:00`; the app's budget import writes `P0000069` / `2026-01-31`.
+    Compared with `.astype(str)` those never matched, so NO MRI ROW WAS EVER
+    SUPERSEDED and both copies reached `isbs_raw`, where every consumer SUMS them.
+    It read as a plausible figure, which is the danger -- nothing on screen
+    distinguishes a doubled NOI from a good one. Both sides of the key are now
+    normalised FOR COMPARISON ONLY (vcode stripped and lower-cased, dtEntry parsed to
+    YYYY-MM-DD; vSource and vAccount untouched). Nothing is written back;
+    `_normalize_isbs` still owns the stored values.
+    A YTD-CUMULATIVE vSOURCE IS EXCLUDED, and the fix found that rather than the other
+    way round. `isbs_projected_is` 7073 is a RUNNING TOTAL -- one contribution restated
+    monthly, not several. Superseding its 06-30 row makes 07-31 the first month of the
+    year, so its full cumulative reads as a SECOND contribution while the supplement
+    still supplies the real one. Measured on production BEFORE the exclusion: Court of
+    Deptford -8,751,183.95 -> -18,297,183.95, Burton -26,597,500 -> -53,195,000,
+    Presidential Arms -20,600,000 -> -41,200,000, all feeding U/W ROE to Date and CoC
+    Proj. Since Close. The genuine duplicate is already handled downstream by the
+    (date, amount) dedupe at the end of `_get_uw_7073_signed`, so there was nothing to
+    fix here and real harm in trying. Interim IS excluded on the same grounds; Budget
+    IS, Valuation IS and Interim BS are periodic or point-in-time and still supersede.
+    INVESTOR-FACING -- halves P0000069's published budget NOI. Jim signed off.
+    VERIFIED ON LIVE AFTER CUTOVER: Mount Prospect 26Q2 budget NOI 2,685,375.22 ->
+    **1,342,687.61**, budget revenue 2,882,644.59, 26Q3 budget NOI 1,902,734.91. Its
+    ACTUALS are unchanged (26Q2 1,430,157.84) and the budget DSCR still computes
+    (1.7991386).
+    THE SWEEP FOUND A THIRD DEAL THE BRIEF DID NOT NAME, and paging is why. Only a deal
+    carrying an app-written budget supplement can be touched; the first page of
+    `isbs_budget_is_supplements` returned 500 of 2,856 rows and showed two deals.
+    Paged in full (and deduped -- the rows endpoint's OFFSET paging repeats rows,
+    2,856 -> 2,709 unique) it is THREE: P0000019, P0000069, P0000075. Key-overlap
+    against the MRI budget rows decides which can move: P0000019 **0 overlap**,
+    P0000075 **0 overlap**, P0000069 **188**. The supersede key can only remove an MRI
+    row a supplement actually covers, so the other two are untouchable by this change
+    and P0000069 is the only deal whose budget moves. A 500-row first page would have
+    supported the same conclusion for the wrong reason.
+    MERGED FROM A BRANCH 59 COMMITS BEHIND MAIN, forked at `326ef6c` before v552-v567,
+    so a bare `git diff` against main lists ~75 files including `one_pager.py` and
+    `requirements.txt`. THE COMMIT ITSELF TOUCHES TWO: `data_service.py` and its
+    guardrail. Reviewed before merging rather than after: main has not touched either
+    file since the merge base, the dry-run staged exactly those two, and the merged
+    tree still carries the v567 One Pager NOI fix and v566's Treasury par yields.
+    Regression-checked on live after cutover -- Pontchartrain UW-YE 2,130,282.15,
+    Asbury 730,129.17, Dorsett 3,896,181.99 all still exact; 23 rate series with 13
+    UST tenors, `UST_10Y` 2,439 observations last 2026-10-02 at 5.28.
+    Guardrail `isbs_supplement_precedence_check` 20 -> 33: it had REPLICATED the
+    shadowing rule locally with the same `.astype(str)` the engine used, so it agreed
+    with the defect perfectly -- it now calls `_append_isbs_supplements` itself. On the
+    merged tree 33/0, with one_engine_per_number 26/0, investment_metrics 178/0,
+    market_rates 25/0. Built from a CLEAN WORKTREE (the v556 lesson), gated on the tag
+    and on run `canc` succeeding for this SHA, P1 re-run immediately before cutover
+    (still v567 = `af89507`, an ancestor). `SQLAlchemy>=2.0,<2.1` and `pandas>=2.3,<3.1`
+    confirmed intact and NOT bumped. After cutover: v568 alone at 100%, root 200 in
+    0.08-0.58s.)
   - `v567` = `af89507` (ONE PAGER HEADLINE NOI READS THE CANONICAL ACCOUNT LIST.
     Oct 5 2026, image `waterfall-xirr:af89507`, digest `sha256:aafc916a...`, tag locked.
     The headline NOI was computed from a SECOND, hand-maintained copy of the
