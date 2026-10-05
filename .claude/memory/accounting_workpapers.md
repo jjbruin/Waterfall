@@ -244,3 +244,81 @@ See `open_items.md` §6. In short: the MR22000002 tagging question is with
 accounting; no close cycle, `wp_roles` assignment or step owners exist in
 production yet; and `MC_TYPENAME_ROW` (members' capital row routing) wants
 accounting's eye before the first real package goes out.
+
+## The rule digest that used to live in CLAUDE.md (moved Oct 5 2026)
+
+Verbatim. These are the invariants, stated compactly; the sections above are
+the detail behind them. Kept together so neither can drift from the other.
+
+### Accounting Workpapers & the Statement Engine
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v504`.
+
+- **ONE ENGINE, MANY ENTITIES.** `statement_service.py` builds Balance Sheet, Income
+  Statement, Members' Capital, Cash Flow and Schedule of Investments for any entity and
+  period. The workpaper package is one caller, not the owner — so a figure in a
+  downloaded workbook cannot differ from the one shown anywhere else.
+- **The population is MRI's**: `entity_groups` (ENTITYGRPD) with `ENTGRPID='REP'`.
+- **Five MRI queries**: `MRI_Entities`, `MRI_Entity_GroupID`, `MRI_GL_Accounts`,
+  `MRI_IA_Transactions`, `MRI_GL_Detail`. **`MRI_GL_Detail` is LAST in `QUERY_REGISTRY`
+  on purpose** — unbounded GHIS on a 2GB container is the one that could kill the
+  worker, and a killed process is not an exception the per-query try/except can catch.
+  All five `.sql` files use `UNION ALL`, never `UNION`: the GL is a journal and one key
+  legitimately carries many rows that consumers SUM.
+- **Balance model**: `opening` = BALFOR 'B' at YYYY01, `YTD` = BALFOR 'N' rows,
+  `closing` = opening + YTD. `GACC.TYPE` B/C/I are statement accounts; L/M are roll-up
+  headers and are NOT lines.
+- **Accounts are never guessed onto a statement.** No GACC row, or a type outside
+  B/C/I → reported as `untyped`. A mapping naming a section that does not belong to the
+  statement its type implies → reported as a `conflict`. Visibly missing beats silently
+  wrong.
+- **THE PERIOD RESULT BELONGS IN MEMBERS' CAPITAL.** Income closes to equity at YEAR
+  END, so before then the equity accounts hold no profit and every entity came out of
+  balance by exactly its net income. `build()` carries the income statement's own total
+  across, so the two statements cannot disagree.
+- **A line facing the wrong way still balances** — a negative asset and a positive
+  liability net identically, so no tie-out can catch it. `balance_sheet.sign_anomalies`
+  reports them. Live case in `open_items.md` §6.1.
+- **The engine flags; it never drops.** `dormant` (no balance AND no movement) is
+  returned on every line and the screen and workbook suppress them, saying how many. A
+  zero line WITH movement is kept — hiding it would make the statement disagree with the
+  trial balance behind it.
+- **Deadlines: reject what cannot be true, warn what is merely odd.** Refused — not a
+  date, or earlier than the period BEGAN (`period_start()` derives the bound; a
+  pre-close prep step may be due inside the period). Warned but saved — over a year out,
+  or out of sequence. Clearing is always allowed. Write-time only: a bad deadline typed
+  before the rule stays stored.
+- **Guardrails**: `scripts/statement_presentation_check.py`,
+  `scripts/workpaper_deadline_check.py`.
+
+### Who may edit the Accounting section
+**Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v504`.
+
+| Gate | Who | What |
+|---|---|---|
+| `ACCOUNTING_ROLES` | admin, cfo, accounting_manager, accountant | every write in `/api/workpapers` and `/api/treasury` |
+| `CLOSE_PLAN_ROLES` | admin, cfo | when the close opens, when things are due, what order entities are worked in |
+| — | everyone ticked for Accounting (Settings > User Management) | reads -- see "Section access by username"; before that gate, every signed-in user |
+
+- **`roles_exactly`, NOT `role_required`.** `role_required` compares LEVELS and
+  `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL level 1 — so any
+  level gate naming one admits all four, and no arrangement of names excludes
+  analysts. Jim's day-to-day login is an analyst one and is read-only here. The
+  rest of the app (104 endpoints) still uses `role_required`; if a rule ever needs
+  to separate two level-1 roles elsewhere, it needs `roles_exactly` too.
+- **`CLOSE_PLAN_ROLES` includes renumber and carry-forward because they write
+  `sort_order`.** A rule covering the order cell but not the buttons that rewrite
+  the same column is defeated by clicking a different button. `Fill properties`
+  is deliberately NOT included — it writes only the Property column.
+- **The screen must agree with the server, and has been wrong BOTH ways.** `v480`
+  gated the screen on `admin` while the API would have taken the CFO's writes, so
+  the buttons were simply not rendered; the fix then went one role too far and
+  locked out the accountants. Views read `auth.canEditAccounting` /
+  `auth.canSetClosePlan`; the guardrail compares the Vue lists to the Python ones
+  by name.
+- **`scripts/accounting_access_check.py` (54) ENUMERATES ROUTES FROM THE APP** and
+  calls each as each role, so a new endpoint is covered the day it is written. The
+  check it replaced grepped for a decorator's text and was therefore blind to
+  **six writes that had no gate at all** — including exhibit DELETE and tracker
+  sign-off, reachable by any signed-in user. Every narrowing is asserted in BOTH
+  directions: a rule tested only in the refusing direction is satisfied by
+  locking everyone out.

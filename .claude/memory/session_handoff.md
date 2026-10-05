@@ -93,7 +93,8 @@ Canada 1.4210), not typed.
 **Live: `v564` = `d6adabe`. `main` = `a1ad346` (v564 + its docs), level with live.**
 ONE BRANCH IS NOT ON MAIN: `fix/treasury-mri-text` (`8ac9fe9`, pushed, not merged),
 see "Next" below. Main was fast-forwarded and pushed by Claude today without a block. Full per-revision
-detail is in CLAUDE.md's deploy history; this is what a reader needs to carry forward.
+detail is in `deploy_history.md` (moved out of CLAUDE.md on Oct 5 2026); this is what a
+reader needs to carry forward.
 
 ### What shipped
 

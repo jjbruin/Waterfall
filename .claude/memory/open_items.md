@@ -50,6 +50,195 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 20. Items recovered from the deploy history (Oct 5 2026)
+
+CLAUDE.md's inline deploy history was moved to `deploy_history.md` on Oct 5 2026.
+Reading it through first turned up these, each stated as "STILL OPEN" or "NOT DONE"
+in a revision note and tracked nowhere else. Every one was **re-checked against the
+working tree** before being written down here; the ones that turned out to be closed
+are recorded as closed rather than carried forward.
+
+**Standing: seven open — 20.1-20.5, plus 20.8 and 20.9 (housekeeping, low priority).**
+20.7 is not an item but the record of four things the archive called open and that
+turned out to be shipped, kept so nobody re-opens them.
+
+**20.6 is deliberately absent.** It tracked `v547` having moved nine reported figures,
+three of them investor-facing coupons, without the "tell Jim first" step being closed.
+**Jim reviewed them on Oct 5 2026 and confirmed MRI deal terms as the source of truth
+for coupon and participation**, so the item is closed and removed; the resolution is
+recorded against `v547` in `deploy_history.md`. Numbers are never reused here — a gap
+means an item closed, and renumbering would break every reference written before it.
+
+### 20.1 Investment Metrics: two columns are still unloaded — Alay
+
+`investment_metrics_config.UNLOADED_FIGURES` holds `uw_irr` ("UW Proj. IRR") and
+`proj_yr1_coc` ("Proj Yr-1 CoC Returns") in `mode: "none"` with `field: None` and a
+`TODO(alay)` against each. The note on both: *"not held anywhere in MRI"*. Open since
+`v545`; the draft gate coming off at `v546` did not close it, and `v551` deliberately
+left them — it computed **Act.** Yr-1 CoC from the ROE engine and wired the footnote
+(5) substitution so that it **activates by itself the moment `proj_yr1_coc` is switched
+on**.
+
+- **The check:** `grep -n "TODO(alay)" investment_metrics_config.py` — two hits is the
+  open state, zero is done.
+- **What it blocks:** three cells on nine footnote-(5) deals currently BLANK rather
+  than showing a stub period.
+- **Owner:** Alay, for the MRI field. Wiring is already written and waiting.
+
+### 20.2 Investment Metrics: first lien reproduces the reference on 42 of 76 — unassigned
+
+Recorded at `v545`/`v546` and still stated in `investment_metrics_config.py`'s own
+header comment. `v551` improved the SOURCE — origination dates are read off the raw
+`mri_loans_all` frame where they exist, and maturity is never used as a proxy — but
+**no printed figure moved**, because the whole live table holds four Origination rows
+and all four sit on single-loan deals. Ten deals are named in the
+`first_lien_origination_missing` diagnostic.
+
+- **The check:** the config header comment, and the diagnostic on a live payload.
+- **Owner:** unassigned. It is a DATA gap (MRI carries no origination date for most
+  loans) before it is a code gap, so it may belong with Alay too.
+
+### 20.3 Freezing is switched off, and 26Q2 has never been frozen — Charlene
+
+`FREEZE_ENABLED` defaults FALSE (`flask_app/config.py:51`) and has never been set on
+the container — verified absent (`[]`) before and after `v530`, `v544` and `v548`.
+`freeze_gate` makes `freeze_part` raise 503, which covers both batch buttons, the
+published-overlay freeze, re-freeze and the Snapshot approval chain. Unfreeze is
+deliberately NOT gated.
+
+It was switched off at `v530` after an all-investors batch was run as a SINGLE request
+over ~145 investors and the app was unavailable for about 35 minutes. **The freeze
+itself was correct** — 145 rows written, cleanly unfrozen, 0 left frozen. The SHAPE of
+the request was the problem, and `v530` then posted in slices of 10 while leaving the
+flag off; `v539` added the background freeze job.
+
+- **What is still outstanding:** (a) a decision that the background job is what the
+  flag was waiting for, and (b) **26Q2 has still never been frozen from the published
+  PDF overlay.** Deploying the buttons did not press them.
+- **The check:** `az containerapp show ... --query "properties.template.containers[0].env"`
+  for `FREEZE_ENABLED`; `portfolio_snapshot_frozen` row count for 2026-Q2.
+- **Owner:** Charlene.
+
+### 20.4 The June bank statements have not been loaded on production — accounting
+
+`v508` closed the mechanism (filing a statement opens the chain, the statements are
+listed, the PDF is kept) and recorded the load itself as not done: of the 64 files in
+`2026\06.2026`, **49 file, 14 are held for an unregistered account and 1 is refused**
+(a Wells Fargo statement in the PNC folder). Two of the 14 hold real money — PPI Life
+Storage NY 119,701.35 and PSC Ambassadors Fund TGA VI 629,125.04. It is now two steps:
+upload the folder, answer the 14.
+
+- **The check:** `GET /api/treasury/statements` row count, and the pending list.
+- **Owner:** accounting. Background in `treasury.md`.
+
+### 20.5 `KEEP_DESPITE_SOLD` is a live per-deal hardcode — unassigned
+
+`portfolio_snapshot_service.py:214` names four vcodes (PCITWES, P0000017, PCAMARI,
+POUTLOO). The code comment states the problem plainly: *"This is a per-deal exception,
+not a rule: 'sold but still reported' is an editorial judgement with no field behind
+it. Should MRI ever carry a disposition-type or still-reporting flag, drive it off that
+and delete this."*
+
+CLAUDE.md's symptom-repair checklist says a vcode in a constant is **always** a symptom
+repair, so this is on the list by that rule alone. It was flagged with Jim at `v459`
+and deployed on his call; the `v459` note left it "Unresolved" because the stated
+rationale — *"the page is meant to carry every sold deal"* — described 4 of 27 sold
+deals, and two DROPPED deals sold later than two kept ones.
+
+- **The precedent that it CAN be derived:** `DEBT_FREE_DEALS` was exactly this shape
+  and `v544` replaced it with a rule read off the row's own data. See §12.
+- **Owner:** unassigned. Needs the MRI field question put to Alay first.
+
+### 20.7 CLOSED, recorded so it is not re-opened
+
+Three of the four below are shipped and deployed, so they are simply closed. The FIRST
+is in flight and carries a date stamp and a deletion instruction, per the standing rule
+at the top of CLAUDE.md: a "fixed but not deployed" note reads as authoritative for as
+long as it sits here.
+
+- **IN FLIGHT — Investment Metrics shared the committed-pref FUNCTION but not the
+  as-of RULE** (`v548`, `v549`). Neither `capitalization_sources` call site passed
+  `as_of`, so the report read the CURRENT commitments row while the One Pager read the
+  row in force at the quarter — Burton 26Q2 $54.23M here against $26.60M there, with
+  the reference printing $26.60M.
+
+  **Status as of Oct 5 2026: FIXED IN A COMMIT, NOT MERGED, NOT DEPLOYED, AND NOT
+  RIDING ALONG WITH THE DOCS COMPACTION.**
+  - **It lives on `feat/investment-metrics-quarter-dropdown`**, whose tip `a610267` IS
+    the commit: "Investment Metrics: committed equity is read AS OF the quarter". It
+    adds `committed_as_of()` and makes `_build_row` pass
+    `as_of=committed_as_of(ident, as_of)`; both sides of the stack move together, and a
+    deal sold on or before the as-of is read at its last held quarter. Two files:
+    `investment_metrics.py` and `scripts/investment_metrics_check.py`.
+  - **`a610267` pushed to `origin/feat/investment-metrics-quarter-dropdown` on Oct 5
+    2026 (was local-only).** Until then it existed in one clone and nowhere else, so
+    losing that machine would have lost it. Pushing changes NOTHING else: it is still
+    unmerged, still undeployed, and **still needs the measurement and Jim's call
+    below.** No pull request has been opened, deliberately.
+  - **`docs/compact-claude-md-clean` does NOT contain it.** The first compaction branch
+    did, because it was cut from `a610267` and would have carried a runtime change into
+    a docs merge; the clean branch is cut from `origin/main` and is docs-only. **Merging
+    the compaction does not ship this fix, and must not be read as having done so.**
+  - **Not on main**: `git merge-base --is-ancestor a610267 origin/main` fails, and
+    `git show origin/main:investment_metrics.py | grep -c committed_as_of` returns **0**.
+  - **`fix/investment-metrics-committed-as-of` WAS A DECOY AND IS DELETED** (local,
+    Oct 5 2026). It sounded like this work and was not: its tip was `06061b0`, a stale
+    copy of main, an ancestor of `origin/main` with no commit of its own and **zero**
+    occurrences of `committed_as_of`. It never existed on the remote, so nothing was
+    deleted there. Recorded in case anyone recreates it from an old clone.
+  - **IT NEEDS ITS OWN FIGURE MEASUREMENT BEFORE IT MERGES.** The commit message claims
+    8 values move on live and 0 get worse; that was measured by its author and has not
+    been re-measured since. It changes a REPORTED figure, so CLAUDE.md's standing rule
+    applies: measure the affected deals against live data, report the count and the
+    deltas, and get Jim's call BEFORE building. Do not fold it into a docs merge.
+
+  **Delete this bullet when it ships**, and record the revision in
+  `deploy_history.md` instead.
+- **`nReqDSR` 1.10 vs `nLTV` 0.55 — which is the extension test** (`v481`, "still
+  open"). Settled by Jim Sep 17 2026 and shipped at `v482`: `nReqDSR` is the EXTENSION
+  test, `nRequiredDCR` the ongoing covenant. Deployed; nothing in flight.
+- **The two portfolio summary SCREENS** (`v502`, "still to build"). Shipped at `v503`
+  (`f151e5a` — confirmed present in git, Oct 5 2026). Deployed; nothing in flight.
+- **No rent step carries `period_start_month`** (`v511`, "still open"). The `v512`
+  re-extraction took it 0 -> 305, with 208 steps dated from the term. Deployed;
+  nothing in flight.
+
+### 20.8 Two memory files describe the same rules twice — LOW PRIORITY, unassigned
+
+`treasury.md` and `accounting_workpapers.md` each now carry **two** descriptions of the
+same rules: their original long-form section, and a "rule digest that used to live in
+CLAUDE.md" appended beneath it on Oct 5 2026. The digest was appended rather than merged
+line-by-line because merging by hand risked dropping a rule, and losslessness was the
+higher priority that day.
+
+Nothing is wrong today — both descriptions agree, because one was written FROM the
+other. The hazard is drift: a rule corrected in one copy and not the other leaves two
+confident, contradictory statements with nothing saying which is current, which is the
+same failure ONE NUMBER ONE ENGINE exists to prevent, one level up.
+
+- **The work:** reconcile to one description per rule in each file, keeping the fuller
+  wording where they differ, and leave a line saying the digest was folded in.
+- **The check:** no rule stated twice in either file; `CLAUDE.md`'s pointer still
+  resolves; the line-presence check still passes against the pre-compaction original.
+- **Why it is low priority:** it costs a reader some repetition, not a wrong answer.
+- **Owner:** unassigned.
+
+### 20.9 Delete `claude_md_prose_archive.md` once the compaction merges — unassigned
+
+`.claude/memory/claude_md_prose_archive.md` holds CLAUDE.md's pre-compaction prose for
+the sections that were rewritten rather than moved. It exists so "the compaction lost
+nothing" is checkable without going to git, which matters while the branch is in review
+and not after: once `docs/compact-claude-md` is on main, git history holds the same text
+and a second copy is just another thing to keep in step.
+
+- **Before deleting, verify it matches history** rather than assuming — the
+  pre-compaction CLAUDE.md is in the parent of `bb91c1d`, and that SHA goes in the
+  deletion commit message so the content stays reachable by name.
+- **Status as of Oct 5 2026:** not merged; do not delete yet.
+- **Owner:** unassigned, with the merge.
+
+---
+
 ## 18. Production runs pandas 3; every guardrail runs on pandas 2 (Oct 2 2026)
 
 `requirements.txt` has `pandas>=2.3`. Pandas 3.0.0 shipped Jan 21 2026, so every
@@ -294,7 +483,28 @@ at OWPSC.
 
 ## 12. Loan subtotals carry Pegasus's debt while its row prints a dash (Sep 25 2026)
 
-**Live bug. Open for 26Q3 and every live quarter. 26Q2 is protected.**
+**RESOLVED at `v544` (`1da00ca`, Sep 30 2026). Closed Oct 5 2026; the original
+statement is kept below because the shape of the bug is worth recognising again.**
+
+`DEBT_FREE_DEALS` is **removed, not emptied** — three guardrails assert the attribute
+cannot come back (`debt_free_rule_check`, `freeze_as_sent_check`, `q3_cleanup_check`).
+The N/A display is now derived from the row's own data (`_debt_free` in
+`portfolio_snapshot_loan.py`), and the footing hole is closed **by construction, twice
+over**:
+
+- `debt` and `debt_display` are BOTH bound through one `debt_field()`, which returns
+  `None` when the deal is held debt free — so the figure the subtotal sums and the
+  figure the cell prints are decided once and cannot drift apart. `loan_subtotal()`
+  cannot pick up a number the page does not show.
+- The derived rule requires `debt == 0.0` exactly (a measured zero on the ISBS basis;
+  `None` is "no reading" and is declined). So the combination the bug needed — a
+  non-zero raw `debt` sitting behind a blanked display — is no longer reachable.
+
+The population was measured read-only on production at 26Q1/26Q2/26Q3 before it
+shipped: the rule fires on `P0000066` and nothing else, and `CHANGED vs old vcode list
+= NONE` at all three. **The only thing that moved was the SOURCE of Pegasus's dash.**
+
+*Original statement (Sep 25 2026), retained:*
 
 `DEBT_FREE_DEALS = {"P0000066"}` (Pegasus Life Storage,
 `portfolio_snapshot_loan.py:192`) blanks `debt_display` so the row prints an em

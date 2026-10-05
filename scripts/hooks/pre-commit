@@ -167,4 +167,24 @@ MSG
     fi
 fi
 
+# ── CLAUDE.md stays a rule book, not an archive ─────────────────────────────
+# It is loaded into EVERY session, so every line is paid for whether or not the
+# work needs it. It reached 4,133 lines before Oct 5 2026 -- 2,790 of them a
+# per-revision deploy narrative -- and nothing stopped it, because no single
+# paragraph was wrong to add. Two rules, checked only when CLAUDE.md is staged:
+# a line budget, and no `vNNN` revision suffix outside the Lessons list (a
+# "live at vNNN" stamp expires silently and then reads as current).
+if git diff --cached --name-only --diff-filter=ACM | grep -qx 'CLAUDE.md'; then
+    PY=.venv/Scripts/python.exe
+    [ -x "$PY" ] || PY=.venv/bin/python
+    if [ -x "$PY" ]; then
+        if ! "$PY" scripts/claude_md_budget_check.py >/tmp/claude_md_budget.out 2>&1; then
+            cat /tmp/claude_md_budget.out
+            exit 1
+        fi
+    else
+        echo "pre-commit: no .venv python; claude_md_budget_check not run." >&2
+    fi
+fi
+
 exit 0

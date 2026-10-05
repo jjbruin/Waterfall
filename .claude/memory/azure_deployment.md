@@ -68,3 +68,43 @@ After committing changes, run these two commands in sequence:
 - `migrate_to_postgres.py` — bulk SQLite → PostgreSQL migration
 - `fix_tables.py` — fix tables with type mismatches (occupancy, tenants, prospective_loans)
 - `azure-complete-setup.sh` — reference doc of provisioned infrastructure
+
+## Refreshing local data from production (moved from CLAUDE.md, Oct 5 2026)
+
+Added to CLAUDE.md on origin/main (`40c6796`) while the compaction branch was open, so
+it was never in the compaction baseline. The COMMAND stays in CLAUDE.md under Local
+Development, because that is the thing you need in front of you; the cautions are here,
+verbatim as they were written.
+
+### Refreshing local data from production
+`waterfall.db` is NOT in git, so every clone holds its own copy, current only as of
+its owner's last load -- Jim's and Charlene's are separate and drift independently.
+`scripts/pull_production_db.py` copies production's PostgreSQL into it (Oct 5 2026).
+
+Stop the local Flask server first (Windows will not replace an open file), then in
+ONE PowerShell terminal -- each tab has its own variables, which is how the first
+attempt failed -- paste this single line:
+
+```powershell
+$env:DATABASE_URL = (az containerapp secret show -g rg-waterfall-dev -n app-waterfall-dev-v2 --secret-name db-url --query value -o tsv); .venv\Scripts\python scripts\pull_production_db.py; Remove-Item Env:DATABASE_URL
+```
+
+- **The password stays in your terminal.** Read from `DATABASE_URL`, never printed.
+  Needs an `az login` with rights to read the container app's secrets, and this
+  machine's IP allowed on `psql-waterfall-dev` (Networking) if the connection times out.
+- **Rows are replaced, the local schema is kept** -- recreating tables from
+  PostgreSQL would lose SQLite's `INTEGER PRIMARY KEY AUTOINCREMENT`, and the next
+  locally inserted row would get a NULL id. New columns are added, new tables created.
+- **Local logins are kept**: `users`, `password_reset_tokens` and
+  `user_section_access` are not copied.
+- **Nothing is lost**: the previous file stays as `waterfall.db.bak-<timestamp>`, and
+  the new one is swapped in only when every table's row count matches production.
+- **Dates are written the way SQLite holds them here** -- `2026-06-30`, or a time
+  after a SPACE. SQLite compares dates as TEXT; the first version wrote
+  `2026-06-30T00:00:00`, which sorts after `2026-06-30 23:59:59`, and 879 IA rows
+  dated 6/30 silently fell outside a "through 6/30" filter. `--repair-dates` fixes a
+  file written that way, in place.
+- `--no-files` leaves stored PDFs and images empty (the full copy is ~1.4 GB).
+- **The Database Tools "Export Database" button is NOT a substitute**: it reads a
+  SQLite file, so on Azure it exports the container's empty local file, not
+  PostgreSQL. See `open_items.md`.

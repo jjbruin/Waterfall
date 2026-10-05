@@ -9,11 +9,25 @@
 - [intercompany.md](intercompany.md) — **INTERCOMPANY** (Sep 29 2026; phase 1 reconciliation BUILT, not deployed; Pay/JE not built): the CFO's Due to/from PSC Manager reconciliation and reimbursement JE, from `BORG_Intercompany Template.xlsx`. His three Spreadsheet Server queries are all `gl_detail`; measured to the cent (-308,316.59 / 313,093.97) **with BASIS A.B only** — C and T rows exist and move the figures. JE reuses Treasury's MRI GL writer. Six questions for the CFO at the foot.
 - [rent_roll_exhibit.md](rent_roll_exhibit.md) — **RENT ROLL SPEC + IC EXHIBIT** (Sep 29 2026): new business's 31 sections measured against the app on Market at Poplar (option rent 0 of 39, Start 12 of 27, exercised options never applied), the exhibit's exact formatting (B2:H111), and the five-step plan; step 1 built.
 
-- [app_reference.md](app_reference.md) — what each app tab displays, section by section, plus the AI Assistant's tools and endpoints. Split out of CLAUDE.md Sep 11 2026.
+### Moved out of CLAUDE.md on Oct 5 2026
+CLAUDE.md went from 4,133 lines to ~300 and now holds invariants and procedures only. Each file below is the verbatim detail behind a one-line rule that stayed there; CLAUDE.md's own pointer table says which is which. `scripts/claude_md_budget_check.py` (pre-commit) stops it growing back.
+- [engine_reference.md](engine_reference.md) — **THE COMPUTATION DETAIL**: acquisition and sale dates, waterfall types, pref accrual, capital calls, tax abatements, paid-off loans, balloon payoff, sale overrides, parcel sales, cap rate, prospective loans, the six ISBS split tables and their formats, At Close, economic occupancy, forecast assembly, the actuals cutoff, and the full account classifications. Read this before changing any calculation's inputs — CLAUDE.md keeps only the one-line rule for each.
+- [function_index.md](function_index.md) — the catalogue of which function answers which question, by area (core engine, One Pager, parcel sales, database, Argus imports, Flask services). **Read it before writing a calculation**, so ONE NUMBER ONE ENGINE is enforceable rather than aspirational.
+- [lease_review.md](lease_review.md) — the five lease-review rule sets: settling a validation finding and the change report; re-reading a tenant's WHOLE document set; exclusives and co-tenancy ("bound by" is not "holds"); fixed CAM recoveries; and rent PSF, amendment ordering and rent stated as months of the term. Related: `rent_roll_exhibit.md`.
+- [valuation_budget.md](valuation_budget.md) — Budget Review's Estimate | Budget | Valuation comparison: one line-mapping screen for both the partner budget and the Argus download, the account-is-the-mapping rule, why the label and the amounts must come from the same block, and the modelled debt rows (UW records debt service as ONE figure, 7010 — never split it).
+- [gl_ia_query.md](gl_ia_query.md) — the CFO's GL / IA Spreadsheet Server filters run against our imported tables: it puts the PARAMETERS back rather than re-running his SQL, nothing is concatenated into a query, a truncated grid totals the whole match, and `ITEM` is a line number — not a debit/credit side.
+- [section_access.md](section_access.md) — access per sidebar section by username (LIVE at `v552`): only an untick is stored, the server gate is one `before_request`, the three GL tables are blocked wherever raw rows leave the app, and **a new section goes in the registry** or the pre-commit hook fails.
+- [market_rates.md](market_rates.md) — **MARKET RATES** (`v565`, Data Management): Bank of Canada USD/CAD, CORRA, policy rate; NY Fed SOFR and its averages, EFFR, OBFR — free, official, no API key, refreshed on the screen and at the end of Refresh All Data from MRI. `rate_on` NEVER interpolates and returns None past 7 days. Term SOFR is licensed and is NOT here; forward curves are not built.
+- [pe_exposure.md](pe_exposure.md) — **PSC PREFERRED EQUITY EXPOSURE** (`v565`, Reports, open to everyone): accounting's tracker rebuilt from our MRI copy — Cost from the Pref Balance Detail engine plus realized losses, FMV plus unrealized marks, the seven investor columns from commitments in force, Future Funding from the One Pager. The STOPS are accounting's own fixed entity list (Mapping tab), and an AMB fund's outside investors are found by NAME PREFIX. Reproduces the 26Q2 tracker to within 0.1%; every difference is one of its typed inputs. CLAUDE.md keeps the rules; the narrative is here.
+- [ui_patterns.md](ui_patterns.md) — shared UI patterns that cross screens rather than belonging to one feature. Today: the collapsible input column, and why a GRID parent must declare its own collapsed track or folding reclaims nothing.
+- [pr_docs_compaction.md](pr_docs_compaction.md) — **TRANSIENT.** The pull-request description for the CLAUDE.md compaction: what it touches, the one commit made with hooks bypassed and why, the §19→§20 renumber, the 4,008-line losslessness count, and why the Investment Metrics as-of fix is NOT in it. Delete after the PR merges, with `claude_md_prose_archive.md`.
+- [claude_md_prose_archive.md](claude_md_prose_archive.md) — **TRANSIENT.** CLAUDE.md's pre-compaction prose for the sections that were rewritten rather than moved, so the compaction is checkable without going to git. Delete once the compaction branch is merged (open_items §20.9).
+
+- [app_reference.md](app_reference.md) — what each app tab displays, section by section, plus the AI Assistant's tools and endpoints, and the sidebar navigation map (moved from CLAUDE.md Oct 5 2026). Split out of CLAUDE.md Sep 11 2026.
 - [ppi_ownership_waterfalls.md](ppi_ownership_waterfalls.md) — NB upstream investor-relationship waterfalls (AM fees, net-of-fee IRR promotes) reusing the PSCKOC engine; approved plan, phases 1-5
 - [capital_reversal_and_psc3.md](capital_reversal_and_psc3.md) — the abs() sign bug and the two traps in fixing it; why PSC3 looks over-returned (answered, do not re-raise); and MANUAL_RATIO_SEEDS, the six-deal hardcode shipped in v416 as a stopgap, what actually needs fixing, and how to retire it
-- [azure_deployment.md](azure_deployment.md) — Azure infrastructure (VNet, NAT Gateway, VPN Gateway), deployment workflow
-- [deploy_history.md](deploy_history.md) — per-revision deploy post-mortems v429→v349, moved out of CLAUDE.md (which keeps the deploy rule + a one-line SHA index). Read before assuming a revision shipped what its SHA suggests.
+- [azure_deployment.md](azure_deployment.md) — Azure infrastructure (VNet, NAT Gateway, VPN Gateway), deployment workflow, and **refreshing the local `waterfall.db` from production** (`scripts/pull_production_db.py`) — the cautions, including the date format that silently broke a "through 6/30" filter and why the Export Database button is not a substitute. CLAUDE.md keeps only the command.
+- [deploy_history.md](deploy_history.md) — **THE WHOLE DEPLOY RECORD.** Per-revision post-mortems, plus (since Oct 5 2026) the full `v563`→`v349` index that used to sit inline in CLAUDE.md. CLAUDE.md now keeps the deploy RULE and no revision list at all — the running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is live?". Read before assuming a revision shipped what its SHA suggests. **New deploy entries go here, never in CLAUDE.md.**
 - [review_workflow.md](review_workflow.md) — One Pager review/approval pipeline (tables, API, Vue, roles)
 - [dashboard_perf.md](dashboard_perf.md) — Dashboard loading optimization (prepare_cap_lookups, 3.7x speedup)
 - [isbs_split_migration.md](isbs_split_migration.md) — ISBS split into 6 tables by vSource
@@ -37,13 +51,19 @@
 - [psckoc_structure.md](psckoc_structure.md) — PSC KOC I LLC terms RECOVERED from the Belair net-returns PDF (8% coupon pari-passu 85/15, 1.50% accruing AM fee, 20% catch-up, $15k venture costs); the prior agreement-reading session and its step rows are GONE
 
 ## Standing rules that govern new work
-- **ONE NUMBER, ONE ENGINE** (`CLAUDE.md`, Jim Sep 18 2026) — never write a second
-  calculation for a number the app already answers. A date or a scenario is a
-  parameter; the arithmetic is not. The catalogue of which engine owns which number
-  is in `CLAUDE.md`; `scripts/one_engine_per_number_check.py` enforces it. The
-  precedent: accrued pref had two implementations in one file that disagreed on 34 of
-  68 deals by $633,807, because one lost a day at every year end — and it never looked
-  wrong, which is why a nearly-right duplicate is the dangerous kind.
+- **ONE NUMBER, ONE ENGINE** (Jim, Sep 18 2026) — never write a second calculation for
+  a number the app already answers. A date or a scenario is a parameter; the arithmetic
+  is not. The catalogue of which engine owns which number is in `CLAUDE.md`;
+  `scripts/one_engine_per_number_check.py` enforces it. The precedent: accrued pref had
+  two implementations in one file that disagreed on 34 of 68 deals by $633,807, because
+  one lost a day at every year end — and it never looked wrong, which is why a
+  nearly-right duplicate is the dangerous kind.
+  **Jim's instruction in full** (CLAUDE.md carries it abridged, with the engine table):
+  *"We should not have conflicting calculation results. It will cause doubt in the
+  accuracy of the entire work. Make sure the vetted calculation engines are used
+  consistently and we do not have separate calculation engines for the same number. The
+  only differences in results should come from changes in time frames or projections
+  that we are running through the engines. The calculations should be reliable."*
 - **Fix problems, not symptoms** (`CLAUDE.md`, Jim Sep 1 2026) — and tell Jim BEFORE
   building the image when a commit is a symptom repair.
 - **Pre-flight P1-P4 before every deploy** (`CLAUDE.md`) — the span is against the LIVE
@@ -57,6 +77,23 @@
 - 13+ Vue routes, 13 Flask API blueprints (~120 routes)
 
 ## Architecture
+
+The directory tree, moved out of CLAUDE.md Oct 5 2026:
+
+```
+waterfall-xirr/
+├── *.py              # The engine, at the root: compute, waterfall, metrics, loaders,
+│                     #   models, loans, planned_loans, capital_calls, cash_management,
+│                     #   consolidation, portfolio, reporting, ownership_tree, config,
+│                     #   one_pager, investment_metrics, database, argus_parser
+├── queries/          # The MRI .sql queries, one per imported table
+├── scripts/          # Guardrails (*_check.py), diagnostics, migrations, hooks/
+├── flask_app/        # __init__.py app factory; auth/ (JWT, users, section registry);
+│                     #   api/ route blueprints; services/ reusing the root engine
+├── vue_app/src/      # api/ stores/ views/ components/ router/
+└── Dockerfile        # The runtime image ships NO vue_app/ source
+```
+
 - **flask_app/**: App factory, JWT auth, 12 API blueprints, 11 service modules, serializers
 - **vue_app/**: Vue 3 + Vite + Pinia + Vue Router + ECharts + AG Grid
 - **Core Python**: compute.py, waterfall.py, models.py, metrics.py, loaders.py, database.py, reporting.py, one_pager.py
