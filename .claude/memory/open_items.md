@@ -22,6 +22,20 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 20. Board package section -- planned, not started (Oct 5 2026)
+
+Development plan (a shared doc, private until shared): https://claude.ai/code/artifact/71e5c89f-933f-4b88-9e3e-f1b2e1d7a5b9
+-- built from the Jan 14 2026 board deck (33 pages). Seven phases: 0 foundation (an
+OPT-IN section -- today every new section is ticked for everyone -- plus a separate
+Compensation permission, server-side aggregation, compensation tables restricted and
+excluded from the assistant and from `pull_production_db.py`, an audit log), 1 portfolio
+overview, 2 track record, 3 originations (pipeline holds 2 prospects; the 339 reviewed are
+elsewhere), 4 projected sales returns, 5 platform model + payroll plan (nothing exists),
+6 package assembly. Each phase accepted by reproducing the January deck at 12/31/25.
+Decisions listed in the doc. Owner: **Jim**.
+
+---
+
 ## 19. Local data, rates, and the PE exposure tracker (Oct 5 2026)
 
 - **19.1 Database Tools "Export Database" does not export production.**
