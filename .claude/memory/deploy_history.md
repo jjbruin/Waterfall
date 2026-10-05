@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v566** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v567** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v566 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v567 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,58 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v567` = `af89507` (ONE PAGER HEADLINE NOI READS THE CANONICAL ACCOUNT LIST.
+    Oct 5 2026, image `waterfall-xirr:af89507`, digest `sha256:aafc916a...`, tag locked.
+    The headline NOI was computed from a SECOND, hand-maintained copy of the
+    income-statement account list in `one_pager.py`, while the One Pager's own NOI
+    CHART -- and the Dashboard KPIs, Surveillance, Property Financials, the Snapshot
+    freeze and Budget Review -- all read `config.IS_ACCOUNTS`. The copy had drifted
+    short by two accounts, so one deal could print one definition of NOI in the header
+    and draw another in the chart directly beneath it. The headline list is now DERIVED
+    from config's and gains **4075 Other Income** (revenue, raises NOI) and **5092 R&M**
+    (expense, lowers NOI). `config.py` is NOT touched, so no other surface moves.
+    7070 IS STRIPPED FROM THE DERIVED LIST and kept in its own `TAX_ABATEMENT` key:
+    config groups it inside Real Estate Taxes while `calc_amounts` folds it into
+    expenses itself, and a plain import would have counted the abatement TWICE.
+    `DEBT_SERVICE` is deliberately NOT derived -- config's `Principal` list is EMPTY
+    where one_pager's carries 7060, and deriving it would have silently dropped 7060
+    out of the DSCR denominator. Caught by diffing EVERY key against main, not only the
+    two in scope.
+    INVESTOR-FACING, AND JIM SIGNED OFF. Measured on live PostgreSQL before the build,
+    both code versions through the app's own loader on the same 943,489 ISBS rows.
+    Only UW full-year NOI moves, on three deals, identically at 26Q2 and 26Q3:
+    Pontchartrain Landing 2,555,745.19 -> 2,130,282.15 (-425,463.04) and Asbury Commons
+    741,367.00 -> 730,129.17 (-11,237.83), both from 5092; Flats at Dorsett Ridge
+    3,718,397.44 -> 3,896,181.99 (+177,784.55) from 4075. **Actual NOI, actual-YE,
+    at-close and every DSCR denominator are unchanged**, and the six deals whose 4075
+    activity is 2021-2022 are identical at both quarters. All six figures re-verified
+    on the live API after cutover; Evergreen Plaza, carrying neither account, is
+    unmoved.
+    BUILT FRESH AFTER A DEPLOY COLLISION, AND THIS IS THE ENTRY'S REAL LESSON. An
+    earlier image `waterfall-xirr:2f7d631` (the NOI fix merged onto `24c55ed`) was
+    built first. One minute into that build, `v566` = `96534b3` (Treasury par yields)
+    was deployed by someone else from the SAME base. Neither commit is an ancestor of
+    the other, so **deploying `2f7d631` would have reverted the Treasury work** --
+    `_derive_headline_is_accounts` occurs 0 times in `96534b3`, and `96534b3` is absent
+    from `2f7d631`. The P1 RE-RUN IMMEDIATELY BEFORE `containerapp update` is the only
+    reason this was caught: it returned `v566` where `v565` was expected, and the
+    suffix `v566` was already taken. Nothing was deployed; `2f7d631` remains built and
+    locked, UNUSED. Rebuilt from `origin/main` `af89507`, which contains both, after
+    asserting `96534b3` IS an ancestor. `2f7d631` is also an ancestor, so the NOI fix
+    is in.
+    Built from a CLEAN WORKTREE, not the checkout: `git status` carried two untracked
+    diagnostic scripts, ACR uploads the working tree, and `scripts/` is copied into the
+    image -- the `v556` lesson. Gated on the tag existing and run `canb` succeeding for
+    this SHA (2m19s) before the update. `SQLAlchemy>=2.0,<2.1` and `pandas>=2.3,<3.1`
+    confirmed intact and NOT bumped. After cutover: v567 alone at 100% traffic, root
+    200 in 0.10-0.16s, and the Treasury feature from `v566` is NOT reverted -- 13 UST
+    series live, `UST_10Y` 2,439 observations, last 2026-10-02 at 5.28.
+    A VERIFICATION OF MINE WAS WRONG FIRST and is recorded because it will recur: the
+    Treasury check initially reported "0 UST series" because I guessed the payload key
+    (`series_id`/`id`/`code`) when it is `key`. Dumping the raw response showed 13.
+    Same class of error as reading `at_close_noi` instead of `at_close_noi_raw` earlier
+    the same day, which briefly made at-close look like it moved. Dump the shape before
+    filtering on it.)
   - `v566` = `96534b3` (U.S. TREASURY PAR YIELDS IN THE RATES TABLE -- Jim: "add the
     treasury rates to the rate table, especially the 10-year." Thirteen tenors
     `UST_1M`..`UST_30Y` from Treasury's Daily Par Yield Curve CSV, history from 2017,
