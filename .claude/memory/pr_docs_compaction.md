@@ -15,7 +15,7 @@ per-revision deploy narrative, and roughly a thousand more of per-feature detail
 belongs beside the feature. No single paragraph was wrong to add; the file simply never
 gave anything back.
 
-**CLAUDE.md: 4,181 → 327 lines.** Nothing was summarised away: the history and the
+**CLAUDE.md: 4,181 → 337 lines.** Nothing was summarised away: the history and the
 per-feature detail MOVED, verbatim, into `.claude/memory/`, and CLAUDE.md keeps the rule
 with a pointer.
 
@@ -26,7 +26,7 @@ git diff --name-only origin/main..docs/compact-claude-md-clean \
   | grep -vE '^(CLAUDE\.md$|\.claude/|scripts/claude_md_budget_check\.py$|scripts/hooks/pre-commit$)'
 ```
 
-**Returns empty.** 19 files change: `CLAUDE.md`, 16 under `.claude/memory/`, the new
+**Returns empty.** 20 files change: `CLAUDE.md`, 17 under `.claude/memory/`, the new
 `scripts/claude_md_budget_check.py`, and 20 added lines in `scripts/hooks/pre-commit`.
 No application code, no templates, no queries, no migrations. **Nothing to build and
 nothing to deploy.**
@@ -45,7 +45,7 @@ commit's own limit of 350** — because `origin/main` had added a 33-line "Refre
 local data from production" section while this branch was open, and carrying it in
 landed before the trims in the next commit brought the file to 316.
 
-**The final tree passes.** Verified on the branch head: budget check 3/0 at 327 of 330;
+**The final tree passes.** Verified on the branch head: budget check 3/0 at 337 of 340;
 the hook exits 0 on a normal docs commit, exits 1 when an over-budget CLAUDE.md is
 staged, and exits 0 again on restore. The bypass is recorded here rather than hidden
 because a bypassed hook that nobody mentions is how a hook stops being trusted.
@@ -109,7 +109,7 @@ Jim's call before building. Tracked in `open_items.md` §20.7.
 ### Guard against regrowth
 
 `scripts/claude_md_budget_check.py`, wired into the pre-commit hook and triggered only
-when CLAUDE.md is staged. Two rules: at most **330 lines**, and **no `vNNN` revision
+when CLAUDE.md is staged. Two rules: at most **340 lines**, and **no `vNNN` revision
 suffix outside the Lessons list** — "live at `v504`" is the kind of fact that expires
 silently, and the Lessons list is the one place a revision is a pointer rather than a
 claim about what is running. Proved non-vacuous: `--inject=lines` fails the budget
@@ -127,7 +127,7 @@ gives main one commit whose tree passes every check.
 Suggested squashed message:
 
 ```
-docs: compact CLAUDE.md to invariants and procedures (4,181 -> 327 lines)
+docs: compact CLAUDE.md to invariants and procedures (4,181 -> 337 lines)
 
 CLAUDE.md is loaded into every session. The deploy history and the per-feature
 detail MOVE, verbatim, to .claude/memory/; CLAUDE.md keeps the rule and a pointer.
@@ -147,7 +147,7 @@ open_items' new section is numbered 20, not 19 -- main landed its own 19 while t
 branch was open.
 
 Guardrail scripts/claude_md_budget_check.py (pre-commit, CLAUDE.md only): at most
-330 lines, and no vNNN revision suffix outside the Lessons list.
+340 lines, and no vNNN revision suffix outside the Lessons list.
 
 NOT INCLUDED: the Investment Metrics as-of fix (a610267). It is on
 origin/feat/investment-metrics-quarter-dropdown, unmerged and undeployed, and needs
