@@ -230,7 +230,7 @@ not, and **a "temporary estimate" is a second engine.**
 | Committed pref | `committed_pref.resolve_committed_pref` | One Pager cap stack and PE block, Investment Metrics, Portfolio Snapshot |
 | Statements | `statement_service.build` + siblings | workpapers, print, Excel |
 | Exchange and reference rates (USD/CAD, SOFR, CORRA, EFFR...) | `market_rates_service.rate_on` (the `market_rates` table, from Bank of Canada / NY Fed) | PE exposure; NOT yet Investment Metrics, which still carries `CAD_TO_USD = 0.73` (open_items 19.2) |
-| Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down) | PE exposure |
+| Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down; accounting's dated per-investment overrides applied at their entity) | PE exposure |
 | Unrealized gain/loss and realized losses per holding | `pe_exposure_service.noncash_by_holding` (ia_transactions -- the app's `accounting` feed has no non-cash rows) | PE exposure |
 
 **A second implementation is most dangerous when it is NEARLY right** — nothing on
@@ -323,9 +323,9 @@ Narrative, the stops list in full and the measurement against accounting's own t
 `.claude/memory/pe_exposure.md`. The rules:
 
 - **Every figure is an existing engine's**: Cost = the Pref Balance Detail capital
-  balance + realized losses; FMV = Cost + unrealized marks; the investor split =
-  `group_shares` over commitments in force; Future Funding = the One Pager's
-  `remaining_to_fund`; CAD via `market_rates`.
+  balance + realized losses; FMV = Cost + unrealized marks; the split = `group_shares`
+  over commitments in force, or accounting's dated override for ONE entity and ONE
+  investment (`ownership_overrides`); Future Funding = `remaining_to_fund`; CAD via FX.
 - **The STOPS are accounting's classification, not a derived rule** — a fixed list of
   entity ids from the tracker's Mapping tab (PSC = PSC1/PSC2/OWPSC/PSCMAN/PSL1/PSS1,
   KOC = KCREIT, TIAA = TGAM, Declaration = DCXVIA/B, Clarion = DIFPP). **An AMB fund's
