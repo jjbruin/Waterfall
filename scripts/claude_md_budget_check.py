@@ -62,10 +62,14 @@ CLAUDE_MD = os.path.join(ROOT, 'CLAUDE.md')
 #: RULE kept here as a bullet, and the same for its Market rates section. That is 32
 #: lines of rules, not of history.
 #:
+#: 372 -> 371 when the compaction's own transient archive was deleted and CLAUDE.md's
+#: pointer row went with it. RE-PINNED rather than left slack, which is the whole
+#: point: a budget one line above the file is a budget that has already been spent.
+#:
 #: AT EXACTLY THE FILE LENGTH there is no headroom, deliberately: the next line added
 #: has to be argued for, and raising this number is that argument. Do not nudge it to
 #: buy room -- find something that has stopped being a rule and move it.
-MAX_LINES = 372
+MAX_LINES = 371
 
 #: A revision suffix: `v349` .. `v563` and onward, optionally with a trailing letter
 #: (`v556r`). Three digits minimum so `v16` and `Vue 3` cannot match.
