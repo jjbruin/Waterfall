@@ -1183,44 +1183,87 @@ def get_capitalization_stack(
 # PROPERTY PERFORMANCE
 # ============================================================
 
-# Income Statement account classifications (matching app.py)
-IS_ACCOUNTS = {
-    'REVENUES': {
-        'Rental Income': ['4010', '4012'],
-        'Commercial': ['4020', '4041'],
-        'Abated Apartments': ['4045'],
-        'Vacancy': ['4040', '4043', '4030', '4031', '4042'],
-        'RUBS': ['4070'],
-        'RET': ['4091'],
-        'INS': ['4092'],
-        'CAM': ['4090', '4097', '4093', '4094', '4096', '4095'],
-        'Other Income': ['4063', '4060', '4061', '4062', '4080', '4065'],
-    },
-    'EXPENSES': {
-        'Real Estate Taxes': ['5090'],
-        'Property & Liability Insurance': ['5110', '5114'],
-        'Salary & Benefits': ['5018', '5010', '5016', '5012', '5014'],
-        'Utilities': ['5051', '5053', '5050', '5052', '5054', '5055'],
-        'Repairs & Maintenance': ['5060', '5067', '5063', '5069', '5061', '5064', '5065', '5068', '5070', '5066'],
-        'Administrative': ['5020', '5022', '5021', '5023', '5025', '5026', '5080'],
-        'Marketing & Advertising': ['5045'],
-        'Legal & Professional': ['5087', '5085'],
-        'Management Fee': ['5040'],
-        'Other Expenses': ['5096', '5095', '5091', '5100'],
-    },
-    'DEBT_SERVICE': {
+# Income Statement account classifications — DERIVED FROM `config.IS_ACCOUNTS`.
+#
+# THIS USED TO BE A SECOND, HAND-MAINTAINED COPY, and it had drifted. The One Pager
+# computed its HEADLINE NOI from this copy while its own NOI CHART
+# (financials_service.get_one_pager_chart) read config's — and so does every other
+# surface in the app: the Dashboard KPIs, Surveillance, Property Financials, the
+# Portfolio Snapshot freeze and Budget Review. config's list is the one everything
+# else already agrees on; this copy was the only place that disagreed.
+#
+# It was short two accounts, and the headline now gains both:
+#
+#   4075 Other Revenue      REVENUE  -> raises headline NOI
+#   5092 Maintenance Flex   EXPENSE  -> lowers headline NOI
+#
+# Net per deal depends on which it carries; see the branch report. config.py is NOT
+# touched by this change, so no other surface moves.
+#
+# Deriving rather than re-typing is the point: there is now ONE list, and the
+# headline cannot drift from the chart again.
+#
+# WHY A DERIVATION AND NOT A PLAIN IMPORT — 7070 WOULD BE DOUBLE-COUNTED.
+# config groups 7070 (tax abatement) INSIDE 'Real Estate Taxes', because its
+# consumers want one netted tax figure. The One Pager must not: `calc_amounts` folds
+# TAX_ABATEMENT into expenses itself (`expenses += abatement`) so U/W and actuals
+# stay comparable, and `get_property_performance` reads the key again on the
+# at-close path. Importing config's dict wholesale would count 7070 TWICE — once in
+# the category, once in the fold — silently overstating expenses on every deal
+# carrying an abatement. So 7070 is STRIPPED from the derived EXPENSES and kept in
+# its own key, exactly where it was. The fold is unchanged.
+#
+# DEBT_BS_ACCTS and UW_DEBT_SERVICE have no equivalent in config.IS_ACCOUNTS at all
+# and are read at four call sites here. They stay, unchanged.
+#
+# DEBT_SERVICE IS DELIBERATELY *NOT* DERIVED, AND THIS IS NOT AN OVERSIGHT.
+# `config.IS_ACCOUNTS['DEBT_SERVICE']` is `{'Interest': ['5190'], 'Principal': []}`
+# — its Principal list is EMPTY — while the One Pager's carries 7060. Deriving it
+# would silently empty Principal here and drop 7060 out of the One Pager's debt
+# service and its DSCR denominator, with nothing on the page saying so. The scope
+# of this change is the INCOME-STATEMENT list that NOI is computed from (REVENUES
+# and EXPENSES); debt service sits below NOI and is left exactly as it was.
+# Whether config's empty Principal is itself a defect is a separate question and
+# is NOT answered here.
+import copy as _copy
+
+from config import IS_ACCOUNTS as _CANONICAL_IS_ACCOUNTS
+
+#: Tax abatement — in U/W (Projected IS) this is below NOI in acct 7070, but in
+#: actuals it's netted into 5090 (Real Estate Taxes). Kept as its OWN key so
+#: calc_amounts() can fold it into expenses for apples-to-apples comparison, and
+#: stripped from the derived EXPENSES so the fold stays the only place it enters.
+_TAX_ABATEMENT_ACCTS = ['7070']
+
+
+def _derive_headline_is_accounts():
+    """`config.IS_ACCOUNTS` with the tax-abatement account lifted back out.
+
+    Returns a DEEP COPY. A shallow copy would share the inner account lists with
+    every other consumer of the canonical dict, so stripping 7070 here would strip
+    it from the Dashboard, Surveillance and the Snapshot freeze as well.
+    """
+    derived = {
+        'REVENUES': _copy.deepcopy(_CANONICAL_IS_ACCOUNTS['REVENUES']),
+        'EXPENSES': _copy.deepcopy(_CANONICAL_IS_ACCOUNTS['EXPENSES']),
+    }
+    # NOT derived — see the note above. config's Principal list is empty.
+    derived['DEBT_SERVICE'] = {
         'Interest': ['5190'],
         'Principal': ['7060'],
-    },
-    # Tax abatement — in U/W (Projected IS) this is below NOI in acct 7070,
-    # but in actuals it's netted into 5090 (Real Estate Taxes).  Include here
-    # so calc_amounts() can fold it into expenses for apples-to-apples comparison.
-    'TAX_ABATEMENT': ['7070'],
+    }
+    for _cat, _accts in derived['EXPENSES'].items():
+        derived['EXPENSES'][_cat] = [a for a in _accts
+                                     if a not in _TAX_ABATEMENT_ACCTS]
+    derived['TAX_ABATEMENT'] = list(_TAX_ABATEMENT_ACCTS)
     # Balance-sheet debt accounts for principal from balance changes
-    'DEBT_BS_ACCTS': ['2150', '2152', '2210'],
+    derived['DEBT_BS_ACCTS'] = ['2150', '2152', '2210']
     # Underwriting total debt service account (Projected IS)
-    'UW_DEBT_SERVICE': ['7010'],
-}
+    derived['UW_DEBT_SERVICE'] = ['7010']
+    return derived
+
+
+IS_ACCOUNTS = _derive_headline_is_accounts()
 
 #: Operating reserve releases that NET against the gross at-close 5xxx costs.
 #: AT CLOSE ONLY — DO NOT "TIDY" THIS AWAY.
