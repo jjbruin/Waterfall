@@ -56,9 +56,16 @@ CLAUDE_MD = os.path.join(ROOT, 'CLAUDE.md')
 #: no pointer at all. Restoring them cost 20 lines and was worth every one: a rule
 #: without its reason is a rule people argue with.
 #:
-#: 340 is the agreed ceiling. It is room for a RULE, not for history -- four spare lines
-#: is well under one deploy note, which is what this check exists to keep out.
-MAX_LINES = 340
+#: 340 -> 372 on Oct 5 2026, PINNED EXACTLY TO THE FILE. The rebase onto main carried
+#: `v565` across: its deploy entry went to deploy_history.md, its three ONE NUMBER rows
+#: stayed in the table, and the PE Exposure section became pe_exposure.md with every
+#: RULE kept here as a bullet, and the same for its Market rates section. That is 32
+#: lines of rules, not of history.
+#:
+#: AT EXACTLY THE FILE LENGTH there is no headroom, deliberately: the next line added
+#: has to be argued for, and raising this number is that argument. Do not nudge it to
+#: buy room -- find something that has stopped being a rule and move it.
+MAX_LINES = 372
 
 #: A revision suffix: `v349` .. `v563` and onward, optionally with a trailing letter
 #: (`v556r`). Three digits minimum so `v16` and `Vue 3` cannot match.

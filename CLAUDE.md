@@ -318,6 +318,36 @@ Full detail — column names, fallbacks, why each rule has the shape it has — 
   **Paid-off loans** (`vDateType = "Paid Off"`) are likewise dropped at the DATA layer,
   so any loan row still present is an active facility.
 
+### PSC Preferred Equity Exposure
+Narrative, the stops list in full and the measurement against accounting's own tracker:
+`.claude/memory/pe_exposure.md`. The rules:
+
+- **Every figure is an existing engine's**: Cost = the Pref Balance Detail capital
+  balance + realized losses; FMV = Cost + unrealized marks; the investor split =
+  `group_shares` over commitments in force; Future Funding = the One Pager's
+  `remaining_to_fund`; CAD via `market_rates`.
+- **The STOPS are accounting's classification, not a derived rule** — a fixed list of
+  entity ids from the tracker's Mapping tab (PSC = PSC1/PSC2/OWPSC/PSCMAN/PSL1/PSS1,
+  KOC = KCREIT, TIAA = TGAM, Declaration = DCXVIA/B, Clarion = DIFPP). **An AMB fund's
+  outside investors are Ambassadors, recognised by an `AMB` NAME PREFIX**; every other
+  outside investor is F&F.
+- **Holders come from commitments**, under the vcode `build_investmentid_to_vcode` maps
+  the InvestmentID to — **InvestmentID is not unique** (MCCORD has two vcodes) and the
+  pref engine answers 0 under the other.
+- **A sale booked as a realized loss takes cost to 0**; the pref engine alone would
+  carry the full capital, because `accounting` has no non-cash rows.
+- **IA is cut on TRANSACTION date** — 1,767 non-cash rows carry no Effective Date.
+- **Live is any date; Future Funding alone answers by quarter**, and says so.
+
+### Market rates
+Narrative: `.claude/memory/market_rates.md`. The rules:
+
+- **`rate_on` NEVER INTERPOLATES** — it returns the last publication on or before the
+  date, says which, and returns `None` past 7 days. `market_rates` is PROTECTED.
+- **Term SOFR is CME's and licensed — not here.** Sources are free and official (Bank
+  of Canada, NY Fed), no API key. **Forward curves are not built**; the free official
+  one is Treasury's par yield curve.
+
 ## Where things are written down
 
 | Topic | File (`.claude/memory/`) |
@@ -335,6 +365,8 @@ Full detail — column names, fallbacks, why each rule has the shape it has — 
 | Section access by username | `section_access.md` |
 | Valuation Budget Review — line mapping, the levered columns | `valuation_budget.md` |
 | Lease review AND lease risk analysis — extraction, terms, validation, recoveries, exclusives ("bound by" is not "holds"), and why the risk analysis must NOT take the lease's date | `lease_review.md` |
+| PSC Preferred Equity Exposure — the tracker, the stops, the measurement | `pe_exposure.md` |
+| Market rates — Bank of Canada / NY Fed, what `rate_on` will and will not answer | `market_rates.md` |
 | Rent roll specification and the IC exhibit | `rent_roll_exhibit.md` |
 | Shared UI patterns | `ui_patterns.md` |
 | This file as it read before the Oct 2026 compaction, for the prose that was cut | `claude_md_prose_archive.md` |
