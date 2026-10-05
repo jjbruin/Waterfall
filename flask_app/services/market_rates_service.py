@@ -14,6 +14,11 @@ THE SOURCES (both official, free, no API key; measured Oct 5 2026):
     average (FXUSDCAD, CAD per 1 USD), CORRA, and the policy rate target.
   * Federal Reserve Bank of New York Markets API -- https://markets.newyorkfed.org/
     -- SOFR, EFFR, OBFR, and the 30/90/180-day SOFR averages and SOFR index.
+  * U.S. Treasury, Daily Treasury Par Yield Curve Rates -- home.treasury.gov -- the
+    1-month to 30-year constant-maturity par yields (Jim, Oct 5 2026: "add the
+    treasury rates to the rate table, especially the 10-year"). One CSV per
+    calendar year; its columns changed over time (4-month and 1.5-month were
+    added later), so a tenor is read by its COLUMN NAME, never by position.
 
 WHAT THIS DOES NOT HAVE, deliberately: TERM SOFR. The 1- and 3-month Term SOFR
 most floating loans reference is CME's, and licensed. Overnight SOFR and its
@@ -44,6 +49,9 @@ logger = logging.getLogger(__name__)
 TABLE = "market_rates"
 
 BOC_URL = "https://www.bankofcanada.ca/valet/observations/{code}/json?start_date={start}&end_date={end}"
+UST_URL = ("https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+           "daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve"
+           "&field_tdr_date_value={year}&page&_format=csv")
 NYFED_URL = "https://markets.newyorkfed.org/api/rates/{path}/search.json?startDate={start}&endDate={end}"
 
 #: Every series the app stores. ``key`` is what callers ask for; the rest says
@@ -78,6 +86,17 @@ SERIES: Dict[str, dict] = {
     "EFFR": {"label": "Effective Federal Funds Rate", "unit": "percent",
              "source": "Federal Reserve Bank of New York", "provider": "nyfed",
              "path": "unsecured/effr", "field": "percentRate", "first": "2017-01-03"},
+    # U.S. Treasury par yields. ``col`` is Treasury's own column heading.
+    **{f"UST_{k}": {"label": f"U.S. Treasury {lbl} par yield", "unit": "percent",
+                    "source": "U.S. Treasury", "provider": "treasury", "col": col,
+                    "first": "2017-01-03"}
+       for k, lbl, col in (("1M", "1-month", "1 Mo"), ("2M", "2-month", "2 Mo"),
+                           ("3M", "3-month", "3 Mo"), ("4M", "4-month", "4 Mo"),
+                           ("6M", "6-month", "6 Mo"), ("1Y", "1-year", "1 Yr"),
+                           ("2Y", "2-year", "2 Yr"), ("3Y", "3-year", "3 Yr"),
+                           ("5Y", "5-year", "5 Yr"), ("7Y", "7-year", "7 Yr"),
+                           ("10Y", "10-year", "10 Yr"), ("20Y", "20-year", "20 Yr"),
+                           ("30Y", "30-year", "30 Yr"))},
     "OBFR": {"label": "Overnight Bank Funding Rate", "unit": "percent",
              "source": "Federal Reserve Bank of New York", "provider": "nyfed",
              "path": "unsecured/obfr", "field": "percentRate", "first": "2017-01-03"},
@@ -103,6 +122,13 @@ def _as_date(v) -> date:
     if isinstance(v, date):
         return v
     return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+
+
+def _table():
+    from sqlalchemy import Column, Float, MetaData, String, Table
+    return Table(TABLE, MetaData(), Column("series", String), Column("rate_date", String),
+                 Column("value", Float), Column("unit", String), Column("source", String),
+                 Column("fetched_at", String))
 
 
 def ensure_tables(engine) -> None:
@@ -162,6 +188,42 @@ def _fetch_nyfed(spec: dict, start: date, end: date, cache: Optional[dict] = Non
     return out
 
 
+def _http_text(url: str) -> str:
+    req = urllib.request.Request(url, headers={"Accept": "text/csv",
+                                               "User-Agent": "waterfall-xirr market-rates"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read().decode("utf-8-sig")
+
+
+def _fetch_treasury(spec: dict, start: date, end: date, cache: Optional[dict] = None) -> List[tuple]:
+    """One tenor from Treasury's per-YEAR CSV, read by column name.
+
+    Every tenor is a column of the same file, so the thirteen series share one
+    download per year (``cache``). A tenor Treasury did not publish in a year
+    (the 4-month before Oct 2022) has no column there and contributes nothing,
+    and a blank cell is not a zero.
+    """
+    import csv
+    import io
+    out = []
+    for year in range(start.year, end.year + 1):
+        url = UST_URL.format(year=year)
+        if cache is not None and url in cache:
+            rows = cache[url]
+        else:
+            rows = list(csv.DictReader(io.StringIO(_http_text(url))))
+            if cache is not None:
+                cache[url] = rows
+        for r in rows:
+            v = (r.get(spec["col"]) or "").strip()
+            if not v:
+                continue
+            d = datetime.strptime(r["Date"].strip(), "%m/%d/%Y").date()
+            if start <= d <= end:
+                out.append((d.isoformat(), float(v)))
+    return out
+
+
 def fetch(key: str, start: date, end: date, cache: Optional[dict] = None) -> List[tuple]:
     """[(iso date, value)] for one series straight from its publisher.
 
@@ -173,8 +235,12 @@ def fetch(key: str, start: date, end: date, cache: Optional[dict] = None) -> Lis
     in the response wins; the publisher lists a revision after the original.
     """
     spec = SERIES[key]
-    raw = (_fetch_boc(spec, start, end) if spec["provider"] == "boc"
-           else _fetch_nyfed(spec, start, end, cache))
+    if spec["provider"] == "boc":
+        raw = _fetch_boc(spec, start, end)
+    elif spec["provider"] == "treasury":
+        raw = _fetch_treasury(spec, start, end, cache)
+    else:
+        raw = _fetch_nyfed(spec, start, end, cache)
     return sorted(dict(raw).items())
 
 
@@ -208,7 +274,7 @@ def refresh(engine, keys: Optional[List[str]] = None, start: Optional[date] = No
                       else _as_date(spec["first"]))
         try:
             obs = fetch(key, a, end, cache)
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
             logger.warning("market rates: %s fetch failed", key, exc_info=True)
             results[key] = {"status": "error", "error": str(e)[:200], "from": _iso(a)}
             continue
@@ -218,10 +284,12 @@ def refresh(engine, keys: Optional[List[str]] = None, start: Optional[date] = No
                 c.execute(text(f"DELETE FROM {TABLE} WHERE series = :s AND rate_date >= :a "
                                f"AND rate_date <= :b"),
                           {"s": key, "a": obs[0][0], "b": obs[-1][0]})
-                c.execute(text(f"INSERT INTO {TABLE} (series, rate_date, value, unit, source, "
-                               f"fetched_at) VALUES (:s, :d, :v, :u, :src, :f)"),
-                          [{"s": key, "d": d, "v": v, "u": spec["unit"],
-                            "src": spec["source"], "f": now} for d, v in obs])
+                # A Core insert(), not text(): SQLAlchemy BATCHES it on
+                # PostgreSQL ("insertmanyvalues"), where the text() version went
+                # row by row -- the first full load took 200s on production.
+                c.execute(_table().insert(),
+                          [{"series": key, "rate_date": d, "value": v, "unit": spec["unit"],
+                            "source": spec["source"], "fetched_at": now} for d, v in obs])
         results[key] = {"status": "ok", "rows": len(obs), "from": _iso(a), "to": _iso(end),
                         "latest": obs[-1][0] if obs else (_iso(last) if last else None)}
     return results
@@ -260,7 +328,9 @@ def series_summary(engine) -> List[dict]:
             f"SELECT series, COUNT(*), MIN(rate_date), MAX(rate_date), MAX(fetched_at) "
             f"FROM {TABLE} GROUP BY series"))}
     out = []
-    for key, spec in SERIES.items():
+    # Grouped by publisher for the screen, each in its catalogue order.
+    order = {"Bank of Canada": 0, "Federal Reserve Bank of New York": 1, "U.S. Treasury": 2}
+    for key, spec in sorted(SERIES.items(), key=lambda kv: order.get(kv[1]["source"], 9)):
         r = rows.get(key)
         latest = rate_on(engine, key, r[3], max_lag_days=0) if r else None
         out.append({"key": key, "label": spec["label"], "unit": spec["unit"],

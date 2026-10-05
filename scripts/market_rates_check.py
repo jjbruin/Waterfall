@@ -14,6 +14,9 @@ the container included. What it pins:
   5. The four SOFR averages are one download, asked once.
   6. The table is protected from the CSV import, and the API is Data
      Management's.
+  7. Treasury's par yields are read by COLUMN NAME from a per-year CSV whose
+     columns changed over time; a tenor a year lacks contributes nothing, a
+     blank is not a zero, and all thirteen tenors share one download per year.
 """
 import json
 import os
@@ -64,6 +67,24 @@ def main() -> int:
         ]}
 
     mr._http_json = fake_http
+
+    # Treasury: newest first, and the two years carry DIFFERENT columns -- 2021
+    # has no "4 Mo" (it began in Oct 2022) and puts "10 Yr" in another position.
+    ust = {
+        2021: 'Date,"1 Mo","3 Mo","2 Yr","10 Yr","30 Yr"\n'
+              '12/31/2021,0.06,0.05,0.73,1.52,1.90\n12/30/2021,0.06,0.05,0.73,1.51,1.93\n',
+        2026: 'Date,"1 Mo","1.5 Month","2 Mo","3 Mo","4 Mo","6 Mo","1 Yr","2 Yr","3 Yr","5 Yr",'
+              '"7 Yr","10 Yr","20 Yr","30 Yr"\n'
+              '06/30/2026,4.20,4.21,4.22,4.25,4.27,4.30,4.20,4.14,4.18,4.25,4.35,4.44,4.80,4.91\n'
+              '06/29/2026,4.21,4.21,4.23,4.26,,4.31,4.21,4.15,4.19,4.26,4.36,4.45,4.81,4.92\n',
+    }
+
+    def fake_text(url):
+        calls.append(url)
+        year = int(url.split("daily-treasury-rates.csv/")[1].split("/")[0])
+        return ust.get(year, 'Date,"1 Mo"\n')
+
+    mr._http_text = fake_text
     eng = create_engine("sqlite:///" + os.path.join(tempfile.mkdtemp(), "rates.db"))
     start, end = date(2026, 6, 20), date(2026, 7, 2)
 
@@ -122,6 +143,24 @@ def main() -> int:
     chk("/market-rates is a Data Management screen",
         sections.section_for_route("/market-rates") == "data_management",
         sections.section_for_route("/market-rates"))
+
+    print("\n7. Treasury par yields, read by column name")
+    calls.clear()
+    ukeys = [k for k in mr.SERIES if k.startswith("UST_")]
+    ru = mr.refresh(eng, keys=ukeys, start=date(2021, 12, 1), end=date(2026, 7, 2))
+    chk("all thirteen tenors refreshed", len(ukeys) == 13 and all(ru[k]["status"] == "ok" for k in ukeys), ru)
+    chk("one download per YEAR, shared by every tenor (6 years, 6 downloads)",
+        len([c for c in calls if "treasury.gov" in c]) == 6, len(calls))
+    chk("the 10-year on 6/30/26 is 4.44 -- found by name, not position",
+        mr.rate_on(eng, "UST_10Y", "2026-06-30")["value"] == 4.44)
+    chk("...and in 2021, where the column sits elsewhere, 1.52",
+        mr.rate_on(eng, "UST_10Y", "2021-12-31")["value"] == 1.52)
+    chk("a tenor the year did not publish contributes nothing (no 4-month in 2021)",
+        mr.rate_on(eng, "UST_4M", "2021-12-31") is None)
+    r4 = mr.rate_on(eng, "UST_4M", "2026-06-30")
+    chk("a blank cell is not stored: 6/29's empty 4-month is absent, 6/30 is 4.27",
+        r4["value"] == 4.27 and mr.rate_on(eng, "UST_4M", "2026-06-29", max_lag_days=0) is None, r4)
+    chk("the source is named", r4["source"] == "U.S. Treasury" and r4["unit"] == "percent")
 
     print("\n%d passed, %d failed" % (len(_passed), len(_failed)))
     return 1 if _failed else 0

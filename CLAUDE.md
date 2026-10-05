@@ -345,8 +345,8 @@ Narrative: `.claude/memory/market_rates.md`. The rules:
 - **`rate_on` NEVER INTERPOLATES** — it returns the last publication on or before the
   date, says which, and returns `None` past 7 days. `market_rates` is PROTECTED.
 - **Term SOFR is CME's and licensed — not here.** Sources are free and official (Bank
-  of Canada, NY Fed), no API key. **Forward curves are not built**; the free official
-  one is Treasury's par yield curve.
+  of Canada, NY Fed, Treasury's par yields `UST_1M`..`UST_30Y`), no API key.
+  **Forward curves are not built.**
 
 ## Where things are written down
 
