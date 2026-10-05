@@ -369,7 +369,11 @@ MANUAL_RATIO_SEEDS: dict[str, dict] = {
     "P0000117": {"ltv": 69.7, "ytd_dscr": 1.9, "debt_yield": 12.1},   # Fairview Heights
     "P0000118": {"ltv": 75.7, "ytd_dscr": 1.5, "debt_yield": 8.9},    # Hanestowne Waterstone
     "P0000119": {"ltv": 70.6, "ytd_dscr": 1.1, "debt_yield": 5.93},   # Presidential Arms
-    "P0000120": {"ltv": 74.0, "ytd_dscr": 1.5, "debt_yield": 9.7},    # Citizen Storage
+    # Citizen Storage. ITS DSCR SEED WAS REMOVED 2026-10-05: the deal now has a
+    # full YTD Interim IS, so the engine computes 1.67x at 26Q3 and the seeded
+    # 1.5x had stopped filling a gap and started overriding a real figure. LTV
+    # and Debt Yield stay — it still has no valuation and no complete quarter.
+    "P0000120": {"ltv": 74.0, "debt_yield": 9.7},
 }
 
 #: The two source strings a typed cell reports, so the page can always say
@@ -552,17 +556,17 @@ EXCLUDING_DEV_LABEL = "Excluding development deals"
 
 #: Fund total cells on PDF page 4 that no consistent rule reproduces.
 #: label -> (metric, ours, published, why it is being left alone)
+#:
+#: ("Total PSC TGA 2022 LLC", "ltv") WAS HERE AND IS GONE (2026-10-05). It
+#: documented a diff that no longer exists: the published 60.4% reproduced only
+#: while Jefferson Waters Creek's real 57.5% LTV was weighted in, and that
+#: exception was retired on 2026-09-01 so every development deal shows "Dev".
+#: With Waters Creek out of the denominator the total is 61.6% and the entry
+#: described a cost already paid. `snapshot_subtotal_method_check` asserts a
+#: KNOWN entry is still live and had been FAILING on this one ("KNOWN entry is
+#: stale, remove it") — an entry that outlives its diff turns the check into
+#: noise, which is how a real diff gets missed.
 KNOWN_LOAN_SUBTOTAL_DIFFS = {
-    ("Total PSC TGA 2022 LLC", "ltv"): (
-        "PDF 60.4% against 61.6%. This one is a KNOWN COST, not a mystery: the "
-        "published figure reproduced exactly while Jefferson Waters Creek's "
-        "real 57.5% LTV was weighted in, and that exception was retired on "
-        "2026-09-01 so that every development deal shows 'Dev' with no "
-        "per-deal carve-out. Waters Creek's debt (51,667,000 of the fund's "
-        "243.3M) leaving the denominator moves the mean from 60.4% to 61.6%. "
-        "Restoring the tie means restoring the exception — the two cannot both "
-        "hold. Deliberately NOT fixed by weighting a value the rows above no "
-        "longer display, which would make the total unauditable from them."),
     ("Total Individual Investments", "ytd_dscr"): (
         "PDF prints n/a although three members carry a DSCR "
         "(Nottingham 1.1x, Evergreen 2.9x, Ascent 2.1x, weighting to 2.08x). "
