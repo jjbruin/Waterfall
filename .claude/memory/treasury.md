@@ -373,3 +373,85 @@ true one. A masked number is refused as input.
    conversation; BAI2 over SFTP is the fallback and is how most firms this size
    do it. **No screen-scraping of PINACLE** — credentials stay with PNC's own
    mechanism. A TMO email was offered and not yet requested.
+
+## The rule digest that used to live in CLAUDE.md (moved Oct 5 2026)
+
+Verbatim. These are the invariants, stated compactly; the sections above are
+the detail behind them. Kept together so neither can drift from the other.
+
+### Treasury — the bank side of the close
+**Full detail in `.claude/memory/treasury.md`.** Live at `v508`, screen `/treasury`.
+
+- **Four tabs**: accounts; import (PNC activity CSV, one statement PDF, or a
+  whole folder of them); reconciliation (the three-way tie, the matcher, the
+  reconciling items); journal entry (code the month, download the GL and IA
+  upload files).
+- **`current_ledger` is CARRIED** from the last closed period plus activity since,
+  and says which period and through what date. **`current_available` is `None`** —
+  it is ledger less holds, float and pending debits, which exist only at the bank.
+  Never fill it from the ledger; a guardrail asserts it stays empty.
+- **Each leg of the tie is reported separately** (statement, ledger). Which leg
+  disagrees is the only thing the difference is for. `ties_to_statement` is `None`
+  with no statement filed, never `False`.
+- **The matcher PAIRS, it does not set-compare** — August carries `285.92` seven
+  times. What is left over IS the reconciliation: deposits in transit, outstanding
+  payments, activity not yet recorded. A manual pairing outranks the matcher.
+- **`MR10005000` is the default cash account**; four others in a dropdown, anything
+  else refused. An account registers itself on first import, before it is mapped.
+- **A file that is not an activity export is REFUSED**, not reported as "0
+  imported" — the column check runs before the row count.
+- **A statement's masked number is read as a PATTERN, not a tail.**
+  `XX-XXXX-5765` hides the front; `790-XXXXX55` hides the MIDDLE, and taking the
+  last four visible digits off it yields an account that exists nowhere. An
+  ambiguous mask is refused rather than resolved by picking one.
+- **A zero balance prints `.00`** in a PNC statement, with no leading digit. It
+  refused 46 of the 64 real June statements before this was fixed — including
+  rows carrying real amounts. A trailing minus is overdraft notation and must be
+  read, or a negative balance parses as positive.
+- **SEEDING IS NOT RE-BASING.** `opening_balance()` never reads a statement;
+  `seed_from_statement` exists only to START a chain and refuses once any period
+  has been reconciled.
+- **FILING A STATEMENT OPENS THE CHAIN** (Jim, Sep 19 2026: "shouldn't the
+  seeding process be integrated into loading the statements function?"). Filing
+  already knows the account, the period and the ending balance, so a second
+  deliberate step only creates the state the June load was in — statements
+  loaded, openings not. `import_statement` calls `seed_from_statement`; it does
+  NOT compute an opening itself, so the refusal above still holds and an account
+  carrying its balances forward is left alone and its statement simply kept. The
+  manual button stays for statements filed before this.
+- **A SEEDED PERIOD WAS NEVER CLOSED**, and the accounts tab must not say it
+  was. Since filing now opens the chain, every account acquires one the day its
+  statements load, so the wrong word would be on every row: `last_status` is
+  carried and the reason reads "Opened at … from the … statement, nothing
+  reconciled yet".
+- **The filed statements are LISTED** (`GET /api/treasury/statements`, panel at
+  the foot of the Accounts tab). Stored and unreachable is not kept: the PDF had
+  been held since `v507` but only the held-statement prompt linked one, and that
+  list empties the moment the statement is placed. Re-importing the same file is
+  an ordinary thing to do and no longer stores a second row.
+- **The cash side of a journal entry is never typed** — each bank transaction
+  becomes its own cash line at the bank's own amount, so the entry balances by
+  construction and a partly coded month cannot produce a file.
+- **The investor split is computed from commitment AMOUNTS**, not the stored
+  `CapitalPercent`, which is 4dp and sums to 99.9999 — allocating by it is wrong
+  on 5 of 13 investors for AMB6.
+- **A statement whose account is NOT REGISTERED is HELD, not refused** (`v507`).
+  An account registers itself from an activity import and PNC serves only 90 days, so
+  one quiet longer than that has a statement showing real money and no transaction to
+  introduce it. Held in `tr_pending_statements` with everything that was read; the
+  import reports them as *held*, and the Import tab lists them with a box for the
+  number. **Measured on the real folder: `2026\06.2026` files 49 of 64, holds 14, and
+  refuses 1** (a Wells Fargo statement in the PNC folder). Two of the 14 hold money.
+- **A typed account number is CHECKED AGAINST THE MASK.** `XX-XXXX-7891` says ten
+  digits ending 7891, so a number that does not fit is refused. Without that a
+  mistyped digit registers a plausible new account, the statement files against it,
+  and the real account later arrives under its true number with the balance split
+  across two records and nothing saying so. Resolving registers the account and files
+  the statement, after which every later pull routes by itself.
+- **The statement PDF is kept** (`tr_statements.file_data`, `v507`) and openable from
+  the screen. For a held statement that is not a convenience: the PDF is the only
+  place the full number is written. One imported before this says so rather than 404.
+- **All six `tr_*` tables are in `PROTECTED_TABLES`.** `tr_periods` is the
+  reconciliation CHAIN — each closed period's ending is the next one's opening — so
+  losing it loses the thread, not a report.
+- **Nothing here posts to MRI**; it produces the two files a person uploads.

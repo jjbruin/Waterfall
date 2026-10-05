@@ -582,3 +582,26 @@ Embedded Claude-powered chat panel for natural-language queries against the port
 - `tool_use` — Tool call in progress (name + input shown as chip)
 - `done` — Response complete
 - `error` — Error message
+
+## Sidebar navigation map (moved from CLAUDE.md, Oct 5 2026)
+
+## Sidebar Navigation
+
+The sidebar (`AppSidebar.vue`) is organized into major sections with expandable dropdowns. Section headers are uppercase bold; child items are indented. Sections auto-expand when navigating to a child route.
+
+| Section | Type | Children |
+|---------|------|----------|
+| **Dashboard** | Standalone link | `/dashboard` |
+| **Asset Management** | Expandable | Deal Analysis, Property Financials, Surveillance, Valuations, One Pager, Portfolio Snapshot, Review Tracking, Investment Metrics, Waterfall Setup, Report Settings (expandable config panel) |
+| **Accounting** | Expandable | Workpaper Packages, Treasury, Intercompany, GL / IA Query |
+| **New Business** | Expandable | Pipeline, Deal Analysis, Lease Review, Lease Risk Analysis |
+| **Investment Management** | Expandable | Ownership (moved here from Asset Management Sep 15 2026) |
+| **Reports** | Standalone link | `/reports` (Projected Returns, ROE Summary, Pref Balance Detail, Sold Portfolio, PSCKOC, Portfolio Analysis) |
+| **Data Management** | Expandable | Data Explorer, MRI Data (expandable panel), Database Tools (expandable panel), Reload Data, Settings |
+| **Feedback & Requests** | Expandable | Submit form + request list (standalone section below nav) |
+
+- **A NEW SECTION MUST BE REGISTERED in `flask_app/auth/sections.py`** and gated on `auth.hasSection('<key>')` -- that is what puts its checkbox column in User Management. See "Section access by username"; `scripts/section_access_check.py` and the pre-commit hook enforce it.
+- **Report Settings** under Asset Management: expandable inline config panel (Start Year, Horizon, Pro_Yr Base, YTD Actuals + Apply Settings button)
+- **MRI Data** under Data Management: expandable panel with server status, query list, per-query download/run/import buttons, admin "Refresh All Data from MRI"
+- **Database Tools** under Data Management: expandable panel with Import CSVs (file upload + match), Export Database (.zip download)
+- **Sold Portfolio**, **PSCKOC**, and **Portfolio Analysis** are embedded as custom view reports inside the Reports page (selected from the report list sidebar). Their Vue components accept an `embedded` prop that hides their standalone headers.
