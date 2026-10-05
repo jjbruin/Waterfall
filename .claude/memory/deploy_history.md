@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v570** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v571** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v570 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v571 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,24 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v571` = `06b451c` (ACCOUNTING'S ALLOCATION OVERRIDES on the PE Exposure report --
+    one entity's split, for one investment, from a date, entered as AMOUNTS funded
+    (accounting's BRNERD at PPIBPA/INVBPS, JBFAIR and NOTTNV at PSC3). Applied inside
+    `ownership_chain_service.group_shares`, so it stays the one ownership engine; writes
+    are has_accounting_authority, reads open to the report. NO FIGURE MOVED AT DEPLOY:
+    no override exists yet, and old vs new code on the same local copy of production
+    gave byte-identical reports at 6/30/26, 3/31/26 and 12/31/25 (56/57/54 holdings).
+    PRE-FLIGHT CAUGHT A ROLLBACK: live v570 (`cdfaa4c`, the expense fix) was deployed
+    from its own branch and NEVER REACHED MAIN, and this branch was cut from main --
+    building `2cffe00` would have silently removed the expense fix. Merged
+    `origin/fix/expense-buttons-mileage` and `origin/docs/v570` in (`aedea69`,
+    `06b451c`, zero lines of their own); live became an ancestor. Span vs live: the
+    feature, Charlene's docs `1986753` (open_items 20.11, a standing PostgreSQL firewall
+    rule for her machine, for Jim to confirm), the v570 docs. Build `canf` 2m37s, tag
+    locked, P1 re-run before the update (still v570). Verified: healthy, root 200, the
+    overrides API 401 without a token, the panel in the served ReportsView chunk, the
+    expense fix still served, 0 tracebacks; `allocation_override_check` 38/0 IN THE
+    CONTAINER. MAIN STILL LACKS v570 AND v571 -- merge this branch into main.)
   - `v570` = `cdfaa4c` (EXPENSES: SAVE MEASURES THE ROUTE, AND THE UPLOAD BUTTONS
     LOOK LIKE BUTTONS. Jim, Oct 5 2026, after a second employee ran the process: one
     pressed Save without "Use N miles" and had to reopen the line, and Upload files /
