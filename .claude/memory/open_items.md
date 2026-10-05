@@ -72,7 +72,7 @@ in a revision note and tracked nowhere else. Every one was **re-checked against 
 working tree** before being written down here; the ones that turned out to be closed
 are recorded as closed rather than carried forward.
 
-**Standing: nine open — 20.1-20.5, plus 20.8-20.11 (housekeeping, low priority).**
+**Standing: eight open — 20.1-20.5, plus 20.8-20.10 (housekeeping, low priority). 20.11 closed Oct 5 2026.**
 20.7 is not an item but the record of four things the archive called open and that
 turned out to be shipped, kept so nobody re-opens them.
 
@@ -288,7 +288,7 @@ not happen. The figures were right; the explanation given for them was not.
 - **Docs-only.** Deliberately not bundled into `v569`, which was a behaviour change.
 - **Owner:** unassigned.
 
-### 20.11 A standing PostgreSQL firewall rule exists for Charlene's machine — FYI, Jim
+### 20.11 A standing PostgreSQL firewall rule exists for Charlene's machine — CLOSED Oct 5 2026: Jim confirmed it stands
 
 `local-dev-cbui` → `76.99.107.120/32` was added to `psql-waterfall-dev` on **Oct 5
 2026** and **deliberately left in place**, matching the per-machine convention already
@@ -310,7 +310,8 @@ a ten-minute lockout.
   rg-waterfall-dev -s psql-waterfall-dev -n local-dev-cbui --yes` if the convention
   changes, or when the machine does.
 - **Note `--rule-name` is not valid on this CLI version** — the flag is `-n`.
-- **Owner:** Jim, to confirm the rule should stand.
+- **Decided Oct 5 2026:** Jim gave Charlene the OK -- the rule stays. Remove it only
+  if the convention or her machine changes (command above).
 
 ---
 
