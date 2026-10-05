@@ -1,4 +1,11 @@
-# Session Handoff — through Oct 5 2026 (v565 live)
+# Session Handoff — through Oct 5 2026 (v566 live)
+
+**Later Oct 5: `v566` = `96534b3`** added U.S. Treasury par yields (`UST_1M`..`UST_30Y`;
+the 10-year is `UST_10Y`, 4.44% at 6/30/26) to the rates table and batched its inserts
+(production load 29,889 rows in 9.1s). It also carried Charlene's CLAUDE.md compaction:
+CLAUDE.md is now ~370 lines under a budget check, and the per-revision deploy record
+lives in `.claude/memory/deploy_history.md`. Forward curves (from these par yields)
+are the natural next step if wanted -- open_items 19.5.
 
 ## Oct 5 2026 — v565: THE PE EXPOSURE TRACKER, MARKET RATES, LOCAL DATA FROM PRODUCTION
 

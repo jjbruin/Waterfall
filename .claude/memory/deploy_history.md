@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v565** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v566** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v565 (moved from CLAUDE.md, Oct 5 2026)
+## Revisions v349-v566 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,21 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v566` = `96534b3` (U.S. TREASURY PAR YIELDS IN THE RATES TABLE -- Jim: "add the
+    treasury rates to the rate table, especially the 10-year." Thirteen tenors
+    `UST_1M`..`UST_30Y` from Treasury's Daily Par Yield Curve CSV, history from 2017,
+    read by COLUMN NAME (the columns changed over the years). Inserts now BATCHED via a
+    Core insert(): on production the full Treasury load was 29,889 rows in 9.1s, where
+    v565's first load of 21,013 rows took 200s row by row. VERIFIED ON PRODUCTION: the
+    10-year 4.44% at 6/30/26 and 5.28% at 10/02, 23 series. P2 listed six commits: this
+    one, two of mine (docs), and three of CHARLENE'S -- her CLAUDE.md compaction (4,245 ->
+    372 lines, detail moved to .claude/memory/, this index moved here), a budget check
+    `scripts/claude_md_budget_check.py`, and a pre-commit hook rule that runs it only
+    when CLAUDE.md is staged; reviewed, docs and tooling, no runtime effect. The runtime
+    delta is `market_rates_service.py` alone. Container egress to treasury.gov checked
+    BEFORE the build. In the container: market_rates_check 25/0, pe_exposure_check 28/0.
+    Build `can9` 2m17s, tag locked, P1 re-run before the update (one transient Azure
+    500 on the revision list, retried); root 200, 0 errors in the boot log.)
   - `v565` = `032fa27` (PSC PREFERRED EQUITY EXPOSURE in Reports, open to everyone,
     and MARKET RATES under Data Management. Accounting's tracker from our MRI copy:
     Cost = the Pref Balance Detail balance + realized losses, FMV = Cost + unrealized,
