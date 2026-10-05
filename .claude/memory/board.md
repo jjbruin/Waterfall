@@ -46,7 +46,7 @@ seven decisions Jim made on Oct 5.
     is no longer a draft.
   - Saved with a warning: an as-of date after the meeting date.
   - No figures yet. Each schedule's view arrives with its phase.
-- Guardrail `scripts/board_access_check.py` (154 checks). It enumerates every
+- Guardrail `scripts/board_access_check.py` (156 checks, including the race-safe column add). It enumerates every
   `/api/board` route from the running app and calls each one as no-token, ungranted,
   expired, revoked, the admin role, reader, editor, builder, salary holder and the
   admin username. It fails on each injected defect: `optin` (31 failures), `role` (5),

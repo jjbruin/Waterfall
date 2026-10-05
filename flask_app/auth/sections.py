@@ -282,8 +282,18 @@ def _ensure_table(engine):
     from sqlalchemy import inspect
     cols = {c["name"].lower() for c in inspect(engine).get_columns("user_section_access")}
     if "expires_at" not in cols:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE user_section_access ADD COLUMN expires_at DATE"))
+        # Two workers can both see it missing; the second ALTER then fails with
+        # "already exists". That is the outcome wanted, so look again rather than
+        # raise -- a one-off 500 on someone's first click is not a migration.
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE user_section_access ADD COLUMN expires_at DATE"))
+        except Exception:
+            cols = {c["name"].lower() for c in
+                    inspect(engine).get_columns("user_section_access")}
+            if "expires_at" not in cols:
+                raise
+            logger.info("user_section_access.expires_at was added by another worker")
     _TABLE_READY.add(key)
 
 

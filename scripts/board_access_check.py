@@ -275,6 +275,41 @@ def main():
     side = (ROOT / "vue_app/src/components/layout/AppSidebar.vue").read_text(encoding="utf-8")
     chk("the sidebar's Board link is gated on the section", "auth.hasSection('board')" in side)
 
+    print("\n8. The end-date column arrives on production's existing table, race-safe")
+    from sqlalchemy import create_engine, inspect as sa_inspect
+    old = create_engine("sqlite:///" + os.path.join(tmp, "old.db"))
+    with old.begin() as c:   # the table as production holds it today
+        c.execute(text("CREATE TABLE user_section_access (user_id INTEGER NOT NULL, section TEXT NOT NULL, "
+                       "allowed BOOLEAN NOT NULL, updated_by TEXT, updated_at TIMESTAMP, "
+                       "PRIMARY KEY (user_id, section))"))
+        c.execute(text("INSERT INTO user_section_access VALUES (7, 'accounting', 0, 'admin', NULL)"))
+    S._ensure_table(old)
+    cols = {c["name"] for c in sa_inspect(old).get_columns("user_section_access")}
+    chk("an existing table gains expires_at, its rows kept", "expires_at" in cols
+        and "accounting" in S.denied_sections(7, old), cols)
+    # Another worker added it between our look and our ALTER: the ALTER fails,
+    # and that must not surface as an error.
+    S._TABLE_READY.discard(id(old))
+    import sqlalchemy
+    real = sqlalchemy.inspect
+    calls = {"n": 0}
+
+    def stale(engine):
+        insp = real(engine)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            got = insp.get_columns
+            insp.get_columns = lambda t: [c for c in got(t) if c["name"] != "expires_at"]
+        return insp
+    sqlalchemy.inspect = stale
+    try:
+        S._ensure_table(old)
+        chk("a worker that loses the race to add the column does not raise", calls["n"] >= 1)
+    except Exception as e:
+        chk("a worker that loses the race to add the column does not raise", False, e)
+    finally:
+        sqlalchemy.inspect = real
+
     print("\n%d passed, %d failed" % (len(_passed), len(_failed)))
     return 1 if _failed else 0
 
