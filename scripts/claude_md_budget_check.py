@@ -46,7 +46,14 @@ CLAUDE_MD = os.path.join(ROOT, 'CLAUDE.md')
 
 #: The budget. Raising this is a decision, not a convenience -- the point of the
 #: number is that it has to be argued for.
-MAX_LINES = 350
+#:
+#: SET TO 330 ON OCT 5 2026, against a file of ~316 lines, so there is room for a
+#: genuine new RULE or two without a negotiation. It is NOT room for history: 14 spare
+#: lines is about one deploy note, which is exactly what this check exists to keep out.
+#: The first compaction set it at 350 with the file at 349, which is no headroom at
+#: all -- the next legitimate rule would have had to raise the limit to land, and a
+#: limit raised reflexively is not a limit.
+MAX_LINES = 330
 
 #: A revision suffix: `v349` .. `v563` and onward, optionally with a trailing letter
 #: (`v556r`). Three digits minimum so `v16` and `Vue 3` cannot match.
@@ -159,8 +166,22 @@ if BAD:
     for b in BAD:
         print('  - ' + b)
     print("""
-CLAUDE.md holds invariants and procedures only. If you are adding history -- what a
-revision shipped, what broke, what was measured -- it goes in .claude/memory/, and the
-pointer table at the foot of CLAUDE.md says which file. If you are adding a RULE and
-the file is full, something already in it has stopped being a rule.""")
+CLAUDE.md holds invariants and procedures only. WHERE THE CONTENT BELONGS INSTEAD:
+
+  a deploy note -- what a revision shipped, what broke, what was measured
+      -> .claude/memory/deploy_history.md   (never CLAUDE.md)
+  the detail behind a calculation rule -- columns, account sets, fallbacks
+      -> .claude/memory/engine_reference.md
+  anything about ONE feature -- treasury, leases, the budget review, GL/IA query,
+  section access, workpapers, expenses, intercompany
+      -> that feature's own file; the pointer table at the foot of CLAUDE.md
+         lists every one of them by topic
+  work in flight, with an owner and a date stamp
+      -> .claude/memory/open_items.md
+  which function answers which question
+      -> .claude/memory/function_index.md
+
+If you are adding a genuine RULE and the file is full, something already in it has
+stopped being a rule -- find that and move it, rather than raising MAX_LINES. The
+budget is only worth having if it is occasionally inconvenient.""")
 sys.exit(1 if BAD else 0)

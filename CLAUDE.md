@@ -4,7 +4,7 @@
 
 **CLAUDE.md holds invariants and procedures only. No version numbers, no counts, no
 incident narratives. Put history in `.claude/memory/`.** This file is loaded into every
-session, so anything that sits here is paid for whether or not the work needs it.
+session, so anything sitting here is paid for whether or not the work needs it.
 Guardrail: `scripts/claude_md_budget_check.py`, run by the pre-commit hook.
 
 Shared project memory is `.claude/memory/`. **Read `MEMORY.md` there at the start of
@@ -16,41 +16,24 @@ The pointer table at the foot of this file says which one holds what.
   rather than letting them drift back into session narratives.
 - **Date-stamp anything describing work in flight, and delete it when the work ships.**
   A section saying a branch is unmerged reads as authoritative for as long as it sits
-  here, and nothing distinguishes it from a current one. It has gone wrong twice — a
-  69-line "not merged, not deployed" section for work that had been on main a month, and
-  a "NOT deployed" stamp on work that shipped the next day.
+  here, and nothing distinguishes it from a current one. It has gone wrong twice.
 
 ## Project Overview
 
-A Flask + Vue financial modeling application for calculating investment waterfalls,
-XIRR, and related performance metrics for real estate investments. It supports
-multi-layer distribution waterfalls with preferred returns, capital accounts, and
-investor-level tracking.
+A Flask + Vue application for investment waterfalls, XIRR and related performance
+metrics on real estate investments: multi-layer distribution waterfalls with preferred
+returns, capital accounts and investor-level tracking. **Python 3.x** (`.venv/`) with
+pandas/numpy and scipy (XIRR by Newton-Raphson, Brent fallback); **Vue 3 + Vite** with
+ECharts; **JWT** auth; **Docker** multi-stage (Vue → Python 3.12-slim + Gunicorn) on
+**Azure Container Apps**. **PostgreSQL** on Azure, SQLite (`waterfall.db`) locally,
+**SQLAlchemy** switching on `DATABASE_URL` (`flask_app/db.py`). **Pin dependency MAJORS
+in `requirements.txt`.**
 
-### Tech Stack
-
-- **Python 3.x** (`.venv/`), **Flask** REST API, **Vue 3 + Vite** frontend, **ECharts**
-  charts, **JWT** auth, **Docker** multi-stage (Vue → Python 3.12-slim + Gunicorn) on
-  **Azure Container Apps**
-- **pandas/numpy** for data; **scipy** for XIRR/NPV (Newton-Raphson, Brent fallback)
-- **PostgreSQL** on Azure; local dev is SQLite (`waterfall.db`). **SQLAlchemy** switches
-  on `DATABASE_URL` (`flask_app/db.py`). Pin dependency MAJORS in `requirements.txt`.
-
-## Project Structure
-
-```
-waterfall-xirr/
-├── *.py              # The engine, at the root: compute, waterfall, metrics, loaders,
-│                     #   models, loans, planned_loans, capital_calls, cash_management,
-│                     #   consolidation, portfolio, reporting, ownership_tree, config,
-│                     #   one_pager, investment_metrics, database, argus_parser
-├── queries/          # The MRI .sql queries, one per imported table
-├── scripts/          # Guardrails (*_check.py), diagnostics, migrations, hooks/
-├── flask_app/        # __init__.py app factory; auth/ (JWT, users, section registry);
-│                     #   api/ route blueprints; services/ reusing the root engine
-├── vue_app/src/      # api/ stores/ views/ components/ router/
-└── Dockerfile        # The runtime image ships NO vue_app/ source
-```
+The engine is at the repo root (`compute.py`, `waterfall.py`, `metrics.py`, …);
+`flask_app/` holds the app factory, `auth/` with the section registry, `api/` blueprints
+and `services/` that reuse the root engine; `vue_app/src/` the frontend; `queries/` the
+MRI `.sql`; `scripts/` the guardrails, diagnostics and the git `hooks/`. **The runtime
+image ships no `vue_app/` source.** Full tree: `.claude/memory/MEMORY.md` § Architecture.
 
 Also in the repo root: **DOCUMENTATION.md** (setup, data files, troubleshooting),
 **waterfall_setup_rules.txt** (waterfall step configuration, for the modeling team) and
@@ -84,9 +67,9 @@ matter — the date format that silently broke a "through 6/30" filter, `--repai
 `.claude/memory/azure_deployment.md`.
 
 ### Azure Infrastructure
-- **Container App**: app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers) —
-  **Registry**: acrwaterfalldev.azurecr.io — **Resource group**: rg-waterfall-dev (eastus)
-- **PostgreSQL**: psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
+- **Container App** app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers) —
+  **Registry** acrwaterfalldev.azurecr.io — **Resource group** rg-waterfall-dev (eastus)
+  — **PostgreSQL** psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
 - Logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev-v2 --type console --tail 50`
 - **The subscription is ThriveCSP-Dev-01**, not the default active one; the wrong one
   fails as `ResourceGroupNotFound`.
@@ -104,11 +87,14 @@ Fix problems, not symptoms. Read the diff and ask what the commit is actually do
 - Does it **suppress, zero, blank, force or special-case** a value rather than correct
   the computation that produced it? A value overridden downstream is still computed
   wrong upstream, and every other consumer keeps reading the wrong one.
-- Is the **trigger a proxy** for the thing it claims to detect?
+- Is the **trigger a proxy** for the thing it claims to detect? (`50695d9` keyed off
+  the presence of a `2015-12-31` row in MRI's export — an export artifact — to infer
+  "this deal has no baseline".)
 - Does the stated rationale **hold for every deal it touches**? Enumerate the affected
-  rows from live data and check.
-- Does it use a **sentinel value** where the answer is "unknown"? A `0` meaning "no
-  data" only renders as a dash because `fmtMil()` happens to treat `0` as `—`.
+  rows from live data and check. `50695d9`'s rationale held for 2 of the 12 it acted on.
+- Does it use a **sentinel value** where the answer is "unknown"? Return `None`, never
+  `0` — a `0` that means "no data" is indistinguishable from a real zero to every
+  consumer, and only renders as a dash because `fmtMil()` happens to treat `0` as `—`.
 - Is it a **per-deal hardcode** (a vcode in a constant)? Those are always symptom
   repairs, however well documented.
 
@@ -120,7 +106,7 @@ call BEFORE building the image. Deploy is not the place to discover the question
 ### Pre-flight — run this BEFORE `az acr build`, every time
 
 This is not "check you are on the right commit". It is **establish what is actually
-shipping, and review all of it.** These four steps are the deploy; the `az` commands
+shipping, and review all of it** — these four steps ARE the deploy; the `az` commands
 are just what you type afterwards.
 
 ```bash
@@ -156,10 +142,9 @@ the resource group. `AcrPush` is NOT sufficient for `az acr build`: it grants on
 main (shipping without this pre-flight) and deploys `:latest` (untraceable).
 
 ### Build, lock, deploy
-
 **Tag every image with the commit SHA it was built from, and deploy that tag — never
-`:latest`.** `:latest` is mutable, so a revision pointing at it cannot be traced back
-to a commit once the next build overwrites the tag.
+`:latest`**, which is mutable, so a revision pointing at it stops being traceable to a
+commit the moment the next build overwrites the tag.
 
 ```bash
 # 0. Pre-flight P1-P4 above is done and clean. Do not start here.
@@ -188,52 +173,41 @@ run the pre-flight again.
 **Notes**: the ACR build agent has transient failures (5-second runs) — retry, and
 confirm the run actually built rather than failing fast. To pin an already-deployed
 `:latest` revision after the fact, `az acr import` its digest under a SHA tag — same
-digest, so the content is provably identical.
+digest, so the content is provably identical. **Deploy-history entries go in
+`.claude/memory/deploy_history.md`, never CLAUDE.md.**
 
 ### Lessons
 
-Each is a rule that cost something to learn. The revision in brackets points into
-`.claude/memory/deploy_history.md`, where the full post-mortem is.
+The rule only. What each cost is in `deploy_history.md` under *The deploy lessons, in
+long form*; the bracketed revision points at that revision's own entry there.
 
-1. Compute the P2 span against the LIVE image, not local HEAD — seven commits shipped
-   where one was asked for and only two were reviewed (`v429`).
-2. Re-run P1 immediately before `containerapp update`, not only before the build; a
-   colleague's deploy between the two would have been rolled back (`v549`, `v560`).
+1. Compute the P2 span against the LIVE image, not local HEAD (`v429`).
+2. Re-run P1 immediately before `containerapp update`, not only before the build
+   (`v549`, `v560`).
 3. Build only from a clean worktree nothing else is using, and gate `containerapp
-   update` on the tag existing and the ACR run succeeding for that SHA — a background
-   job touching the local SQLite made the upload fail, the tag was never created, and
-   the chained update ran to a tag that did not exist (`v556`).
-4. `activeRevisionsMode` is **Single**, so traffic follows the LATEST revision: never
-   deactivate it to back out, and a traffic split does not apply. **Rollback is rolling
-   FORWARD** — deploy the last good SHA tag under a new suffix (`v556r`).
-5. Pin dependency MAJORS (SQLAlchemy `<2.1`, pandas `<3.1`): an unpinned minor release
-   took every worker down on boot (`v524`). And **run guardrails inside the container** —
-   production ran pandas 3 while local ran 2.3 for months, so a suite can be green
-   locally on a shape the database cannot deliver (`v555`, `v550`).
-6. Verify a UI change against the SERVED bundle by resolving the lazy chunk from the
-   ENTRY bundle. `index.html` is a ~551-byte SPA shell referencing no chunk, so grepping
-   it proves nothing in either direction (`v523`, `v527`).
-7. Know which guardrails SKIP in the container and why — the image ships no `vue_app/`,
-   and gitignored fixtures are absent. **Skip is not pass**, and a check that crashes
-   instead of skipping kills the run after the useful sections passed (`v527`).
-8. ACR uploads the WORKING TREE, not a git ref — an unclean tree ships uncommitted work
-   (P3). A data change that is NOT in git (an MRI table refresh) is correspondingly
-   **not undone by a rollback**; say so when one accompanies a deploy (`v549`).
-9. A refactor touching a shared engine is proved behaviour-preserving by running the OLD
-   module beside the new one over real data and diffing the output (`v505`, `v548`).
-   Measure a rule's population on live data BEFORE shipping it and report what CHANGED,
-   including when the change was none — a rule that is right on the deal you looked at
-   has still not been tested (`v544`).
+   update` on the tag existing and the ACR run succeeding for that SHA (`v556`).
+4. `activeRevisionsMode` is **Single**: never deactivate the latest revision to back
+   out, and a traffic split does not apply. **Rollback is rolling FORWARD**, to the
+   last good SHA tag under a new suffix (`v556r`).
+5. Pin dependency MAJORS (`v524`), and **run guardrails inside the container** — a
+   suite can be green locally on a shape the database cannot deliver (`v555`, `v550`).
+6. Verify a UI change against the SERVED bundle, resolving the lazy chunk from the
+   ENTRY bundle; `index.html` is an SPA shell and proves nothing (`v523`, `v527`).
+7. Know which guardrails SKIP in the container and why. **Skip is not pass** (`v527`).
+8. ACR uploads the WORKING TREE, not a git ref (P3) — and a data change that is not in
+   git is correspondingly not undone by a rollback (`v549`).
+9. Prove a shared-engine refactor behaviour-preserving by diffing OLD against new over
+   real data (`v505`, `v548`), and measure a rule's population on live data before
+   shipping it, reporting what changed even when nothing did (`v544`).
 
 ## Standing rules
 
 ### ONE NUMBER, ONE ENGINE
-
-**Jim's standing instruction:** "We should not have conflicting calculation results. It
-will cause doubt in the accuracy of the entire work. Make sure the vetted calculation
-engines are used consistently and we do not have separate calculation engines for the
-same number. The only differences in results should come from changes in time frames or
-projections that we are running through the engines."
+**Jim's standing instruction:** "We should not have conflicting calculation results… Make
+sure the vetted calculation engines are used consistently and we do not have separate
+calculation engines for the same number. The only differences in results should come from
+changes in time frames or projections that we are running through the engines." (In full
+in `MEMORY.md` § Standing rules.)
 
 Before writing any calculation, find out whether the app already answers it. If it does,
 **call that engine** — do not re-derive, do not "simplify for this screen", do not write
@@ -246,7 +220,7 @@ not, and **a "temporary estimate" is a second engine.**
 | Deal projection, waterfall, XIRR/ROE/MOIC | `compute.compute_deal_analysis` | `compute_service.get_cached_deal_result` |
 | NAV, net proceeds | `valuation_nav_service.compute_nav` | stored in `valuation_nav_results` |
 | Modeled debt service | `valuation_debt_service.monthly_schedule` | Budget/Valuation columns |
-| Committed pref | `committed_pref.resolve_committed_pref` | One Pager cap stack and PE block, Investment Metrics |
+| Committed pref | `committed_pref.resolve_committed_pref` | One Pager cap stack and PE block, Investment Metrics, Portfolio Snapshot |
 | Statements | `statement_service.build` + siblings | workpapers, print, Excel |
 | Exchange and reference rates (USD/CAD, SOFR, CORRA, EFFR...) | `market_rates_service.rate_on` (the `market_rates` table, from Bank of Canada / NY Fed) | PE exposure; NOT yet Investment Metrics, which still carries `CAD_TO_USD = 0.73` (open_items 19.2) |
 | Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down) | PE exposure |
@@ -260,68 +234,63 @@ the aggregate delta to Jim. Guardrail: `scripts/one_engine_per_number_check.py` 
 row above and a check there whenever a new engine takes ownership of a number.
 
 ### The rest
-
 - **A NEW SECTION GOES IN THE REGISTRY.** Adding a sidebar section means adding it to
   `SECTIONS` in `flask_app/auth/sections.py` and gating its block on
   `auth.hasSection('<key>')`; it then appears in Settings > User Management, ticked for
   everyone. Every new Vue route, `/api` route and assistant tool must be assigned too.
   `scripts/section_access_check.py` and the pre-commit hook fail until they are.
 - **`PROTECTED_TABLES` is for a table the APP writes and holds the only copy of.**
-  Protection without a write path is a LOCKOUT, not a safeguard — it froze a supplement
-  table whose only source was a CSV, and for such a table `replace` is the designed
-  refresh.
+  Protection without a write path is a LOCKOUT, not a safeguard; where a CSV is the
+  source of record, `replace` is the designed refresh.
 - **`None`, never `0`, for "unknown"** — a sentinel zero is indistinguishable from a
   real zero to every consumer downstream. Likewise `None`, not `False`, for "cannot be
   determined" as against "does not tie".
 - **A fix ships with a guardrail** in `scripts/*_check.py`, proved NON-VACUOUS by
   re-injecting the defect and watching it fail. A check that passes on the broken code
-  is worse than none.
-- **Assert in BOTH directions. A rule tested only in the refusing direction is
-  satisfied by locking everyone out**; one tested only in the admitting direction is
-  satisfied by admitting everything.
+  is worse than none. **Assert in BOTH directions**: a rule tested only in the refusing
+  direction is satisfied by locking everyone out, and one tested only in the admitting
+  direction by admitting everything.
 - **The engine flags; it never drops.** Report what was excluded, suppressed, truncated
   or combined, and why — silent truncation reads as "covered everything". And **visibly
   missing beats silently wrong**: never guess a value onto a report.
 - **Reject what cannot be true; warn what is merely odd.** Refuse an impossible input
   with the reason named; save an implausible one with a warning beside it.
-- **`roles_exactly`, not `role_required`, when two level-1 roles must be separated.**
-  `role_required` compares LEVELS, and `analyst`, `accountant`, `accounting_manager`
-  and `cfo` are all level 1 — so any level gate naming one admits all four. **The screen
-  must agree with the server**, and has been wrong both ways: gate the Vue on the same
-  list the Python uses, with a guardrail comparing them by name.
+- **`roles_exactly`, not `role_required`, when two level-1 roles must be separated** —
+  `analyst`, `accountant`, `accounting_manager` and `cfo` are ALL level 1, so any level
+  gate naming one admits all four. **The screen must agree with the server**, and has
+  been wrong both ways: gate the Vue on the same list the Python uses, with a guardrail
+  comparing them by name.
 
 ## Domain invariants
 
-Full detail — column names, fallbacks, the reason each rule has the shape it has — is
-in `.claude/memory/engine_reference.md`.
+Full detail — column names, fallbacks, why each rule has the shape it has — is in
+`.claude/memory/engine_reference.md`.
 
-- **Acquisition date** is derived from the accounting feed: `min(EffectiveDate)` per
-  `InvestmentID`, overwritten onto `inv` at load time, because MRI's own field may not
-  be the true closing date. Parse dates before `groupby().min()` — string comparison is
-  alphabetical, not chronological. No accounting activity → keep MRI's.
+- **Acquisition date** is `min(EffectiveDate)` per `InvestmentID` from the accounting
+  feed, overwritten onto `inv` at load time — MRI's own field may not be the true
+  closing date. Parse before `groupby().min()`: string comparison is alphabetical, not
+  chronological. No accounting activity → keep MRI's.
 - **Sale date priority**: (1) UI override, (2) `event_dates` projected disposition
   closing, (3) horizon end / max loan maturity. The `Sale_Date` COLUMN is never
   consulted; `MRI_COLUMNS` excludes it, `Sale_Status`, `InvestmentID` and
-  `Portfolio_Name` so an MRI refresh preserves them.
+  `Portfolio_Name`, so an MRI refresh preserves them.
 - **Waterfall types**: CF = operating distributions, does NOT reduce capital
   outstanding. Capital = refi/sale proceeds, DOES reduce it. **Preferred returns**
   accrue daily, Act/365 Fixed, compounding annually on 12/31 with a 45-day grace
   period, tracked per investor via `InvestorState`.
 - **Capital calls are app-entered only** and `capital_calls` is in `PROTECTED_TABLES`: a
   CSV import runs `to_sql(if_exists="replace")`, which DROPS the table, and one upload
-  destroyed every call typed into Deal Analysis. No MRI feed is interrupted — the table
-  was never in `QUERY_REGISTRY`.
-- **The actuals/forecast boundary is ALWAYS enforced**, set or not (it defaults to Dec
-  31 of `start_year - 1`). XIRR cash flows come from accounting before it and from the
-  waterfall after it, never both. It is in the cache key.
+  destroyed every call typed into Deal Analysis. No MRI feed is interrupted.
+- **The actuals/forecast boundary is ALWAYS enforced**, set or not (default Dec 31 of
+  `start_year - 1`). XIRR cash flows come from accounting before it and the waterfall
+  after it, never both. It is in the cache key.
 - **ISBS formats differ by `vSource` and mixing them is silent**: Interim IS (actuals)
   and Projected IS (underwriting) are YTD CUMULATIVE; Budget IS and Valuation IS are
-  PERIODIC monthly; Interim BS is current balances.
-- **ISBS lives in six split tables** by `vSource`, assembled into `isbs_raw` by
-  `_assemble_isbs()`; every consumer still filters on `vSource`. **ISBS is a JOURNAL** —
-  one key legitimately carries many rows that consumers SUM, so never `drop_duplicates`
-  it. Where an app supplement shares a key with MRI the app wins, written as "remove the
-  MRI rows the supplement covers".
+  PERIODIC monthly; Interim BS is current balances. It lives in **six split tables**
+  assembled into `isbs_raw` by `_assemble_isbs()`, and every consumer still filters on
+  `vSource`. **ISBS is a JOURNAL** — one key legitimately carries many rows that
+  consumers SUM, so never `drop_duplicates` it. Where an app supplement shares a key
+  with MRI the app wins, written as "remove the MRI rows the supplement covers".
 - **Forecast priority**: `forecast_feed` > ISBS Valuation IS > ISBS Projected IS, per
   deal, assembled by `_assemble_forecasts()`.
 - **Sign conventions**: negative = contribution, positive = distribution; MRI stores
@@ -334,11 +303,10 @@ in `.claude/memory/engine_reference.md`.
   7073 (capital events, sign-bearing). `ALL_EXCLUDED` does NOT include the tax
   abatement — it has its own sign handling.
 - **Entity IDs are uppercased at load time** (`.str.strip().str.upper()`) in
-  `loaders.py`, `data_service.py` and `ownership_tree.py`. MRI occasionally sends mixed
+  `loaders.py`, `data_service.py` and `ownership_tree.py` — MRI occasionally sends mixed
   case, which silently dropped journal entries from groupby and filter operations.
-  Normalize at the lowest layer so every consumer agrees. **Paid-off loans**
-  (`vDateType = "Paid Off"`) are likewise dropped at the DATA layer, so any loan row
-  still present is an active facility.
+  **Paid-off loans** (`vDateType = "Paid Off"`) are likewise dropped at the DATA layer,
+  so any loan row still present is an active facility.
 
 ## Where things are written down
 

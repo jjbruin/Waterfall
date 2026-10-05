@@ -155,21 +155,76 @@ anything — it is an open loop: **Jim has not been shown the nine.**
 
 ### 20.7 CLOSED, recorded so it is not re-opened
 
-- **Investment Metrics shared the committed-pref FUNCTION but not the as-of RULE**
-  (`v548`, `v549`). Neither `capitalization_sources` call site passed `as_of`, so the
-  report read the CURRENT commitments row while the One Pager read the row in force at
-  the quarter — Burton 26Q2 $54.23M here against $26.60M there, with the reference
-  printing $26.60M. **Fixed by `a610267`** on `feat/investment-metrics-quarter-dropdown`:
-  `_build_row` now passes `as_of=committed_as_of(ident, as_of)`, both sides of the stack
-  move together, and a deal sold on or before the as-of is read at its last held
-  quarter. 8 values move on live, 0 worse. **Committed, NOT deployed.**
+Three of the four below are shipped and deployed, so they are simply closed. The FIRST
+is in flight and carries a date stamp and a deletion instruction, per the standing rule
+at the top of CLAUDE.md: a "fixed but not deployed" note reads as authoritative for as
+long as it sits here.
+
+- **IN FLIGHT — Investment Metrics shared the committed-pref FUNCTION but not the
+  as-of RULE** (`v548`, `v549`). Neither `capitalization_sources` call site passed
+  `as_of`, so the report read the CURRENT commitments row while the One Pager read the
+  row in force at the quarter — Burton 26Q2 $54.23M here against $26.60M there, with
+  the reference printing $26.60M.
+
+  **Status as of Oct 5 2026: FIXED IN A COMMIT, NOT MERGED, NOT DEPLOYED.**
+  - Commit **`a610267`** — "Investment Metrics: committed equity is read AS OF the
+    quarter". It adds `committed_as_of()` and makes `_build_row` pass
+    `as_of=committed_as_of(ident, as_of)`; both sides of the stack move together, and a
+    deal sold on or before the as-of is read at its last held quarter. Its own message
+    records 8 values moving on live, 0 worse.
+  - Branch **`feat/investment-metrics-quarter-dropdown`**, whose tip `a610267` IS this
+    commit. `docs/compact-claude-md` also contains it only because that branch was cut
+    from it — the docs branch is not where this work lives.
+  - **Not on main**: `git merge-base --is-ancestor a610267 main` fails, and
+    `git show main:investment_metrics.py | grep -c committed_as_of` returns **0**.
+  - **BEWARE THE BRANCH NAME `fix/investment-metrics-committed-as-of`.** It sounds like
+    this work and is NOT: its tip is `06061b0`, identical to main, and it does not
+    contain `a610267`. Verified Oct 5 2026.
+
+  **Delete this bullet when it ships**, and record the revision in
+  `deploy_history.md` instead.
 - **`nReqDSR` 1.10 vs `nLTV` 0.55 — which is the extension test** (`v481`, "still
   open"). Settled by Jim Sep 17 2026 and shipped at `v482`: `nReqDSR` is the EXTENSION
-  test, `nRequiredDCR` the ongoing covenant.
+  test, `nRequiredDCR` the ongoing covenant. Deployed; nothing in flight.
 - **The two portfolio summary SCREENS** (`v502`, "still to build"). Shipped at `v503`
-  (`f151e5a`).
+  (`f151e5a` — confirmed present in git, Oct 5 2026). Deployed; nothing in flight.
 - **No rent step carries `period_start_month`** (`v511`, "still open"). The `v512`
-  re-extraction took it 0 -> 305, with 208 steps dated from the term.
+  re-extraction took it 0 -> 305, with 208 steps dated from the term. Deployed;
+  nothing in flight.
+
+### 19.8 Two memory files describe the same rules twice — LOW PRIORITY, unassigned
+
+`treasury.md` and `accounting_workpapers.md` each now carry **two** descriptions of the
+same rules: their original long-form section, and a "rule digest that used to live in
+CLAUDE.md" appended beneath it on Oct 5 2026. The digest was appended rather than merged
+line-by-line because merging by hand risked dropping a rule, and losslessness was the
+higher priority that day.
+
+Nothing is wrong today — both descriptions agree, because one was written FROM the
+other. The hazard is drift: a rule corrected in one copy and not the other leaves two
+confident, contradictory statements with nothing saying which is current, which is the
+same failure ONE NUMBER ONE ENGINE exists to prevent, one level up.
+
+- **The work:** reconcile to one description per rule in each file, keeping the fuller
+  wording where they differ, and leave a line saying the digest was folded in.
+- **The check:** no rule stated twice in either file; `CLAUDE.md`'s pointer still
+  resolves; the line-presence check still passes against the pre-compaction original.
+- **Why it is low priority:** it costs a reader some repetition, not a wrong answer.
+- **Owner:** unassigned.
+
+### 19.9 Delete `claude_md_prose_archive.md` once the compaction merges — unassigned
+
+`.claude/memory/claude_md_prose_archive.md` holds CLAUDE.md's pre-compaction prose for
+the sections that were rewritten rather than moved. It exists so "the compaction lost
+nothing" is checkable without going to git, which matters while the branch is in review
+and not after: once `docs/compact-claude-md` is on main, git history holds the same text
+and a second copy is just another thing to keep in step.
+
+- **Before deleting, verify it matches history** rather than assuming — the
+  pre-compaction CLAUDE.md is in the parent of `bb91c1d`, and that SHA goes in the
+  deletion commit message so the content stays reachable by name.
+- **Status as of Oct 5 2026:** not merged; do not delete yet.
+- **Owner:** unassigned, with the merge.
 
 ---
 

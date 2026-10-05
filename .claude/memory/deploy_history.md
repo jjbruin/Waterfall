@@ -3168,3 +3168,50 @@ entry pointing at it. Nothing here was summarised.
   - `v349` = `2700c99` †
 
   `v348` and earlier point at `:latest` and are not traceable by tag.
+
+## The deploy lessons, in long form (moved from CLAUDE.md, Oct 5 2026)
+
+CLAUDE.md's **Lessons** list is the RULE for each of these, one line apiece, with the
+revision in brackets pointing here. The sentence explaining what each one cost lives
+below, so the rule list stays a list and this file keeps the reasons.
+
+Where a lesson names a revision, that revision's own entry -- in the post-mortem
+sections above, or in the `v349`-`v563` index -- is the full account. These are the
+compressed versions, written when the lessons were extracted.
+
+1. **Compute the P2 span against the LIVE image, not local HEAD.** Seven commits
+   shipped where one was asked for, and only two were reviewed (`v429`).
+2. **Re-run P1 immediately before `containerapp update`, not only before the build.** A
+   colleague's deploy landing between the two would have been rolled back by the update
+   (`v549`, `v560`/`v561`).
+3. **Build only from a clean worktree nothing else is using, and gate `containerapp
+   update` on the tag existing and the ACR run succeeding for that SHA.** A background
+   job touching the local SQLite made the upload fail, so the tag was never created --
+   and the chained update ran to it anyway (`v556`).
+4. **`activeRevisionsMode` is Single, so traffic follows the LATEST revision.** Never
+   deactivate it to back out, and a traffic split does not apply: deactivating the
+   broken revision deprovisioned the healthy one behind it. Rollback is rolling
+   FORWARD, to the last good SHA tag under a new suffix (`v556r`).
+5. **Pin dependency MAJORS.** An unpinned minor took every worker down on boot --
+   SQLAlchemy 2.1 made a bare `postgresql://` URL load psycopg v3 (`v524`); pandas is
+   pinned `<3.1` on the same reasoning. **And run guardrails inside the container**:
+   production ran pandas 3 while local ran 2.3 for months, so a suite can be green
+   locally on a shape the database cannot deliver (`v555`), and `pd.NaT` passes an
+   `isinstance(datetime)` test (`v550`).
+6. **Verify a UI change against the SERVED bundle, resolving the lazy chunk from the
+   ENTRY bundle.** `index.html` is a ~551-byte SPA shell referencing no chunk, so
+   grepping it returns "gone" for strings that are present and proves nothing in either
+   direction (`v523`, `v527`).
+7. **Know which guardrails SKIP in the container, and why.** The runtime image ships no
+   `vue_app/`, and gitignored fixtures are absent. **Skip is not pass** -- and a check
+   that CRASHES instead of skipping kills the run after the useful sections have
+   already passed (`v527`).
+8. **ACR uploads the WORKING TREE, not a git ref**, so an unclean tree ships
+   uncommitted work (pre-flight P3). Correspondingly, a data change that is NOT in git
+   -- an MRI table refresh -- is **not undone by a rollback**; say so when one
+   accompanies a deploy (`v549`).
+9. **Prove a shared-engine refactor behaviour-preserving by running the OLD module
+   beside the new one over real data and diffing the output**, not by reading the diff
+   (`v505`, `v548`). And **measure a rule's population on live data BEFORE shipping
+   it**, reporting what CHANGED including when the change was none -- a rule that is
+   right on the deal you looked at has still not been tested (`v544`).
