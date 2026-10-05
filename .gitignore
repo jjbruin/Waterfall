@@ -88,3 +88,8 @@ scripts/pull_live_noi_requested.py
 # The 26Q2 published overlay — derived from sent PDFs that are not in the
 # repo, and it carries investor figures. Rebuild with scripts/build_26q2_overlay.py
 overlay_*.json
+
+# Local database backups and in-progress pulls (scripts/pull_production_db.py).
+# A 186 MB backup was swept into a commit by `git add -A` on Oct 5 2026.
+waterfall.db.bak-*
+*.db.pulling

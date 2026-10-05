@@ -74,7 +74,7 @@ SECTIONS = (
      "routes": ("/reports", "/sold-portfolio", "/portfolio-analysis",
                 "/psckoc")},
     {"key": "data_management", "label": "Data Management",
-     "routes": ("/data-explorer",)},
+     "routes": ("/data-explorer", "/market-rates")},
     # Employee expense reports (Oct 2 2026). Ticked by default like every
     # section; inside it, who sees which REPORT is per record, in
     # expense_service -- not a change to section access.
@@ -129,6 +129,7 @@ API_SECTIONS = (
     ("/api/data/list-csvs", ("data_management",)),
     ("/api/data/table-definitions", ("data_management",)),
     ("/api/data/mri", ("data_management",)),
+    ("/api/market-rates", ("data_management",)),
 )
 
 #: API prefixes every signed-in user may call. Shared plumbing every screen

@@ -3148,6 +3148,9 @@ is a parameter; the arithmetic is not.
 | NAV, net proceeds | `valuation_nav_service.compute_nav` | stored in `valuation_nav_results` |
 | Modeled debt service | `valuation_debt_service.monthly_schedule` | Budget/Valuation columns |
 | Statements | `statement_service.build` + siblings | workpapers, print, Excel |
+| Exchange and reference rates (USD/CAD, SOFR, CORRA, EFFR...) | `market_rates_service.rate_on` (the `market_rates` table, from Bank of Canada / NY Fed) | PE exposure; NOT yet Investment Metrics, which still carries `CAD_TO_USD = 0.73` (open_items 19.2) |
+| Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down) | PE exposure |
+| Unrealized gain/loss and realized losses per holding | `pe_exposure_service.noncash_by_holding` (ia_transactions -- the app's `accounting` feed has no non-cash rows) | PE exposure |
 
 **Why this is not a style preference.** "Accrued pref" had two implementations in
 ONE FILE. `_compute_accrued_pref` (ROE Summary, Committee Summary) and
@@ -3367,6 +3370,45 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   `with_accepted_proposals` turns it into a line; only offered accounts, Argus only.
 - **Interest goes to 5190 here, 7030 in the AM forecast** — see `open_items.md` §5.8.
   Deliberate as of Sep 11 2026, not accidental, and still worth settling.
+
+### PSC Preferred Equity Exposure (Reports, open to everyone)
+Built Oct 5 2026. Replaces accounting's `PSC Preferred Equity Tracker - <date>.xlsx`,
+whose Spreadsheet Server (`GEXD("IA Query.edq", ...)`) links and typed percentages
+become references to our MRI copy. `pe_exposure_service.py`, `PeExposureView.vue`,
+`/api/reports/pe-exposure[/quarters|/excel]`.
+
+- **Every figure is an existing engine's**: Cost = the Pref Balance Detail capital
+  balance + realized losses (ia_transactions, below zero); FMV = Cost + unrealized
+  marks; the investor split = `group_shares` over commitments in force; Future
+  Funding = the One Pager's `remaining_to_fund`; CAD via `market_rates`.
+- **Measured against accounting's 26Q2 tracker on production data**: Cost 52/53,
+  FMV 53/53, the seven investor splits 51/53, grand total within 0.1%. Every
+  difference is the tracker's own typed input -- Nottingham (its Cost view omits a
+  $2.92M June contribution its FMV view includes), Brainerd (a typed funded-to-date
+  split; its own side note gives ours), Bel Air (two typed constants).
+- **The stops** (where the walk ends and what it is called) are accounting's
+  classification, from the tracker's Mapping tab: PSC = PSC1/PSC2/OWPSC/PSCMAN/
+  PSL1/PSS1, KOC = KCREIT, TIAA = TGAM, Declaration = DCXVIA/B, Clarion = DIFPP; an
+  AMB fund's outside investors are Ambassadors; every other outside investor F&F.
+- **Holders come from commitments** (non-OP investors into the deal), under the
+  vcode `build_investmentid_to_vcode` maps the InvestmentID to -- InvestmentID is
+  not unique (MCCORD has two vcodes) and the pref engine answers 0 under the other.
+- **A sale booked as a realized loss** (Adirondack, City West) takes cost to 0; the
+  pref engine alone would carry the full capital, since `accounting` has no
+  non-cash rows.
+- **IA is cut on TRANSACTION date**: 1,767 non-cash rows carry no Effective Date.
+- **Live** is any date; Future Funding alone answers by quarter, and says so.
+- Guardrail `scripts/pe_exposure_check.py` (28).
+
+### Market rates (Data Management > Market Rates)
+Built Oct 5 2026. `market_rates_service.py`, the `market_rates` table (protected):
+Bank of Canada USD/CAD, CORRA and policy rate; NY Fed SOFR, its 30/90/180-day
+averages and index, EFFR, OBFR -- free, official, no API key. Refreshed from the
+publishers on the screen and at the end of Refresh All Data from MRI. `rate_on`
+never interpolates: the last publication on or before the date, saying which, None
+past 7 days. **Term SOFR is CME's and licensed -- not here.** Forward curves are not
+built: the free official curve is Treasury's par yield curve (open). Guardrail
+`scripts/market_rates_check.py` (18).
 
 ### Accounting Workpapers & the Statement Engine
 **Full detail in `.claude/memory/accounting_workpapers.md`.** Live at `v504`.

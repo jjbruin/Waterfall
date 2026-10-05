@@ -33,6 +33,17 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
   CAD_TO_USD = 0.73`) now that `market_rates` holds Bank of Canada's published rate
   (6/30/26: 1.4210 CAD per USD = 0.7037). Two sources for one number; switching it
   MOVES Investment Metrics figures, so it needs measuring and Jim's call. Owner: **Jim**.
+- **19.4 27 entities in `relationships` do not close to 100%** (found Oct 5 2026, the
+  first time `ownership_pct_closure_check` ran on production's feed): the BRN-1..9,
+  BURT-1..4 and TFT-1 sub-entities, INV23-P / INV24-P, PSCIF1, PPI2 and PSCMAN carry
+  0.00%. Affects every RELATIONSHIPS-based trace (Upstream Analysis, Portfolio
+  Analysis, PPI upstream, PSCKOC) -- not the PE exposure report, which walks
+  commitments. Owner: **accounting / MRI data**.
+- **19.5 Forward yield curves for refinancing estimates** -- Jim asked, Oct 5. The
+  free official source is Treasury's daily par yield curve; implied forwards can be
+  bootstrapped from it. It is a TREASURY curve, so a refi rate = forward + a spread
+  that would be an input. SOFR swap / Term SOFR forwards are licensed. Not built.
+  Owner: **Jim's call**.
 - **19.3 Apple's cost convention** -- historical rate per contribution, or the
   quarter-end rate? The tracker converts at the quarter-end Bank of Canada rate until
   accounting says otherwise. Owner: **accounting**.

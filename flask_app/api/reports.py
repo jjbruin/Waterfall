@@ -338,3 +338,59 @@ def pref_balance_detail_excel():
         as_attachment=True,
         download_name=f"pref_balance_{vcode}_{investor_id}.xlsx",
     )
+
+
+# ── PSC Preferred Equity exposure (accounting's tracker) ─────────────────
+# Open to everyone with the Reports section, as Jim asked (Oct 5 2026). Read
+# only. The figures come from the engines that already own them -- see
+# pe_exposure_service's module docstring for which engine answers which.
+
+def _pe_as_of():
+    from datetime import date as dt_date
+    from flask_app.services import pe_exposure_service as pe
+    raw = request.args.get("as_of")
+    if raw == "live":
+        return dt_date.today(), None
+    if raw:
+        try:
+            return pd.to_datetime(raw).date(), None
+        except Exception:
+            return None, f"as_of {raw!r} is not a date"
+    return dt_date.fromisoformat(pe.quarter_options()["default"]), None
+
+
+@reports_bp.route("/pe-exposure/quarters", methods=["GET"])
+@login_required
+def pe_exposure_quarters():
+    from flask_app.services import pe_exposure_service as pe
+    return jsonify(pe.quarter_options())
+
+
+@reports_bp.route("/pe-exposure", methods=["GET"])
+@login_required
+def pe_exposure():
+    from flask_app.services import pe_exposure_service as pe
+    as_of, err = _pe_as_of()
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        return jsonify(safe_json(pe.get_report(as_of, data=_get_data())))
+    except Exception as e:
+        current_app.logger.error("pe exposure failed: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@reports_bp.route("/pe-exposure/excel", methods=["GET"])
+@login_required
+def pe_exposure_excel():
+    from flask_app.services import pe_exposure_service as pe
+    as_of, err = _pe_as_of()
+    if err:
+        return jsonify({"error": err}), 400
+    report = pe.get_report(as_of, data=_get_data())
+    return send_file(
+        io.BytesIO(pe.to_excel(report)),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"PSC_PE_Exposure_{report['as_of']}.xlsx",
+    )

@@ -39,7 +39,9 @@ both and uses whichever is populated. Assuming the property code alone reported
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Set
+from collections import defaultdict
+from datetime import date
+from typing import Callable, Dict, List, Optional, Set
 
 import pandas as pd
 from sqlalchemy import text
@@ -71,19 +73,28 @@ class _Source:
     into 24 queries.
     """
 
-    def __init__(self, engine=None):
+    def __init__(self, engine=None, as_of: Optional[date] = None,
+                 with_balances: bool = True):
+        """``as_of`` None is the Ownership screen: today's commitments.
+
+        With ``as_of`` the commitments IN FORCE ON THAT DATE are walked instead
+        (``_in_effect_at``) -- the committed-pref rule, so a quarter's ownership
+        is read the way that quarter's committed pref is. ``with_balances``
+        False skips the accounting read a caller that only needs shares does
+        not use.
+        """
         engine = engine or get_engine()
         self.load_errors: List[str] = []
+        self.as_of = as_of
         with engine.connect() as conn:
-            # CURRENT ROWS ONLY. No-op while MRI_Commitments.sql filters
-            # EndDate IS NULL; load-bearing once ENDED rows are brought in for
-            # the committed-pref as-of rule (committed_pref.py). Superseded
-            # revisions would otherwise be walked as live ownership edges.
-            self.com = self._read(conn, "commitments", current_only=True)
+            # CURRENT ROWS ONLY when no date is asked for. With a date, every
+            # row is read and the ones in force on it are kept below: an ended
+            # revision is exactly what an earlier quarter needs.
+            self.com = self._read(conn, "commitments", current_only=as_of is None)
             self.ent = self._read(conn, "entities")
             self.deals = self._read(conn, "deals")
             self.wf = self._read(conn, "waterfalls")
-            self.acct = self._read(conn, "accounting")
+            self.acct = self._read(conn, "accounting") if with_balances else pd.DataFrame()
 
         # WHAT ARRIVED, BEFORE ANYTHING IS DONE TO IT. Reported in the health
         # block so "no commitments for this entity" can be told apart from "the
@@ -121,7 +132,10 @@ class _Source:
                 self.load_errors.append(
                     "commitments has no EntityID column (found: "
                     + ", ".join(self.commitment_columns[:12]) + ")")
-            self.com, self.superseded_rows = self._current_only(self.com)
+            if as_of is None:
+                self.com, self.superseded_rows = self._current_only(self.com)
+            else:
+                self.com, self.superseded_rows = self._in_effect_at(self.com, as_of)
 
         # Entity id -> display name.
         self.names: Dict[str, str] = {}
@@ -357,6 +371,46 @@ class _Source:
             com["_start"] = pd.NaT
 
         return com, before - len(com)
+
+    @staticmethod
+    def _in_effect_at(com: pd.DataFrame, as_of: date):
+        """The commitment in force on ``as_of`` for each (entity, investor).
+
+        THE COMMITTED-PREF RULE, not a second one: ``StartDate <= as_of`` and
+        (``EndDate`` null or ``EndDate >= as_of``), the latest such StartDate
+        winning (``committed_pref.row_in_effect``). A commitment is revised by
+        ending one row and opening the next the following day, so on the
+        measured data at most one row per pair is in force on any date.
+        Same-day tombstones (start == end, a few cents) are dropped as
+        ``committed_pref`` drops them. Rows sharing the winning StartDate are
+        summed, as ``_current_only`` sums them.
+        """
+        from committed_pref import TOMBSTONE_MAX_ABS
+        if com.empty or "EntityID" not in com.columns:
+            return com, 0
+        before = len(com)
+        c = com.copy()
+
+        def _naive(col):
+            if col not in c.columns:
+                return pd.Series(pd.NaT, index=c.index)
+            s = pd.to_datetime(c[col], errors="coerce", utc=True)
+            try:
+                return s.dt.tz_localize(None)
+            except (TypeError, AttributeError):
+                return s
+
+        st, en = _naive("StartDate"), _naive("EndDate")
+        q = pd.Timestamp(as_of)
+        tomb = (st.notna() & en.notna() & (st == en)
+                & (pd.to_numeric(c["Amount"], errors="coerce").abs() <= TOMBSTONE_MAX_ABS))
+        live = st.notna() & (st <= q) & (en.isna() | (en >= q)) & ~tomb
+        c = c[live].copy()
+        c["_start"] = st[live]
+        if not c.empty:
+            latest = c.groupby(["EntityID", "InvestorID"])["_start"].transform("max")
+            c = c[c["_start"] == latest].copy()
+        return c, before - len(c)
 
     def display_name(self, eid: str) -> str:
         """Best available name, never blank -- the id is the last resort."""
@@ -800,3 +854,67 @@ def _collect_disagreements(nodes: List[dict], parent: str = "") -> List[dict]:
                         "pct": n["pct"], "pct_stated": n["pct_stated"]})
         out.extend(_collect_disagreements(n.get("owners") or [], n["entity_id"]))
     return out
+
+
+# ── Ultimate holders by group, as of a date ─────────────────────────────────
+#
+# THE SAME WALK THE OWNERSHIP SCREEN DRAWS, read as numbers. ``_owners_of``
+# derives each owner's share from COMMITTED AMOUNTS (never the stored
+# CapitalPercent), and the shares are multiplied down the chain. What this adds
+# is where the walk STOPS and what each stop is CALLED: a caller names the
+# entities that are a holder in their own right (``stops``, entity -> group),
+# and every other entity is looked through to its owners. An owner with no
+# owners of its own is a person or an outside investor; it takes the group of
+# the nearest enclosing ``context`` (e.g. an Ambassadors fund) or
+# ``default_group``. Built for the PE exposure tracker (Oct 5 2026), which
+# reproduced accounting's typed percentages on 52 of 54 holdings this way.
+
+def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
+                 context: Optional[Callable[[str], Optional[str]]] = None,
+                 default_group: str = "Other", src: Optional[_Source] = None,
+                 engine=None) -> dict:
+    """Who ultimately holds ``entity_id`` on ``as_of``, as {group: share}.
+
+    Returns ``{"entity", "as_of", "shares", "routes", "problems"}``. Shares are
+    fractions of the entity and sum to 1.0 when the walk resolves; anything it
+    could not place (a cycle, the depth cap, an entity with no owners at all)
+    is listed in ``problems`` and NOT folded into a group, so a short total
+    announces itself.
+    """
+    src = src or _Source(engine, as_of=as_of, with_balances=False)
+    root = _norm(entity_id)
+    shares: Dict[str, float] = defaultdict(float)
+    routes: List[dict] = []
+    problems: List[str] = []
+
+    def walk(ent: str, share: float, path: List[str], ctx: Optional[str]):
+        depth = len(path) - 1
+        # The root counts too: a holding entity that is itself a named holder
+        # (PSS1 holds APPLE directly, and PSS1 is PSC) is that holder, whole.
+        if ent in stops:
+            shares[stops[ent]] += share
+            routes.append({"path": path, "share": share, "group": stops[ent]})
+            return
+        if depth >= MAX_DEPTH:
+            problems.append("depth cap reached at " + " > ".join(path))
+            return
+        ctx = (context(ent) if context else None) or ctx
+        owners = [o for o in _owners_of(src, ent) if (o.get("pct") or 0) > 0]
+        if not owners:
+            if depth == 0:
+                problems.append(f"{ent} has no commitments in force on {as_of}")
+                return
+            g = ctx or default_group
+            shares[g] += share
+            routes.append({"path": path, "share": share, "group": g})
+            return
+        for o in owners:
+            nxt = o["entity_id"]
+            if nxt in path:
+                problems.append("cycle: " + " > ".join(path + [nxt]))
+                continue
+            walk(nxt, share * o["pct"] / 100.0, path + [nxt], ctx)
+
+    walk(root, 1.0, [root], None)
+    return {"entity": root, "as_of": as_of.isoformat(), "shares": dict(shares),
+            "routes": routes, "problems": problems}

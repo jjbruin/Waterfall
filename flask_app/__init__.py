@@ -170,6 +170,9 @@ def create_app(config_name: str = None) -> Flask:
     from flask_app.api.surveillance import surveillance_bp
     app.register_blueprint(surveillance_bp, url_prefix="/api/surveillance")
 
+    from flask_app.api.market_rates import market_rates_bp
+    app.register_blueprint(market_rates_bp)
+
     from flask_app.api.lease_review import lease_review_bp
     app.register_blueprint(lease_review_bp)
 

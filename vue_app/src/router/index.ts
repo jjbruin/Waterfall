@@ -159,6 +159,11 @@ const routes = [
     component: () => import('../views/DataExplorerView.vue'),
   },
   {
+    path: '/market-rates',
+    name: 'Market Rates',
+    component: () => import('../views/MarketRatesView.vue'),
+  },
+  {
     path: '/pipeline',
     name: 'Pipeline',
     component: () => import('../views/PipelineView.vue'),

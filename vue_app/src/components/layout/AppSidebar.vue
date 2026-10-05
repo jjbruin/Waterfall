@@ -28,7 +28,7 @@ const amRoutes = ['/deal-analysis', '/property-financials', '/surveillance', '/v
 // about operating the asset.
 const imRoutes = ['/ownership']
 const nbRoutes = ['/pipeline', '/prospect-analysis', '/lease-review', '/lease-risk-analysis']
-const dmRoutes = ['/data-explorer', '/settings']
+const dmRoutes = ['/data-explorer', '/market-rates', '/settings']
 const acctRoutes = ['/workpapers', '/treasury', '/intercompany', '/expense-coding', '/gl-ia-query']
 
 watch(() => route.path, (path) => {
@@ -660,6 +660,7 @@ function toggleCollapsed() {
         </button>
         <div v-show="expandedSections.dm" class="nav-section-body">
           <router-link to="/data-explorer" class="nav-item" :class="{ active: route.path === '/data-explorer' }">Data Explorer</router-link>
+          <router-link to="/market-rates" class="nav-item" :class="{ active: route.path === '/market-rates' }">Market Rates</router-link>
 
           <!-- MRI Data — expandable tool panel -->
           <button

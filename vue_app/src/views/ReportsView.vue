@@ -12,6 +12,7 @@ import DataTable from '../components/common/DataTable.vue'
 import SoldPortfolioView from './SoldPortfolioView.vue'
 import PsckocView from './PsckocView.vue'
 import PortfolioAnalysisView from './PortfolioAnalysisView.vue'
+import PeExposureView from './PeExposureView.vue'
 import api from '../api/client'
 
 const data = useDataStore()
@@ -110,6 +111,16 @@ const reportDefs: ReportDef[] = [
     value: 'psckoc',
     label: 'PSCKOC',
     description: 'Upstream waterfall analysis for the PSCKOC holding entity',
+    isCustomView: true,
+    endpoint: '',
+    excelEndpoint: '',
+    excelFilename: '',
+    columns: [],
+  },
+  {
+    value: 'pe-exposure',
+    label: 'PSC Preferred Equity Exposure',
+    description: "Accounting's PE tracker: Cost and FMV by holding, split to the investors through the ownership chain",
     isCustomView: true,
     endpoint: '',
     excelEndpoint: '',
@@ -477,6 +488,7 @@ const roeDetailCF = computed(() => {
           <SoldPortfolioView v-if="activeReport?.value === 'sold-portfolio'" :embedded="true" />
           <PsckocView v-else-if="activeReport?.value === 'psckoc'" :embedded="true" />
           <PortfolioAnalysisView v-else-if="activeReport?.value === 'portfolio-analysis'" :embedded="true" />
+          <PeExposureView v-else-if="activeReport?.value === 'pe-exposure'" :embedded="true" />
         </template>
         <template v-else>
           <div class="results-header">

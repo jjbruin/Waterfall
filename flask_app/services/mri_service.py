@@ -631,6 +631,19 @@ def refresh_all(engine=None, on_progress=None) -> dict:
 
         completed += 1
 
+    # PUBLIC MARKET RATES ride along (Oct 5 2026): Bank of Canada and the NY
+    # Fed, not MRI, but refreshed whenever MRI is so that a quarter's figures
+    # and that quarter's rates arrive together. Its own try, so a publisher
+    # being down is reported here and costs no MRI table anything.
+    try:
+        from flask_app.db import get_engine
+        from flask_app.services import market_rates_service
+        results["market_rates"] = {"status": "ok", "series": market_rates_service.refresh(
+            engine or get_engine())}
+    except Exception as e:
+        logger.error(f"Failed to refresh market rates: {e}")
+        results["market_rates"] = {"status": "error", "error": str(e)[:200]}
+
     total_elapsed = time.time() - total_t0
     return {
         "status": "ok",
