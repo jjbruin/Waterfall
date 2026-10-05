@@ -58,6 +58,17 @@ in a revision note and tracked nowhere else. Every one was **re-checked against 
 working tree** before being written down here; the ones that turned out to be closed
 are recorded as closed rather than carried forward.
 
+**Standing: seven open — 20.1-20.5, plus 20.8 and 20.9 (housekeeping, low priority).**
+20.7 is not an item but the record of four things the archive called open and that
+turned out to be shipped, kept so nobody re-opens them.
+
+**20.6 is deliberately absent.** It tracked `v547` having moved nine reported figures,
+three of them investor-facing coupons, without the "tell Jim first" step being closed.
+**Jim reviewed them on Oct 5 2026 and confirmed MRI deal terms as the source of truth
+for coupon and participation**, so the item is closed and removed; the resolution is
+recorded against `v547` in `deploy_history.md`. Numbers are never reused here — a gap
+means an item closed, and renumbering would break every reference written before it.
+
 ### 20.1 Investment Metrics: two columns are still unloaded — Alay
 
 `investment_metrics_config.UNLOADED_FIGURES` holds `uw_irr` ("UW Proj. IRR") and
@@ -138,21 +149,6 @@ deals, and two DROPPED deals sold later than two kept ones.
   and `v544` replaced it with a rule read off the row's own data. See §12.
 - **Owner:** unassigned. Needs the MRI field question put to Alay first.
 
-### 20.6 `v547` moved nine reported figures without the "tell Jim first" step closed — Charlene
-
-CLAUDE.md's standing instruction is to tell Jim BEFORE building anything that moves a
-reported figure. `v547` moved nine, **three of them investor-facing coupons** (Pegasus
-Life Storage 10% -> 9%, Cocoplum 5% -> 8.5%, Orange Grove 8% -> 8.5%) plus six
-participation figures. Its own deploy note records: *"It was flagged twice before the
-build and the deploy proceeded on Charlene's instruction without that step being
-closed."*
-
-The figures are live and have been since Sep 30 2026. This is not a request to revert
-anything — it is an open loop: **Jim has not been shown the nine.**
-
-- **The action:** send him the list from the `v547` note in `deploy_history.md`.
-- **Owner:** Charlene.
-
 ### 20.7 CLOSED, recorded so it is not re-opened
 
 Three of the four below are shipped and deployed, so they are simply closed. The FIRST
@@ -166,20 +162,28 @@ long as it sits here.
   row in force at the quarter — Burton 26Q2 $54.23M here against $26.60M there, with
   the reference printing $26.60M.
 
-  **Status as of Oct 5 2026: FIXED IN A COMMIT, NOT MERGED, NOT DEPLOYED.**
-  - Commit **`a610267`** — "Investment Metrics: committed equity is read AS OF the
-    quarter". It adds `committed_as_of()` and makes `_build_row` pass
+  **Status as of Oct 5 2026: FIXED IN A COMMIT, NOT MERGED, NOT DEPLOYED, AND NOT
+  RIDING ALONG WITH THE DOCS COMPACTION.**
+  - **It lives on `feat/investment-metrics-quarter-dropdown`**, whose tip `a610267` IS
+    the commit: "Investment Metrics: committed equity is read AS OF the quarter". It
+    adds `committed_as_of()` and makes `_build_row` pass
     `as_of=committed_as_of(ident, as_of)`; both sides of the stack move together, and a
-    deal sold on or before the as-of is read at its last held quarter. Its own message
-    records 8 values moving on live, 0 worse.
-  - Branch **`feat/investment-metrics-quarter-dropdown`**, whose tip `a610267` IS this
-    commit. `docs/compact-claude-md` also contains it only because that branch was cut
-    from it — the docs branch is not where this work lives.
-  - **Not on main**: `git merge-base --is-ancestor a610267 main` fails, and
-    `git show main:investment_metrics.py | grep -c committed_as_of` returns **0**.
+    deal sold on or before the as-of is read at its last held quarter. Two files:
+    `investment_metrics.py` and `scripts/investment_metrics_check.py`.
+  - **`docs/compact-claude-md-clean` does NOT contain it.** The first compaction branch
+    did, because it was cut from `a610267` and would have carried a runtime change into
+    a docs merge; the clean branch is cut from `origin/main` and is docs-only. **Merging
+    the compaction does not ship this fix, and must not be read as having done so.**
+  - **Not on main**: `git merge-base --is-ancestor a610267 origin/main` fails, and
+    `git show origin/main:investment_metrics.py | grep -c committed_as_of` returns **0**.
   - **BEWARE THE BRANCH NAME `fix/investment-metrics-committed-as-of`.** It sounds like
-    this work and is NOT: its tip is `06061b0`, identical to main, and it does not
-    contain `a610267`. Verified Oct 5 2026.
+    this work and is NOT: its tip is `06061b0` — a stale copy of main — and it contains
+    zero occurrences of `committed_as_of`. Verified Oct 5 2026.
+  - **IT NEEDS ITS OWN FIGURE MEASUREMENT BEFORE IT MERGES.** The commit message claims
+    8 values move on live and 0 get worse; that was measured by its author and has not
+    been re-measured since. It changes a REPORTED figure, so CLAUDE.md's standing rule
+    applies: measure the affected deals against live data, report the count and the
+    deltas, and get Jim's call BEFORE building. Do not fold it into a docs merge.
 
   **Delete this bullet when it ships**, and record the revision in
   `deploy_history.md` instead.
@@ -192,7 +196,7 @@ long as it sits here.
   re-extraction took it 0 -> 305, with 208 steps dated from the term. Deployed;
   nothing in flight.
 
-### 19.8 Two memory files describe the same rules twice — LOW PRIORITY, unassigned
+### 20.8 Two memory files describe the same rules twice — LOW PRIORITY, unassigned
 
 `treasury.md` and `accounting_workpapers.md` each now carry **two** descriptions of the
 same rules: their original long-form section, and a "rule digest that used to live in
@@ -212,7 +216,7 @@ same failure ONE NUMBER ONE ENGINE exists to prevent, one level up.
 - **Why it is low priority:** it costs a reader some repetition, not a wrong answer.
 - **Owner:** unassigned.
 
-### 19.9 Delete `claude_md_prose_archive.md` once the compaction merges — unassigned
+### 20.9 Delete `claude_md_prose_archive.md` once the compaction merges — unassigned
 
 `.claude/memory/claude_md_prose_archive.md` holds CLAUDE.md's pre-compaction prose for
 the sections that were rewritten rather than moved. It exists so "the compaction lost

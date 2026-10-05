@@ -913,6 +913,12 @@ entry pointing at it. Nothing here was summarised.
     three of them investor-facing coupons. It was flagged twice before the build
     and the deploy proceeded on Charlene's instruction without that step being
     closed.)
+
+    RESOLVED Oct 5 2026: Jim reviewed the nine changed figures and confirmed MRI
+    deal terms as the source of truth for coupon and participation. The entry
+    above is left exactly as it was written at deploy time, including its closing
+    line; this note is appended beneath it. `open_items.md` §20.6, which tracked
+    the open loop, is closed and removed.
   - `v546` = `ad92358` (INVESTMENT METRICS GOES LIVE — draft gate OFF, and the
     link moves under Asset Management. Sep 30 2026, build `camm` 2m20s, run
     status Succeeded. `INVESTMENT_METRICS_DRAFT = False`, so the screen banner,
