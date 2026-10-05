@@ -1,165 +1,114 @@
-# Waterfall XIRR - Multi-Layer Waterfall Model
+# Waterfall XIRR — Multi-Layer Waterfall Model
 
-## Shared Memory
+## How this file works
 
-Shared project memory files are in `.claude/memory/`. Read `MEMORY.md` there at the start of every conversation for project context, conventions, and architecture notes. Update these files as you work — they are committed to git and shared across all developers.
+**CLAUDE.md holds invariants and procedures only. No version numbers, no counts, no
+incident narratives. Put history in `.claude/memory/`.** This file is loaded into every
+session, so anything that sits here is paid for whether or not the work needs it.
+Guardrail: `scripts/claude_md_budget_check.py`, run by the pre-commit hook.
 
-**The live work queue is `.claude/memory/open_items.md`** — what is still open, with evidence and an owner. Run `/open-items` to triage it. Close items there as they ship rather than letting them drift back into session narratives.
+Shared project memory is `.claude/memory/`. **Read `MEMORY.md` there at the start of
+every conversation.** Update those files as you work — they are committed and shared.
+The pointer table at the foot of this file says which one holds what.
 
-**Date-stamp anything describing work in flight, and delete it when the work ships.**
-A section that says a branch is unmerged reads as authoritative for as long as it sits
-here, and nothing distinguishes it from a current one. On Sep 11 2026 this file still
-carried a 69-line section declaring `feat/onepager-chart-window` "not merged, not
-deployed" — it had been on main for over a month (`window_end_quarter` at
-`financials_service.py:177`). Shipped work belongs in the deploy history, not in
-standing instructions.
+- **The live work queue is `.claude/memory/open_items.md`** — what is still open, with
+  evidence and an owner. Run `/open-items` to triage it. Close items there as they ship
+  rather than letting them drift back into session narratives.
+- **Date-stamp anything describing work in flight, and delete it when the work ships.**
+  A section saying a branch is unmerged reads as authoritative for as long as it sits
+  here, and nothing distinguishes it from a current one. It has gone wrong twice — a
+  69-line "not merged, not deployed" section for work that had been on main a month, and
+  a "NOT deployed" stamp on work that shipped the next day.
 
 ## Project Overview
 
-A Flask + Vue financial modeling application for calculating investment waterfalls, XIRR, and related performance metrics for real estate investments. The application supports multi-layer distribution waterfalls with preferred returns, capital accounts, and investor-level tracking.
+A Flask + Vue financial modeling application for calculating investment waterfalls,
+XIRR, and related performance metrics for real estate investments. It supports
+multi-layer distribution waterfalls with preferred returns, capital accounts, and
+investor-level tracking.
 
-## Tech Stack
+### Tech Stack
 
-- **Python 3.x** with virtual environment (`.venv/`)
-- **Flask** - REST API backend (`flask_app/`)
-- **Vue 3 + Vite** - Modern frontend (`vue_app/`)
-- **pandas/numpy** - Data manipulation
-- **scipy** - XIRR/NPV calculations (Newton-Raphson primary, Brent's method fallback)
-- **ECharts** - Interactive charts (Vue)
-- **PostgreSQL** - Azure-hosted database (local dev: SQLite via `waterfall.db`)
-- **SQLAlchemy** - Database abstraction (`flask_app/db.py`), switches via `DATABASE_URL` env var
-- **JWT** - Authentication (Flask + Vue)
-- **Docker** - Multi-stage build (Vue → Python 3.12-slim + Gunicorn)
-- **Azure Container Apps** - Production hosting
+- **Python 3.x** (`.venv/`), **Flask** REST API, **Vue 3 + Vite** frontend, **ECharts**
+  charts, **JWT** auth, **Docker** multi-stage (Vue → Python 3.12-slim + Gunicorn) on
+  **Azure Container Apps**
+- **pandas/numpy** for data; **scipy** for XIRR/NPV (Newton-Raphson, Brent fallback)
+- **PostgreSQL** on Azure; local dev is SQLite (`waterfall.db`). **SQLAlchemy** switches
+  on `DATABASE_URL` (`flask_app/db.py`). Pin dependency MAJORS in `requirements.txt`.
 
 ## Project Structure
 
 ```
 waterfall-xirr/
-├── config.py                 # Constants, account classifications, rates, dynamic defaults
-├── compute.py                # Deal computation logic (core engine)
-├── one_pager.py              # One Pager data logic (general info, cap stack, property perf, PE metrics, comments)
-├── models.py                 # Data classes (InvestorState, Loan)
-├── waterfall.py              # Waterfall calculation engine
-├── metrics.py                # XIRR, XNPV, ROE, MOIC calculations
-├── loaders.py                # Data loading from database/CSV
-├── database.py               # Database management (SQLite + PostgreSQL), migrations, CSV import/export
-├── loans.py                  # Debt service modeling
-├── planned_loans.py          # Future loan projections
-├── capital_calls.py          # Capital call handling
-├── cash_management.py        # Cash flow management
-├── consolidation.py          # Sub-portfolio aggregation
-├── portfolio.py              # Fund/portfolio aggregation
-├── reporting.py              # Annual aggregation tables, formatting utilities
-├── ownership_tree.py         # Investor ownership structures
-├── utils.py                  # Helper utilities
-├── argus_parser.py           # Stateless Argus Enterprise Excel parser (COA mapping, forecast conversion)
-├── cashflow_parser.py        # Generic Excel/CSV parser for partner cash flow models (auto-detect columns, annual→monthly)
-├── Dockerfile                # Multi-stage Docker build (Vue + Flask + Gunicorn)
-├── launch_app.bat            # Desktop launcher (opens Azure app in browser)
-├── waterfall_xirr.ico        # Custom app icon for desktop shortcut
-├── waterfall.db              # SQLite database for local dev (not in git, >100MB)
-│
-├── flask_app/                # Flask REST API backend
-│   ├── __init__.py           # App factory (create_app), SPA serving with cache headers
-│   ├── run.py                # Dev server entry point
-│   ├── db.py                 # SQLAlchemy engine management (SQLite/PostgreSQL)
-│   ├── config.py             # Flask configuration (DATABASE_URL, dynamic defaults, ACTUALS_THROUGH)
-│   ├── extensions.py         # Flask extensions
-│   ├── serializers.py        # JSON serialization helpers (NumpyEncoder, safe_json)
-│   ├── auth/                 # JWT authentication (login, SSO config, password reset, welcome emails)
-│   │   ├── routes.py         # Auth routes (login, users, desktop shortcut installer)
-│   │   └── email_utils.py    # SendGrid email sending (welcome emails, password reset)
-│   ├── api/                  # API blueprints
-│   │   ├── dashboard.py      # Dashboard endpoints (KPIs, charts, SSE init-stream)
-│   │   ├── data.py           # Data endpoints (deals, upload-import, export, config)
-│   │   ├── deals.py          # Deal analysis endpoints + Excel downloads
-│   │   ├── financials.py     # Property Financials + One Pager endpoints
-│   │   ├── reports.py        # Report generation endpoints
-│   │   ├── reviews.py        # Review workflow endpoints (status, submit, approve, return, tracking, roles)
-│   │   ├── feedback.py       # Feedback & request tracking endpoints (submit, list, messages, email, webhook)
-│   │   ├── lease_review.py   # Lease review & risk analysis endpoints (DD workflow, document upload, field resolution)
-│   │   ├── prospects.py      # Pipeline prospect CRUD (deals, properties, entities, investors, assumptions)
-│   │   ├── argus.py          # Argus Enterprise import, projection management, COA mapping, forecast preview
-│   │   ├── gl_ia_query.py    # GL / IA Query endpoints (options, run, Excel)
-│   │   └── ...               # Additional route blueprints
-│   └── services/             # Business logic (reuses compute.py, database.py, etc.)
-│       ├── dashboard_service.py  # KPI calculations, NOI pipeline, chart data
-│       ├── data_service.py       # Data loading and caching
-│       ├── data_adapters.py      # Pluggable data source adapters (DB or MRI API)
-│       ├── compute_service.py    # Deal computation cache, ROE/MOIC audit builders, Excel generators
-│       ├── review_service.py     # Review workflow business logic (approval pipeline)
-│       ├── financials_service.py # Property Financials + One Pager data aggregation
-│       ├── feedback_service.py   # Feedback & request tracking (CRUD, email, export)
-│       ├── reports_service.py    # Report builders (projected returns, ROE summary, pref balance detail)
-│       ├── statement_service.py  # THE statement engine — BS, IS, Members' Capital, Cash Flow, SOI for any entity
-│       ├── fs_line_seed.py       # Accounting's own FS vocabulary: 192 accounts, 56 captions, 75 ranked
-│       ├── workpaper_service.py  # Close cycles, packages, steps, exhibits, approvals, deadlines
-│       ├── workpaper_data.py     # Trial balance, GL detail, IA/commitment rollforwards
-│       ├── workpaper_workbench.py # Step → evidence mapping (accounting knowledge, server-side)
-│       ├── workpaper_excel.py    # 17-tab downloadable package; exhibits placed, not attached
-│       ├── lease_review_service.py  # Lease review DD workflow, document upload, extraction, field resolution
-│       ├── lease_terms.py        # Rent PSF, amendment order, rent steps stated as months of the term (pure)
-│       ├── gl_ia_query_service.py # The CFO's GL/IA Spreadsheet Server filters, against our imported tables
-│       ├── valuation_summary_service.py # The two portfolio summary tabs, assembled from vetted figures
-│       ├── prospect_service.py      # Pipeline prospect CRUD, lease review creation, deal evaluation
-│       ├── argus_service.py         # Argus Enterprise import, projection CRUD, forecast generation, NB→AM migration
-│       └── ...
-│
-├── scripts/                  # Azure migration and setup scripts
-│   ├── migrate_to_postgres.py    # Bulk SQLite → PostgreSQL migration
-│   ├── fix_tables.py             # Fix tables with type mismatches
-│   └── azure-complete-setup.sh   # Reference doc of provisioned infrastructure
-│
-└── vue_app/                  # Vue 3 + Vite frontend
-    ├── src/
-    │   ├── api/client.ts     # Axios instance with JWT interceptors
-    │   ├── stores/           # Pinia stores (auth, data, dashboard, deals)
-    │   ├── views/            # Page components (DashboardView, DealAnalysisView, OnePagerView, DataExplorerView, ForgotPasswordView, ResetPasswordView, etc.)
-    │   └── components/       # Shared components (KpiCard, DataTable, ReviewPanel, AppSidebar)
-    ├── vite.config.ts        # Vite config (proxies /api to Flask)
-    └── package.json
+├── *.py              # The engine, at the root: compute, waterfall, metrics, loaders,
+│                     #   models, loans, planned_loans, capital_calls, cash_management,
+│                     #   consolidation, portfolio, reporting, ownership_tree, config,
+│                     #   one_pager, investment_metrics, database, argus_parser
+├── queries/          # The MRI .sql queries, one per imported table
+├── scripts/          # Guardrails (*_check.py), diagnostics, migrations, hooks/
+├── flask_app/        # __init__.py app factory; auth/ (JWT, users, section registry);
+│                     #   api/ route blueprints; services/ reusing the root engine
+├── vue_app/src/      # api/ stores/ views/ components/ router/
+└── Dockerfile        # The runtime image ships NO vue_app/ source
 ```
 
-## Documentation
-
-- **DOCUMENTATION.md** - Complete project documentation (setup, data files, concepts, troubleshooting)
-- **waterfall_setup_rules.txt** - Waterfall step configuration guide for deal modeling team
-- **typename_rules.txt** - Capital pool routing rules based on Typename field
-- **.claude/memory/accounting_workpapers.md** - The workpaper packages + statement engine: data, mapping, workflow, deadlines, the download (Sep 15 2026)
-- **.claude/memory/app_reference.md** - What each app tab displays + AI Assistant tools/endpoints (split out of this file Sep 11 2026)
-- **.claude/memory/treasury.md** - The bank side of the close: PNC import, the three-way tie, the matcher, what `current_available` cannot say (Sep 17 2026)
-- **.claude/memory/rent_roll_exhibit.md** - New business's rent-roll specification, the gaps against it, the IC exhibit's exact formatting, and the five-step build plan (Sep 29 2026)
-- **.claude/memory/expense_reporting.md** - Employee expense reports: accounting's process and files, the design, phase 1 as built (Oct 2 2026)
-- **.claude/memory/intercompany.md** - Due to/from PSC Manager reconciliation from `gl_detail`, basis A.B only; phase 1 built Sep 29 2026, the Pay/JE step is not
+Also in the repo root: **DOCUMENTATION.md** (setup, data files, troubleshooting),
+**waterfall_setup_rules.txt** (waterfall step configuration, for the modeling team) and
+**typename_rules.txt** (capital pool routing by Typename). Everything else is in the
+pointer table at the foot of this file.
 
 ## Running the Application
 
 ### Production (Azure)
-**Desktop shortcut**: Double-click **"Waterfall XIRR"** on the desktop — opens the Azure app in the browser.
 - **URL**: https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io
-- Login: real user accounts. `admin` / `admin` is the LOCAL dev seed only — it
-  returns 401 against Azure (verified Sep 2 2026). Do not script against it.
+  (desktop shortcut "Waterfall XIRR" opens it)
+- Login with a real account. `admin` / `admin` is the LOCAL dev seed only — it returns
+  401 against Azure. Do not script against it.
 
-### Deploying Changes
+### Local Development
+```bash
+.venv\Scripts\activate
+python -m flask_app.run          # API on http://localhost:5000
+cd vue_app && npm run dev        # Frontend on http://localhost:5173
+```
+
+**Refresh `waterfall.db` from production** — it is not in git, so every clone drifts.
+Stop the Flask server first, then in ONE PowerShell terminal:
+```powershell
+$env:DATABASE_URL = (az containerapp secret show -g rg-waterfall-dev -n app-waterfall-dev-v2 --secret-name db-url --query value -o tsv); .venv\Scripts\python scripts\pull_production_db.py; Remove-Item Env:DATABASE_URL
+```
+Rows are replaced and the local schema kept; local logins are not copied; the previous
+file is backed up and swapped only when every row count matches. The cautions that
+matter — the date format that silently broke a "through 6/30" filter, `--repair-dates`,
+`--no-files`, and why the Export Database button is NOT a substitute — are in
+`.claude/memory/azure_deployment.md`.
+
+### Azure Infrastructure
+- **Container App**: app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers) —
+  **Registry**: acrwaterfalldev.azurecr.io — **Resource group**: rg-waterfall-dev (eastus)
+- **PostgreSQL**: psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
+- Logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev-v2 --type console --tail 50`
+- **The subscription is ThriveCSP-Dev-01**, not the default active one; the wrong one
+  fails as `ResourceGroupNotFound`.
+- **Caching**: `index.html` is served `Cache-Control: no-cache`, so a browser picks up a
+  deploy; hashed assets (`/assets/*`) are cached a year `immutable`, rehashed per build.
+
+## Deploying Changes
 
 **BEFORE DEPLOYING ANY COMMIT: review it for symptom repair, and tell Jim first.**
-(Jim's standing instruction, Sep 1 2026, after `50695d9` shipped an override that
-zeroed correct data on 12 deals.)
+(Jim's standing instruction, after a commit shipped an override that zeroed correct
+data on 12 deals.)
 
 Fix problems, not symptoms. Read the diff and ask what the commit is actually doing:
 
 - Does it **suppress, zero, blank, force or special-case** a value rather than correct
   the computation that produced it? A value overridden downstream is still computed
   wrong upstream, and every other consumer keeps reading the wrong one.
-- Is the **trigger a proxy** for the thing it claims to detect? (`50695d9` keyed off
-  the presence of a `2015-12-31` row in MRI's export — an export artifact — to infer
-  "this deal has no baseline".)
+- Is the **trigger a proxy** for the thing it claims to detect?
 - Does the stated rationale **hold for every deal it touches**? Enumerate the affected
-  rows from live data and check. `50695d9`'s rationale held for 2 of the 12 it acted on.
-- Does it use a **sentinel value** where the answer is "unknown"? Return `None`, never
-  `0` — a `0` that means "no data" is indistinguishable from a real zero to every
-  consumer, and only renders as a dash because `fmtMil()` happens to treat `0` as `—`.
+  rows from live data and check.
+- Does it use a **sentinel value** where the answer is "unknown"? A `0` meaning "no
+  data" only renders as a dash because `fmtMil()` happens to treat `0` as `—`.
 - Is it a **per-deal hardcode** (a vcode in a constant)? Those are always symptom
   repairs, however well documented.
 
@@ -168,11 +117,11 @@ premise. Both are required. When a commit is a symptom repair — even a well-re
 well-documented one — say so to Jim, with the affected deals and figures, and get his
 call BEFORE building the image. Deploy is not the place to discover the question.
 
-#### Pre-flight — run this BEFORE `az acr build`, every time
+### Pre-flight — run this BEFORE `az acr build`, every time
 
-Step 0 below is not "check you are on the right commit". It is **establish what is
-actually shipping, and review all of it.** These four steps are the deploy; the `az`
-commands are just what you type afterwards.
+This is not "check you are on the right commit". It is **establish what is actually
+shipping, and review all of it.** These four steps are the deploy; the `az` commands
+are just what you type afterwards.
 
 ```bash
 # P1. What is live RIGHT NOW? The image tag is the SHA, so this answers it.
@@ -191,154 +140,105 @@ git status --porcelain                          # must be empty
 git show <sha>                                  # for each one
 ```
 
-**P2 is the step that gets skipped, and skipping it is how unreviewed code ships.**
-On `v429` (Sep 11 2026) the request was "deploy 33a4bf5". Local main was two commits
-behind origin, and the live image was five behind that — so **seven commits shipped, not
-one**, including three of Charlene's investor-facing One Pager print commits that the
-previous handoff had explicitly flagged as needing this review first. Only the two-commit
-local span was reviewed. Nothing broke, but nobody had looked.
-
-A commit is not exempt because someone else wrote it, because it is "only" a docs or
+**P2 is the step that gets skipped, and skipping it is how unreviewed code ships.** A
+commit is not exempt because someone else wrote it, because it is "only" a docs or
 script commit, or because it was already on main. If P2 lists it, it ships, and you own
-reviewing it.
+reviewing it. **If P2 lists anything you did not expect, stop and reconcile before
+building** — that is the signal, not a formality. Then: symptom repair found → tell Jim,
+with affected deals and figures, and get his call. Clean → build.
 
-**If P2 lists anything you did not expect, stop and reconcile before building.** That is
-the signal, not a formality.
+**Who can deploy**: Jim, and Charlene (`cbui@peaceablestreet.com`) — Contributor scoped
+to the registry `acrwaterfalldev` and the container app `app-waterfall-dev-v2` only, not
+the resource group. `AcrPush` is NOT sufficient for `az acr build`: it grants only
+`pull/read` and `push/write`, while the build needs `scheduleRun/action` and
+`listBuildSourceUploadUrl/action`. All deploys use Azure CLI;
+`.github/workflows/deploy.yml` is **deliberately not wired up** — it triggers on push to
+main (shipping without this pre-flight) and deploys `:latest` (untraceable).
 
-Then: symptom repair found → tell Jim, with affected deals and figures, and get his call.
-Clean → build.
+### Build, lock, deploy
 
-All deploys use Azure CLI (GitHub Actions secrets are not configured). `.github/workflows/deploy.yml`
-exists but is **deliberately not wired up** — it triggers on push to main, which would ship
-code without this pre-flight, and it deploys `:latest`, which is untraceable. Do not enable it
-without changing both.
-
-**Who can deploy**: Jim, and Charlene (`cbui@peaceablestreet.com`) as of Sep 11 2026 —
-Contributor scoped to the registry `acrwaterfalldev` and the container app
-`app-waterfall-dev-v2` only, not the resource group. Note `AcrPush` is NOT sufficient for
-`az acr build`: it grants only `pull/read` and `push/write`, while the build needs
-`scheduleRun/action` and `listBuildSourceUploadUrl/action`.
-
-**Tag every image with the commit SHA it was built from, and deploy that tag — never `:latest`.**
-`:latest` is mutable, so a revision pointing at it cannot be traced back to a commit once the
-next build overwrites the tag. Deploy the SHA tag and the running revision names its own source.
+**Tag every image with the commit SHA it was built from, and deploy that tag — never
+`:latest`.** `:latest` is mutable, so a revision pointing at it cannot be traced back
+to a commit once the next build overwrites the tag.
 
 ```bash
 # 0. Pre-flight P1-P4 above is done and clean. Do not start here.
-#    (P3 already proved HEAD is the target and the tree is clean — ACR uploads the
-#    WORKING TREE, not a git ref, so an unclean tree ships uncommitted work.)
 
 # 1. Build in ACR, tagged with the commit SHA (--no-logs avoids a unicode crash)
 SHA=$(git rev-parse --short HEAD)
 az acr build --registry acrwaterfalldev -g rg-waterfall-dev --image waterfall-xirr:$SHA --image waterfall-xirr:latest --no-logs .
 
-# 2. Lock the SHA tag so a later build cannot overwrite it (delete stays enabled for cleanup)
+# 2. GATE: the tag must exist and the run must have succeeded for THIS SHA.
+az acr repository show -n acrwaterfalldev --image waterfall-xirr:$SHA
+az acr task show-run --registry acrwaterfalldev --run-id <id> --query "{status:status,start:startTime,finish:finishTime}" -o tsv
+
+# 3. Lock the SHA tag so a later build cannot overwrite it (delete stays enabled)
 az acr repository update -n acrwaterfalldev --image waterfall-xirr:$SHA --write-enabled false
 
-# 3. Deploy the SHA tag (incrementing suffix forces a new revision)
-az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:$SHA --revision-suffix v350
+# 4. RE-RUN P1. Then deploy the SHA tag; the suffix forces a new revision.
+az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image acrwaterfalldev.azurecr.io/waterfall-xirr:$SHA --revision-suffix <next-suffix>
 ```
 
-**RE-RUN P1 IMMEDIATELY BEFORE `az containerapp update`, not only before the build.**
-On Oct 1 2026 Charlene deployed `v549` = `76c786c` eight minutes before the
-section-access build started and after its P1 -- from a clone she had not pushed, so
-`git fetch` could not have shown it. Deploying the new image would have rolled her
-work back; it was caught only because the suffix `v549` was already taken. If the
-active image is no longer the one P2 was computed against, STOP: get it pushed,
-merge it, and run the pre-flight again.
+Pick the suffix by bumping the HIGHEST existing one — reusing one is rejected, and an
+INACTIVE revision still holds its name, so list with `--all`. **Re-run P1 immediately
+before `az containerapp update`, not only before the build**: if the active image is no
+longer the one P2 was computed against, STOP, get the other work pushed and merged, and
+run the pre-flight again.
 
-Pick the revision suffix by bumping the HIGHEST existing one — reusing a suffix is
-rejected, and an INACTIVE revision still holds its name, so list with `--all`
-(`az containerapp revision list ... --all`). This same query answers "what commit is
-live?", since the image tag is the SHA:
-```bash
-az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --query "[?properties.active].{name:name,image:properties.template.containers[0].image}" -o table
-```
+**Notes**: the ACR build agent has transient failures (5-second runs) — retry, and
+confirm the run actually built rather than failing fast. To pin an already-deployed
+`:latest` revision after the fact, `az acr import` its digest under a SHA tag — same
+digest, so the content is provably identical.
 
-**Notes**:
-- ACR build agent has transient failures (5-second runs) — retry if it fails. Confirm the run actually built rather than failing fast: `az acr task show-run --registry acrwaterfalldev --run-id <id> --query "{status:status,start:startTime,finish:finishTime}" -o tsv`
-- Use `--no-logs` to avoid Azure CLI unicode crash (`✓` character).
-- To pin an already-deployed `:latest` revision after the fact, retag its digest without rebuilding and redeploy that tag — same digest, so the content is provably identical: `az acr import -n acrwaterfalldev --source acrwaterfalldev.azurecr.io/waterfall-xirr@sha256:<digest> --image waterfall-xirr:<sha>`
-- **Deploy history** — every revision back to `v349`, with what it shipped and what
-  broke, is in `.claude/memory/deploy_history.md`. **Read it before assuming a
-  revision shipped what its SHA suggests** — several did not. You do not need it to
-  answer "what is live?": the image tag IS the commit SHA, so the P1 query above
-  answers that directly.
+### Lessons
 
-### Local Development
-```bash
-# Activate virtual environment
-.venv\Scripts\activate
+Each is a rule that cost something to learn. The revision in brackets points into
+`.claude/memory/deploy_history.md`, where the full post-mortem is.
 
-# Run Flask API backend
-python -m flask_app.run          # API on http://localhost:5000
+1. Compute the P2 span against the LIVE image, not local HEAD — seven commits shipped
+   where one was asked for and only two were reviewed (`v429`).
+2. Re-run P1 immediately before `containerapp update`, not only before the build; a
+   colleague's deploy between the two would have been rolled back (`v549`, `v560`).
+3. Build only from a clean worktree nothing else is using, and gate `containerapp
+   update` on the tag existing and the ACR run succeeding for that SHA — a background
+   job touching the local SQLite made the upload fail, the tag was never created, and
+   the chained update ran to a tag that did not exist (`v556`).
+4. `activeRevisionsMode` is **Single**, so traffic follows the LATEST revision: never
+   deactivate it to back out, and a traffic split does not apply. **Rollback is rolling
+   FORWARD** — deploy the last good SHA tag under a new suffix (`v556r`).
+5. Pin dependency MAJORS (SQLAlchemy `<2.1`, pandas `<3.1`): an unpinned minor release
+   took every worker down on boot (`v524`). And **run guardrails inside the container** —
+   production ran pandas 3 while local ran 2.3 for months, so a suite can be green
+   locally on a shape the database cannot deliver (`v555`, `v550`).
+6. Verify a UI change against the SERVED bundle by resolving the lazy chunk from the
+   ENTRY bundle. `index.html` is a ~551-byte SPA shell referencing no chunk, so grepping
+   it proves nothing in either direction (`v523`, `v527`).
+7. Know which guardrails SKIP in the container and why — the image ships no `vue_app/`,
+   and gitignored fixtures are absent. **Skip is not pass**, and a check that crashes
+   instead of skipping kills the run after the useful sections passed (`v527`).
+8. ACR uploads the WORKING TREE, not a git ref — an unclean tree ships uncommitted work
+   (P3). A data change that is NOT in git (an MRI table refresh) is correspondingly
+   **not undone by a rollback**; say so when one accompanies a deploy (`v549`).
+9. A refactor touching a shared engine is proved behaviour-preserving by running the OLD
+   module beside the new one over real data and diffing the output (`v505`, `v548`).
+   Measure a rule's population on live data BEFORE shipping it and report what CHANGED,
+   including when the change was none — a rule that is right on the deal you looked at
+   has still not been tested (`v544`).
 
-# Run Vue frontend (separate terminal)
-cd vue_app && npm run dev        # Frontend on http://localhost:5173
-# Default login: admin / admin
-```
-
-### Refreshing local data from production
-`waterfall.db` is NOT in git, so every clone holds its own copy, current only as of
-its owner's last load -- Jim's and Charlene's are separate and drift independently.
-`scripts/pull_production_db.py` copies production's PostgreSQL into it (Oct 5 2026).
-
-Stop the local Flask server first (Windows will not replace an open file), then in
-ONE PowerShell terminal -- each tab has its own variables, which is how the first
-attempt failed -- paste this single line:
-
-```powershell
-$env:DATABASE_URL = (az containerapp secret show -g rg-waterfall-dev -n app-waterfall-dev-v2 --secret-name db-url --query value -o tsv); .venv\Scripts\python scripts\pull_production_db.py; Remove-Item Env:DATABASE_URL
-```
-
-- **The password stays in your terminal.** Read from `DATABASE_URL`, never printed.
-  Needs an `az login` with rights to read the container app's secrets, and this
-  machine's IP allowed on `psql-waterfall-dev` (Networking) if the connection times out.
-- **Rows are replaced, the local schema is kept** -- recreating tables from
-  PostgreSQL would lose SQLite's `INTEGER PRIMARY KEY AUTOINCREMENT`, and the next
-  locally inserted row would get a NULL id. New columns are added, new tables created.
-- **Local logins are kept**: `users`, `password_reset_tokens` and
-  `user_section_access` are not copied.
-- **Nothing is lost**: the previous file stays as `waterfall.db.bak-<timestamp>`, and
-  the new one is swapped in only when every table's row count matches production.
-- **Dates are written the way SQLite holds them here** -- `2026-06-30`, or a time
-  after a SPACE. SQLite compares dates as TEXT; the first version wrote
-  `2026-06-30T00:00:00`, which sorts after `2026-06-30 23:59:59`, and 879 IA rows
-  dated 6/30 silently fell outside a "through 6/30" filter. `--repair-dates` fixes a
-  file written that way, in place.
-- `--no-files` leaves stored PDFs and images empty (the full copy is ~1.4 GB).
-- **The Database Tools "Export Database" button is NOT a substitute**: it reads a
-  SQLite file, so on Azure it exports the container's empty local file, not
-  PostgreSQL. See `open_items.md`.
-
-### Azure Infrastructure
-- **Container App**: app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers)
-- **PostgreSQL**: psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
-- **Container Registry**: acrwaterfalldev.azurecr.io
-- **Resource Group**: rg-waterfall-dev (eastus)
-- View logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev-v2 --type console --tail 50`
-
-### Caching
-- `index.html` served with `Cache-Control: no-cache` — browser always checks for new version on deploy
-- Hashed assets (`/assets/*`) cached for 1 year with `immutable` — Vite generates new hashes on each build
-
-## Key Concepts
+## Standing rules
 
 ### ONE NUMBER, ONE ENGINE
 
-**Jim's standing instruction, Sep 18 2026:** "We should not have conflicting
-calculation results. It will cause doubt in the accuracy of the entire work. Make
-sure the vetted calculation engines are used consistently and we do not have
-separate calculation engines for the same number. The only differences in results
-should come from changes in time frames or projections that we are running through
-the engines. The calculations should be reliable."
+**Jim's standing instruction:** "We should not have conflicting calculation results. It
+will cause doubt in the accuracy of the entire work. Make sure the vetted calculation
+engines are used consistently and we do not have separate calculation engines for the
+same number. The only differences in results should come from changes in time frames or
+projections that we are running through the engines."
 
-Before writing any calculation, find out whether the app already answers it. If it
-does, **call that engine** — do not re-derive, do not "simplify for this screen", do
-not write a fallback that computes it a cheaper way. A date, a horizon or a scenario
-is a parameter; the arithmetic is not.
-
-**The vetted engines, and what they own:**
+Before writing any calculation, find out whether the app already answers it. If it does,
+**call that engine** — do not re-derive, do not "simplify for this screen", do not write
+a cheaper fallback. A date, a horizon or a scenario is a parameter; the arithmetic is
+not, and **a "temporary estimate" is a second engine.**
 
 | Number | Engine | Reached by |
 |---|---|---|
@@ -346,103 +246,117 @@ is a parameter; the arithmetic is not.
 | Deal projection, waterfall, XIRR/ROE/MOIC | `compute.compute_deal_analysis` | `compute_service.get_cached_deal_result` |
 | NAV, net proceeds | `valuation_nav_service.compute_nav` | stored in `valuation_nav_results` |
 | Modeled debt service | `valuation_debt_service.monthly_schedule` | Budget/Valuation columns |
+| Committed pref | `committed_pref.resolve_committed_pref` | One Pager cap stack and PE block, Investment Metrics |
 | Statements | `statement_service.build` + siblings | workpapers, print, Excel |
 | Exchange and reference rates (USD/CAD, SOFR, CORRA, EFFR...) | `market_rates_service.rate_on` (the `market_rates` table, from Bank of Canada / NY Fed) | PE exposure; NOT yet Investment Metrics, which still carries `CAD_TO_USD = 0.73` (open_items 19.2) |
 | Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down) | PE exposure |
 | Unrealized gain/loss and realized losses per holding | `pe_exposure_service.noncash_by_holding` (ia_transactions -- the app's `accounting` feed has no non-cash rows) | PE exposure |
 
-**Why this is not a style preference.** "Accrued pref" had two implementations in
-ONE FILE. `_compute_accrued_pref` (ROE Summary, Committee Summary) and
-`build_pref_balance_detail` (everything else) walked the same ledger at the same
-rate and disagreed on **34 of the 68 deals both could price**, with the ROE path
-**$633,807.54 low** in aggregate at 2025-12-31. The cause: it accrued `cur -> 31 Dec`,
-compounded, then resumed at `1 Jan`, so **31 Dec -> 1 Jan was never accrued** — one
-lost day per year end, always short, worse the older the deal. On P0000031 it gave
-26,489.03 where Jim's own workbook says 37,394.57.
+**A second implementation is most dangerous when it is NEARLY right** — nothing on
+screen and nothing in the logs distinguishes it from the answer. **When you find a
+duplicate, measure both across every deal before changing either**; which is right is a
+question for the data, not for whichever is newer. Report the count that disagree and
+the aggregate delta to Jim. Guardrail: `scripts/one_engine_per_number_check.py` — add a
+row above and a check there whenever a new engine takes ownership of a number.
 
-It never looked wrong. A slightly low accrual is still a plausible accrual. **That
-is the whole danger: a second implementation is most dangerous when it is nearly
-right**, because nothing on screen and nothing in the logs distinguishes it from
-the answer.
+### The rest
 
-**A "temporary estimate" is a second engine.** The Committee tab's Net Proceeds
-column fell back to `value - debt` when the NAV had not been run — scaffolding from
-before the NAV engine existed, left in after it shipped. The NAV walk runs the
-deal's waterfall; value-less-debt ignores it. One column, two calculations, nothing
-saying which. Removed: unavailable now reads as unavailable.
+- **A NEW SECTION GOES IN THE REGISTRY.** Adding a sidebar section means adding it to
+  `SECTIONS` in `flask_app/auth/sections.py` and gating its block on
+  `auth.hasSection('<key>')`; it then appears in Settings > User Management, ticked for
+  everyone. Every new Vue route, `/api` route and assistant tool must be assigned too.
+  `scripts/section_access_check.py` and the pre-commit hook fail until they are.
+- **`PROTECTED_TABLES` is for a table the APP writes and holds the only copy of.**
+  Protection without a write path is a LOCKOUT, not a safeguard — it froze a supplement
+  table whose only source was a CSV, and for such a table `replace` is the designed
+  refresh.
+- **`None`, never `0`, for "unknown"** — a sentinel zero is indistinguishable from a
+  real zero to every consumer downstream. Likewise `None`, not `False`, for "cannot be
+  determined" as against "does not tie".
+- **A fix ships with a guardrail** in `scripts/*_check.py`, proved NON-VACUOUS by
+  re-injecting the defect and watching it fail. A check that passes on the broken code
+  is worse than none.
+- **Assert in BOTH directions. A rule tested only in the refusing direction is
+  satisfied by locking everyone out**; one tested only in the admitting direction is
+  satisfied by admitting everything.
+- **The engine flags; it never drops.** Report what was excluded, suppressed, truncated
+  or combined, and why — silent truncation reads as "covered everything". And **visibly
+  missing beats silently wrong**: never guess a value onto a report.
+- **Reject what cannot be true; warn what is merely odd.** Refuse an impossible input
+  with the reason named; save an implausible one with a warning beside it.
+- **`roles_exactly`, not `role_required`, when two level-1 roles must be separated.**
+  `role_required` compares LEVELS, and `analyst`, `accountant`, `accounting_manager`
+  and `cfo` are all level 1 — so any level gate naming one admits all four. **The screen
+  must agree with the server**, and has been wrong both ways: gate the Vue on the same
+  list the Python uses, with a guardrail comparing them by name.
 
-**Guardrail: `scripts/one_engine_per_number_check.py`.** It asserts the deleted
-engine cannot return, that every consumer reaches the identical figure, and that
-only the as-of date moves the answer. Add a row to the table above and a check here
-whenever a new engine takes ownership of a number.
+## Domain invariants
 
-**When you find a duplicate: measure both across every deal before changing either.**
-Which one is right is a question for the data, not for whichever is newer. Report the
-count that disagree and the aggregate delta to Jim, and say which figures of his the
-candidate reproduces.
+Full detail — column names, fallbacks, the reason each rule has the shape it has — is
+in `.claude/memory/engine_reference.md`.
 
+- **Acquisition date** is derived from the accounting feed: `min(EffectiveDate)` per
+  `InvestmentID`, overwritten onto `inv` at load time, because MRI's own field may not
+  be the true closing date. Parse dates before `groupby().min()` — string comparison is
+  alphabetical, not chronological. No accounting activity → keep MRI's.
+- **Sale date priority**: (1) UI override, (2) `event_dates` projected disposition
+  closing, (3) horizon end / max loan maturity. The `Sale_Date` COLUMN is never
+  consulted; `MRI_COLUMNS` excludes it, `Sale_Status`, `InvestmentID` and
+  `Portfolio_Name` so an MRI refresh preserves them.
+- **Waterfall types**: CF = operating distributions, does NOT reduce capital
+  outstanding. Capital = refi/sale proceeds, DOES reduce it. **Preferred returns**
+  accrue daily, Act/365 Fixed, compounding annually on 12/31 with a 45-day grace
+  period, tracked per investor via `InvestorState`.
+- **Capital calls are app-entered only** and `capital_calls` is in `PROTECTED_TABLES`: a
+  CSV import runs `to_sql(if_exists="replace")`, which DROPS the table, and one upload
+  destroyed every call typed into Deal Analysis. No MRI feed is interrupted — the table
+  was never in `QUERY_REGISTRY`.
+- **The actuals/forecast boundary is ALWAYS enforced**, set or not (it defaults to Dec
+  31 of `start_year - 1`). XIRR cash flows come from accounting before it and from the
+  waterfall after it, never both. It is in the cache key.
+- **ISBS formats differ by `vSource` and mixing them is silent**: Interim IS (actuals)
+  and Projected IS (underwriting) are YTD CUMULATIVE; Budget IS and Valuation IS are
+  PERIODIC monthly; Interim BS is current balances.
+- **ISBS lives in six split tables** by `vSource`, assembled into `isbs_raw` by
+  `_assemble_isbs()`; every consumer still filters on `vSource`. **ISBS is a JOURNAL** —
+  one key legitimately carries many rows that consumers SUM, so never `drop_duplicates`
+  it. Where an app supplement shares a key with MRI the app wins, written as "remove the
+  MRI rows the supplement covers".
+- **Forecast priority**: `forecast_feed` > ISBS Valuation IS > ISBS Projected IS, per
+  deal, assembled by `_assemble_forecasts()`.
+- **Sign conventions**: negative = contribution, positive = distribution; MRI stores
+  revenue as a negative (credit) and tax abatements as a negative that is forced
+  POSITIVE. Rates are decimals (0.08 = 8%); use Python `date` objects.
+- **Account classifications** (`config.py`): revenue 4xxx, expense 5xxx;
+  `INTEREST_ACCTS` {5190, 7030}; `PRINCIPAL_ACCTS` {7060}; `CAPEX_ACCTS` {7050};
+  `TAX_ABATEMENT_ACCTS` {7070}; `OTHER_EXCLUDED_ACCTS` {4050, 5120, 5130, 5195, 5210,
+  5220, 5400, 7065}; `DEBT_BS_ACCTS` {2150, 2152, 2210}; UW PE 7071 (distributions) and
+  7073 (capital events, sign-bearing). `ALL_EXCLUDED` does NOT include the tax
+  abatement — it has its own sign handling.
+- **Entity IDs are uppercased at load time** (`.str.strip().str.upper()`) in
+  `loaders.py`, `data_service.py` and `ownership_tree.py`. MRI occasionally sends mixed
+  case, which silently dropped journal entries from groupby and filter operations.
+  Normalize at the lowest layer so every consumer agrees. **Paid-off loans**
+  (`vDateType = "Paid Off"`) are likewise dropped at the DATA layer, so any loan row
+  still present is an active facility.
 
-### Engine detail
-Moved to `.claude/memory/engine_reference.md` — acquisition and sale dates,
-waterfall types, pref accrual, capital calls, tax abatements, paid-off loans,
-balloon payoff, sale overrides, parcel sales, cap rate, prospective loans, the
-ISBS formats and split tables, At Close, economic occupancy, forecast assembly
-and the actuals cutoff. CLAUDE.md keeps the one-line rule for each.
+## Where things are written down
 
-
-### Valuation Budget Comparison
-Moved to `.claude/memory/valuation_budget.md`.
-
-
-### Accounting Workpapers, the Statement Engine, and who may edit the section
-Moved to `.claude/memory/accounting_workpapers.md`.
-
-
-### Section access by username
-Moved to `.claude/memory/section_access.md`.
-
-
-### Treasury
-Moved to `.claude/memory/treasury.md`.
-
-
-### GL / IA Query
-Moved to `.claude/memory/gl_ia_query.md`.
-
-
-### Shared UI patterns
-Moved to `.claude/memory/ui_patterns.md`.
-
-
-### Lease review
-Moved to `.claude/memory/lease_review.md`.
-
-
-
-
-## Sidebar Navigation
-Moved to `.claude/memory/app_reference.md`, beside what each tab displays.
-
-
-## Application Tabs & AI Assistant
-
-Moved to `.claude/memory/app_reference.md` (Sep 11 2026) — what every tab displays,
-section by section, plus the embedded AI Assistant's tool table and endpoints. It was
-half of this file's bytes and loaded into every session regardless of whether the work
-touched the UI. Read it when you need to know what a view shows or which endpoint backs
-it; the sidebar map above is kept here as a quick orientation.
-
-## Key Functions
-Moved to `.claude/memory/function_index.md`.
-
-
-## Account Classifications
-Moved to `.claude/memory/engine_reference.md`.
-
-
-## Conventions
-
-- Cashflow signs: negative = contribution, positive = distribution
-- Rates as decimals (0.08 = 8%)
-- Use Python date objects for dates
-- **InvestorID / InvestmentID case normalization**: All entity IDs are uppercased at data load time (`.str.strip().str.upper()`) in `loaders.py`, `data_service.py`, and `ownership_tree.py`. MRI accounting data occasionally has mixed-case entries (e.g. "Centre" instead of "CENTRE") which caused journal entries to be silently dropped from groupby/filter operations. Normalization happens at the lowest layer so all downstream consumers get consistent IDs.
+| Topic | File (`.claude/memory/`) |
+|---|---|
+| **The live work queue** | `open_items.md` |
+| Per-revision deploy post-mortems, and the revision index | `deploy_history.md` |
+| Engine detail: dates, pref, capital calls, abatements, loans, parcel sales, sale overrides, ISBS, At Close, occupancy, forecasts, the cutoff, account classes | `engine_reference.md` |
+| Which function answers which question — read before writing any calculation | `function_index.md` |
+| What each app tab displays, the AI assistant's tools, the sidebar map | `app_reference.md` |
+| Accounting workpapers, the statement engine, who may edit the section | `accounting_workpapers.md` |
+| Treasury — PNC import, the three-way tie, the matcher, the JE files | `treasury.md` |
+| Intercompany — Due to/from PSC Manager | `intercompany.md` |
+| Employee expense reports | `expense_reporting.md` |
+| GL / IA Query — the CFO's filters | `gl_ia_query.md` |
+| Section access by username | `section_access.md` |
+| Valuation Budget Review — line mapping, the levered columns | `valuation_budget.md` |
+| Lease review — extraction, terms, validation, recoveries | `lease_review.md` |
+| Rent roll specification and the IC exhibit | `rent_roll_exhibit.md` |
+| Shared UI patterns | `ui_patterns.md` |
+| This file as it read before the Oct 2026 compaction, for the prose that was cut | `claude_md_prose_archive.md` |

@@ -1422,6 +1422,11 @@ entry pointing at it. Nothing here was summarised.
     NOT FIXED HERE, and live: `DEBT_FREE_DEALS` blanks Pegasus's
     `debt_display` while `loan_subtotal()` sums the raw `debt`, so $25.2M sits
     inside Portfolio Totals with no row accounting for it. `open_items.md` §12.
+    [SUPERSEDED BY `v544` -- read that entry, not this sentence. The constant is
+    REMOVED, not emptied; the N/A display is derived from the row's own data; and
+    `debt` and `debt_display` are both bound through one `debt_field()` returning
+    `None`, so the figure the subtotal sums and the figure the cell prints are
+    decided once. `open_items.md` §12 is closed. Annotated Oct 5 2026.]
     Build `cam0`, 2m27s, digest `sha256:c9af915deee3c62a`. Deployed at 100%;
     v526 deactivated and its tag intact for rollback.)
   - `v526` = `6bf26b6` (BUDGET REVIEW: the third column can be UNDERWRITING, the

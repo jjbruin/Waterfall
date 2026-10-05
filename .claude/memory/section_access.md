@@ -7,7 +7,13 @@ whose `--static` half the pre-commit hook runs.
 ## Section access by username
 
 ### Section access by username
-Built Oct 1 2026, NOT deployed. Registry: `flask_app/auth/sections.py`.
+Built Oct 1 2026. **SHIPPED as `v552` = `11c3455`, Oct 2 2026** — the "NOT deployed"
+this line used to carry was true for one day and then stale. (It was HELD a day:
+`b93dd5f` was imaged Oct 1, but `v549`/`v550` had been deployed from an unpushed clone
+in between, so shipping it would have rolled that back. Re-running pre-flight P1 before
+the update caught it; `origin/main` was then merged in, giving `11c3455`.) Verified on
+production: `user_section_access` had 0 rows at deploy, so nobody's access changed.
+Registry: `flask_app/auth/sections.py`.
 
 Jim: access is granted per SIDEBAR SECTION, by username, from checkboxes in
 Settings > User Management that default to ticked. Users without Accounting
@@ -57,5 +63,8 @@ assistant is staged. **It caught its first case before it shipped:** merging
 screens and `/api/investment-metrics` endpoints belonged to no section. They are
 Asset Management's (`b93dd5f`).
 
-**Deploy status (Oct 1 2026): built and imaged as `b93dd5f`, NOT deployed** --
-see the top of `.claude/memory/session_handoff.md`. Delete this line when it ships.
+**Deploy status: LIVE.** This line used to read "built and imaged as `b93dd5f`, NOT
+deployed" and said to delete it when it shipped. It shipped the next day as `v552` =
+`11c3455` and the line sat here stale, which is the exact failure the date-stamp rule
+at the top of CLAUDE.md exists to prevent. Corrected Oct 5 2026; see the header above
+and the `v552` entry in `deploy_history.md`.
