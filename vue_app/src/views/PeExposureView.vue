@@ -11,6 +11,7 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import api from '@/api/client'
+import PeAllocationOverrides from '@/components/reports/PeAllocationOverrides.vue'
 
 defineProps<{ embedded?: boolean }>()
 
@@ -170,6 +171,8 @@ onMounted(async () => {
                   <span v-if="r.currency !== 'USD'" class="tag"
                         :title="r.fx ? `Converted from ${r.currency} at ${r.fx.rate.toFixed(4)} (${r.fx.date})` : 'No rate stored'">{{ r.currency }}</span>
                   <span v-if="r.problems.length" class="tag warn" :title="r.problems.join('; ')">!</span>
+                  <span v-if="r.overrides?.length" class="tag"
+                        :title="r.overrides.map((o: any) => `${o.entity} from ${o.effective_date}: ${o.reason}`).join('; ')">override</span>
                 </td>
                 <td class="muted">{{ r.holder }}</td>
                 <td v-for="c in lead" :key="c.key" class="num" :class="{ strong: c.key === amountKey }">
@@ -185,6 +188,7 @@ onMounted(async () => {
                   <table class="mini">
                     <tr v-for="(rt, i) in r.routes" :key="i">
                       <td>{{ rt.path.join(' › ') }}</td><td class="num">{{ pct(rt.share) }}</td><td>{{ rt.group }}</td>
+                      <td class="muted">{{ (rt.overrides || []).map((o: any) => `${o.entity}: accounting's split from ${o.effective_date}`).join('; ') }}</td>
                     </tr>
                   </table>
                   <div v-if="r.problems.length" class="warn-text">{{ r.problems.join('; ') }}</div>
@@ -248,6 +252,7 @@ onMounted(async () => {
         <div class="notes-title">Notes</div>
         <ul><li v-for="(n, i) in report.notes" :key="i">{{ n }}</li></ul>
       </div>
+      <PeAllocationOverrides :as-of="report.as_of" @changed="load" />
     </template>
   </div>
 </template>

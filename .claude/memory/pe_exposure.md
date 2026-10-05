@@ -38,3 +38,44 @@ become references to our MRI copy. `pe_exposure_service.py`, `PeExposureView.vue
 - **IA is cut on TRANSACTION date**: 1,767 non-cash rows carry no Effective Date.
 - **Live** is any date; Future Funding alone answers by quarter, and says so.
 - Guardrail `scripts/pe_exposure_check.py` (28).
+
+### Accounting's allocation overrides (built Oct 5 2026, NOT deployed)
+**Status:** on `feat/pe-allocation-overrides`. Delete this line when it ships.
+
+Accounting's review of the report raised three structures where MRI's ENTITY-level
+commitment ratios misstate who funded ONE investment:
+
+| Investment | Entity | Why |
+|---|---|---|
+| BRNERD | PPIBPA and INVBPS | Restructured mid-hold; the ratios were modified and the commitments are not yet fully funded |
+| JBFAIR | PSC3 | DCXVIA/DCXVIB opted out of it and their initial commitment was returned |
+| NOTTNV | PSC3 | An increase funded by all except DCXVIA/DCXVIB; OWPSC funded their share |
+
+The rules (accounting's answers):
+- **Entered as AMOUNTS funded.** The share is amount / total.
+- **Applies on the effective date and after.** The latest set on or before the date wins.
+- **One entity, one investment.** The walk returns to commitments above that entity.
+- **Never deleted.** Removing a set marks it removed and keeps the record.
+
+`allocation_override_service.py` stores the sets (`ownership_overrides` and
+`_lines`, both PROTECTED). `ownership_chain_service.group_shares(..., investment=)`
+applies them, so it stays the one engine. Every route through an override names it,
+and so do the row, a report note and the workbook's routes sheet.
+
+Refused, with the reason:
+- an entity not in the investment's chain on the effective date (it would change
+  nothing);
+- an entity the report already stops at;
+- negative amounts, or amounts that total zero;
+- an investor named twice;
+- no reason given;
+- a second set on the same date.
+
+An investor MRI doesn't carry for that entity is saved with a warning.
+
+Writes are `has_accounting_authority`; reads are open to the report's users.
+Guardrail `scripts/allocation_override_check.py` (38 checks). It fails on each
+injected defect: `ignore` (10 failures), `nodate` (7), `global` (1).
+
+**Accounting enters the actual sets**: they have the funded amounts. Nothing was
+entered on their behalf.

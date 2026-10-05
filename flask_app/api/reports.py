@@ -394,3 +394,74 @@ def pe_exposure_excel():
         as_attachment=True,
         download_name=f"PSC_PE_Exposure_{report['as_of']}.xlsx",
     )
+
+
+# ── Accounting's allocation overrides (Oct 5 2026) ────────────────────
+# Reads are the report's: anyone who can open Reports sees what overrides the
+# split, because the figures they read depend on it. WRITES are accounting's --
+# the admin username, or an accounting role with the Accounting section
+# (has_accounting_authority). The admin ROLE alone does not qualify.
+
+def _accounting_actor():
+    from flask import g
+    from flask_app.auth.sections import has_accounting_authority
+    u = getattr(g, "current_user", None) or {}
+    return u if has_accounting_authority(u) else None
+
+
+@reports_bp.route("/pe-exposure/overrides", methods=["GET"])
+@login_required
+def pe_overrides():
+    from flask_app.services import allocation_override_service as aos
+    return jsonify({"overrides": aos.list_overrides(),
+                    "can_edit": _accounting_actor() is not None})
+
+
+@reports_bp.route("/pe-exposure/overrides/owners", methods=["GET"])
+@login_required
+def pe_override_owners():
+    """An entity's investors in MRI on a date, to start an override from."""
+    from datetime import date as dt_date
+    from flask_app.services import ownership_chain_service as oc
+    ent = (request.args.get("entity") or "").strip().upper()
+    try:
+        on = dt_date.fromisoformat((request.args.get("as_of") or dt_date.today().isoformat())[:10])
+    except ValueError:
+        return jsonify({"error": "as_of must be a date"}), 400
+    if not ent:
+        return jsonify({"error": "Name the entity"}), 400
+    src = oc._Source(as_of=on, with_balances=False)
+    return jsonify({"entity": ent, "as_of": on.isoformat(),
+                    "owners": [{"investor_id": o["entity_id"], "pct": o.get("pct"),
+                                "committed": o.get("committed")}
+                               for o in oc._owners_of(src, ent)]})
+
+
+@reports_bp.route("/pe-exposure/overrides", methods=["POST"])
+@login_required
+def pe_override_create():
+    from flask_app.services import allocation_override_service as aos
+    actor = _accounting_actor()
+    if actor is None:
+        return jsonify({"error": "Forbidden", "message": "Allocation overrides are entered by "
+                        "accounting (an accounting role with the Accounting section)."}), 403
+    b = request.get_json(silent=True) or {}
+    try:
+        return jsonify(aos.create(b.get("entity_id"), b.get("investment_id"), b.get("effective_date"),
+                                  b.get("lines"), b.get("reason"), actor["username"])), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@reports_bp.route("/pe-exposure/overrides/<int:oid>", methods=["DELETE"])
+@login_required
+def pe_override_remove(oid):
+    from flask_app.services import allocation_override_service as aos
+    actor = _accounting_actor()
+    if actor is None:
+        return jsonify({"error": "Forbidden", "message": "Allocation overrides are removed by "
+                        "accounting."}), 403
+    try:
+        return jsonify(aos.remove(oid, actor["username"]))
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404

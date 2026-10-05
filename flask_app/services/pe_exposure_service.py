@@ -236,7 +236,12 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
         if (cost is None or abs(cost) < 0.5) and (fmv is None or abs(fmv) < 0.5) and abs(u) < 0.5:
             continue
         walk = oc.group_shares(h["holder"], as_of, STOPS, context=_context,
-                               default_group=DEFAULT_GROUP, src=src)
+                               default_group=DEFAULT_GROUP, src=src,
+                               investment=h["investment_id"])
+        used = {}
+        for rt in walk["routes"]:
+            for o in rt.get("overrides") or []:
+                used[o["id"]] = o
         shares = walk["shares"]
         rate = None
         if h["currency"] != "USD":
@@ -257,6 +262,8 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
             "cost_by_group": _split(to_usd(cost), shares),
             "fmv_by_group": _split(to_usd(fmv), shares),
             "routes": walk["routes"], "problems": walk["problems"],
+            # Accounting's allocation overrides this split used (allocation_override_service).
+            "overrides": list(used.values()),
         })
 
     rows.sort(key=lambda r: (r["deal_name"].lower(), r["holder"]))
@@ -281,7 +288,8 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
             r = row_by_holder.get((vcode, hs[0]["holder"]))
             shares = (r["shares"] if r else
                       oc.group_shares(hs[0]["holder"], as_of, STOPS, context=_context,
-                                      default_group=DEFAULT_GROUP, src=src)["shares"])
+                                      default_group=DEFAULT_GROUP, src=src,
+                                      investment=hs[0]["investment_id"])["shares"])
         future.append({
             "vcode": vcode, "deal_name": hs[0]["deal_name"], "currency": cur,
             "holders": [x["holder"] for x in hs], **rtf,
@@ -308,6 +316,11 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
     if any(r["fx_missing"] for r in rows):
         notes.append("No USD/CAD rate is stored for this quarter end; CAD holdings are shown "
                      "in CAD and left out of the USD totals. Refresh Market Rates.")
+    for r in rows:
+        for o in r.get("overrides") or []:
+            notes.append(f"{r['deal_name']} ({r['holder']}): split at {o['entity']} is accounting's "
+                         f"allocation override effective {o['effective_date']}, not MRI commitments "
+                         f"-- {o['reason']}")
     for r in rows:
         if r["problems"]:
             notes.append(f"{r['deal_name']} ({r['holder']}): " + "; ".join(r["problems"]))
@@ -386,7 +399,9 @@ def get_report(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
         from flask_app.services.data_service import get_data
         data = get_data()
     frames = (data.get("acct"), data.get("commitments_raw"), data.get("inv"))
-    key = (as_of,) + tuple(id(f) for f in frames)
+    # An override added or removed changes the split without changing any frame.
+    from flask_app.services import allocation_override_service as aos
+    key = (as_of, aos.version(engine)) + tuple(id(f) for f in frames)
     hit = _CACHE.get(key)
     if hit is not None and all(a is b for a, b in zip(hit["_frames"], frames)):
         return hit["report"]
@@ -540,15 +555,18 @@ def to_excel(report: dict) -> bytes:
                 "each owner's share = its commitment over the entity's total, multiplied down"])
     ws4["A1"].font = bold
     ws4.append([])
-    ws4.append(["Holding entity", "Route", "Share of holding", "Group"])
+    ws4.append(["Holding entity", "Route", "Share of holding", "Group",
+                "Accounting override (entity, effective, reason)"])
     for c in ws4[3]:
         c.font, c.fill = hfont, hfill
     for r in report["rows"]:
         for rt in r["routes"]:
-            ws4.append([r["holder"], " > ".join(rt["path"]), rt["share"], rt["group"]])
+            ws4.append([r["holder"], " > ".join(rt["path"]), rt["share"], rt["group"],
+                        "; ".join("%s from %s: %s" % (o["entity"], o["effective_date"], o["reason"])
+                                  for o in rt.get("overrides") or [])])
     for row in ws4.iter_rows(min_row=4, max_row=ws4.max_row):
         row[2].number_format = "0.0000%"
-    for i, w in enumerate([16, 70, 16, 14], 1):
+    for i, w in enumerate([16, 70, 16, 14, 60], 1):
         ws4.column_dimensions[get_column_letter(i)].width = w
 
     ws5 = wb.create_sheet("Sources")
@@ -565,6 +583,9 @@ def to_excel(report: dict) -> bytes:
         "  Stops: PSC = PSC1, PSC2, OWPSC, PSCMAN, PSL1, PSS1; KOC = KCREIT; TIAA = TGAM;",
         "  Declaration = DCXVIA, DCXVIB; Clarion = DIFPP; an AMB fund's outside investors = Ambassadors;",
         "  every other outside investor = F&F.",
+        "  Where accounting has recorded an allocation override for an entity and an investment",
+        "  (entered as amounts funded, effective from a date), that entity's split for that",
+        "  investment is the override's, and the Ownership Routes sheet names it.",
         "Future funding: the One Pager's remaining to fund (committed pref less funded to date).",
         f"FX: {fx_note}.",
         "",

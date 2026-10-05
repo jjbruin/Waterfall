@@ -84,6 +84,7 @@ class _Source:
         not use.
         """
         engine = engine or get_engine()
+        self.engine = engine
         self.load_errors: List[str] = []
         self.as_of = as_of
         with engine.connect() as conn:
@@ -872,7 +873,8 @@ def _collect_disagreements(nodes: List[dict], parent: str = "") -> List[dict]:
 def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
                  context: Optional[Callable[[str], Optional[str]]] = None,
                  default_group: str = "Other", src: Optional[_Source] = None,
-                 engine=None) -> dict:
+                 engine=None, investment: Optional[str] = None,
+                 use_overrides: bool = True) -> dict:
     """Who ultimately holds ``entity_id`` on ``as_of``, as {group: share}.
 
     Returns ``{"entity", "as_of", "shares", "routes", "problems"}``. Shares are
@@ -880,40 +882,64 @@ def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
     could not place (a cycle, the depth cap, an entity with no owners at all)
     is listed in ``problems`` and NOT folded into a group, so a short total
     announces itself.
+
+    ACCOUNTING'S ALLOCATION OVERRIDES (Oct 5 2026,
+    ``allocation_override_service``): where accounting has recorded a split for
+    an entity AND this ``investment`` (the deal's InvestmentID; the root when
+    not given), in force on ``as_of``, that entity's owners are the override's
+    -- for this investment only, and only at that entity; the walk returns to
+    commitments above it. Every route through an override names it.
+    ``use_overrides=False`` is the raw commitment walk (the override's own
+    validation uses it).
     """
     src = src or _Source(engine, as_of=as_of, with_balances=False)
     root = _norm(entity_id)
+    inv_key = _norm(investment) if investment else root
+    overrides = {}
+    if use_overrides:
+        from flask_app.services import allocation_override_service as aos
+        overrides = aos.in_effect(as_of, getattr(src, "engine", None) or engine)
     shares: Dict[str, float] = defaultdict(float)
     routes: List[dict] = []
     problems: List[str] = []
 
-    def walk(ent: str, share: float, path: List[str], ctx: Optional[str]):
+    def walk(ent: str, share: float, path: List[str], ctx: Optional[str],
+             used: tuple = ()):
         depth = len(path) - 1
         # The root counts too: a holding entity that is itself a named holder
         # (PSS1 holds APPLE directly, and PSS1 is PSC) is that holder, whole.
         if ent in stops:
             shares[stops[ent]] += share
-            routes.append({"path": path, "share": share, "group": stops[ent]})
+            routes.append({"path": path, "share": share, "group": stops[ent],
+                           "overrides": list(used)})
             return
         if depth >= MAX_DEPTH:
             problems.append("depth cap reached at " + " > ".join(path))
             return
         ctx = (context(ent) if context else None) or ctx
-        owners = [o for o in _owners_of(src, ent) if (o.get("pct") or 0) > 0]
+        ov = overrides.get((ent, inv_key))
+        if ov:
+            owners = [{"entity_id": _norm(l["investor_id"]), "pct": l["pct"]}
+                      for l in ov["lines"] if (l.get("pct") or 0) > 0]
+            used = used + ({"entity": ent, "investment": inv_key, "id": ov["id"],
+                            "effective_date": ov["effective_date"], "reason": ov["reason"]},)
+        else:
+            owners = [o for o in _owners_of(src, ent) if (o.get("pct") or 0) > 0]
         if not owners:
             if depth == 0:
                 problems.append(f"{ent} has no commitments in force on {as_of}")
                 return
             g = ctx or default_group
             shares[g] += share
-            routes.append({"path": path, "share": share, "group": g})
+            routes.append({"path": path, "share": share, "group": g,
+                           "overrides": list(used)})
             return
         for o in owners:
             nxt = o["entity_id"]
             if nxt in path:
                 problems.append("cycle: " + " > ".join(path + [nxt]))
                 continue
-            walk(nxt, share * o["pct"] / 100.0, path + [nxt], ctx)
+            walk(nxt, share * o["pct"] / 100.0, path + [nxt], ctx, used)
 
     walk(root, 1.0, [root], None)
     return {"entity": root, "as_of": as_of.isoformat(), "shares": dict(shares),
