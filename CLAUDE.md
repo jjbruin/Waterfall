@@ -266,6 +266,28 @@ az containerapp revision list -g rg-waterfall-dev -n app-waterfall-dev-v2 --quer
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v565` = `032fa27` (PSC PREFERRED EQUITY EXPOSURE in Reports, open to everyone,
+    and MARKET RATES under Data Management. Accounting's tracker from our MRI copy:
+    Cost = the Pref Balance Detail balance + realized losses, FMV = Cost + unrealized,
+    the seven investor columns from commitments in force multiplied down the chain,
+    future funding (the One Pager's remaining to fund) BELOW the current exposure with
+    Total Equity Invested / Committed, any quarter end or Live, Excel in the same
+    layout. VERIFIED ON PRODUCTION through its own server: 6/30 grand total
+    725,204,338 on 56 holdings + 12 future-funding rows (the tracker: 724,660,963),
+    Live 766,476,998 -- both equal to the local run to the dollar. Rates loaded on
+    production: 21,013 rows, 10 series (6/30 USD/CAD 1.4210); the FIRST full load took
+    200s on PostgreSQL (row-by-row to a remote server), incremental refreshes are ~80
+    rows. Container egress to Bank of Canada and the NY Fed checked BEFORE the build.
+    PRE-FLIGHT P4 CAUGHT A 186 MB LOCAL DATABASE BACKUP swept into the branch by
+    `git add -A`; never pushed; the branch was rebuilt as ONE commit on origin/main
+    without it, and .gitignore now excludes `waterfall.db.bak-*` / `*.db.pulling`.
+    Span vs live `d6adabe`: three docs commits, `40c6796` (pull script), `032fa27`.
+    Raised with Jim before the build, not symptom repairs but rules to know: the
+    investor-group STOPS are a fixed list of entity ids (accounting's Mapping tab), and
+    Ambassadors is recognised by an `AMB` name prefix. In the container:
+    pe_exposure_check 28/0, market_rates_check 18/0, section_access --static 101/0.
+    Build `can8` 2m18s, tag locked, P1 re-run before the update; root 200, 0 errors in
+    the boot log; served chunks carry both screens.)
   - `v564` = `d6adabe` (THE ADMIN ROLE IS NOT ACCOUNTING. Jim, Oct 2 2026: "There is
     only 1 Admin for the system with access and rights to everything and that is me.
     Charlene has admin rights to make enhancements to the system however, if she is
