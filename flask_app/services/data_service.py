@@ -440,6 +440,88 @@ def _normalize_isbs(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+#: vSources whose rows are a RUNNING TOTAL, not a period's own amount.
+#:
+#: A SUPPLEMENT MUST NEVER SUPERSEDE ONE OF THESE, and the reason is not
+#: fussiness — it was measured, after the key fix below made the keys match for
+#: the first time and three deals' underwritten capital DOUBLED.
+#:
+#: `isbs_projected_is` account 7073 is YTD cumulative: Burton carries
+#: 26,597,500 on 2025-06-30 and then the SAME 26,597,500 on every month to
+#: December, because that is the year-to-date total, not seven contributions.
+#: `one_pager._get_uw_7073_signed` converts it by taking the first month of a
+#: year as the periodic figure and every later month as a difference from the
+#: one before — which is zero, and skipped.
+#:
+#: The supplement row is PERIODIC. It is a different quantity on the same key.
+#: Superseding removes MRI's 2025-06-30 row, which makes 2025-07-31 the first
+#: month of the year, so its full cumulative is read as a SECOND contribution —
+#: and the supplement still supplies the real one on 06-30. Measured:
+#:
+#:     P0000076 Court of Deptford   -8,751,183.95 -> -18,297,183.95
+#:     P0000109 Burton             -26,597,500.00 -> -53,195,000.00
+#:     P0000119 Presidential Arms  -20,600,000.00 -> -41,200,000.00
+#:
+#: all of which feed U/W ROE to Date on the One Pager and CoC Proj. Since Close
+#: on Investment Metrics. The duplication these keys describe is ALREADY handled
+#: downstream, correctly, by the `(date, amount)` dedupe at the end of
+#: `_get_uw_7073_signed` — so there is nothing here for this layer to fix and
+#: real harm in trying.
+#:
+#: Budget IS and Valuation IS are periodic and Interim BS is a point-in-time
+#: balance; for those, one row IS the figure and superseding is sound.
+_CUMULATIVE_VSOURCES = frozenset({'Interim IS', 'Projected IS'})
+
+
+def _supersede_key_frame(df: pd.DataFrame, key: list) -> pd.DataFrame:
+    """The supersede key, normalised FOR COMPARISON ONLY.
+
+    Returns a frame of the same shape and index carrying the comparable form of
+    each key column. **Nothing is written back to ``df``** — the stored vcode
+    and dtEntry keep MRI's spellings, because `_normalize_isbs` owns that and
+    runs immediately after assembly. This only decides which rows are the same
+    row.
+
+    What is normalised, and what deliberately is not:
+
+    * ``vcode`` — stripped and lower-cased, matching `_normalize_isbs`. MRI
+      stores it lower-case and the app's supplements store the deal's own case.
+    * ``dtEntry`` — parsed and rendered as ``YYYY-MM-DD``, so a timestamp and a
+      bare date on the same day are one key. **A value that will not parse falls
+      back to its stripped raw string**, not to NaT: collapsing every
+      unparseable date onto a single key would let one bad supplement row shadow
+      every bad MRI row, which deletes data rather than merely double-counting
+      it.
+    * ``vSource`` / ``vAccount`` — compared as-is, as the brief specifies. Note
+      `_normalize_isbs` also strips a trailing ``.0`` from ``vAccount``, so an
+      account that arrives as a float on one side and a string on the other
+      would still miss here. Not changed, because widening the key makes MORE
+      MRI rows disappear and that is the dangerous direction; recorded as an
+      open question rather than fixed in passing.
+
+    Parsing is done over the DISTINCT values rather than the 800k-row column —
+    `format='mixed'` infers per element, and ISBS carries only a few hundred
+    distinct ``dtEntry`` values.
+    """
+    out = {}
+    for col in key:
+        values = df[col].astype(str)
+        if col == 'vcode':
+            out[col] = values.str.strip().str.lower()
+        elif col == 'dtEntry':
+            uniq = pd.Index(values.unique())
+            parsed = pd.to_datetime(
+                uniq, format='mixed', dayfirst=False, errors='coerce')
+            out[col] = values.map({
+                raw: (ts.strftime('%Y-%m-%d') if pd.notna(ts) else raw)
+                for raw, ts in zip(uniq, parsed)
+            })
+        else:
+            # vSource / vAccount: compared exactly as before. See the docstring.
+            out[col] = values
+    return pd.DataFrame(out, index=df.index)
+
+
 def _append_isbs_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFrame:
     """Append all ISBS supplement tables to the assembled ISBS DataFrame.
 
@@ -502,10 +584,44 @@ def _append_isbs_supplements(assembled: pd.DataFrame, config: dict) -> pd.DataFr
         # So: build the set of keys the supplements cover, and remove MRI rows on those
         # keys only. MRI-vs-MRI duplication is untouched because it is not duplication.
         if is_supp.any():
-            supp_keys = set(map(tuple, assembled.loc[is_supp, key].astype(str).values))
+            # THE KEY IS NORMALISED ON BOTH SIDES BEFORE IT IS COMPARED, and
+            # that is the whole fix. This runs INSIDE `_assemble_isbs`, which is
+            # called at load one line BEFORE `_normalize_isbs` — so the frame
+            # here still carries MRI's raw spellings. MRI writes a lower-case
+            # vcode and a timestamp (`p0000069`, `2026-01-31T00:00:00`); a
+            # supplement written by the app carries the deal's own case and a
+            # bare date (`P0000069`, `2026-01-31`). Compared with `.astype(str)`
+            # those are four different strings, no key ever matched, and BOTH
+            # rows survived into `isbs_raw` — where every consumer sums them.
+            #
+            # The failure is silent and it reads as a plausible figure: P0000069
+            # Mount Prospect's 2026-Q2 budget NOI came out at exactly twice what
+            # the budget says, because the MRI copy and the app copy were added
+            # together. Nothing on the screen distinguishes a doubled NOI from a
+            # good one.
+            key_norm = _supersede_key_frame(assembled, key)
+
+            # A CUMULATIVE SOURCE IS LEFT ALONE — see _CUMULATIVE_VSOURCES.
+            # Scoped on the SUPPLEMENT side: a supplement that cannot supersede
+            # contributes no key, so no MRI row is dropped for it, and MRI's
+            # running total stays whole.
+            eligible = is_supp
+            if 'vSource' in assembled.columns:
+                cumulative = assembled['vSource'].astype(str).str.strip().isin(
+                    _CUMULATIVE_VSOURCES)
+                eligible = is_supp & ~cumulative
+                skipped = int((is_supp & cumulative).sum())
+                if skipped:
+                    logger.info(
+                        "ISBS: %d supplement row(s) on a YTD-cumulative vSource "
+                        "are NOT superseding MRI — one row of a running total is "
+                        "not the period's figure; the duplicate is resolved "
+                        "downstream per account", skipped)
+
+            supp_keys = set(map(tuple, key_norm.loc[eligible].values))
             if supp_keys:
                 mri_keys = pd.Series(
-                    list(map(tuple, assembled.loc[~is_supp, key].astype(str).values)),
+                    list(map(tuple, key_norm.loc[~is_supp].values)),
                     index=assembled.index[~is_supp])
                 shadowed_idx = mri_keys[mri_keys.isin(supp_keys)].index
                 if len(shadowed_idx):
