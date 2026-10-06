@@ -59,6 +59,10 @@ HOSTS = [
     ("src/components/layout/AppSidebar.vue", "matchUploadFiles", "handleFileSelect"),
     ("src/views/LeaseReviewView.vue", "uploadDocumentFiles", "onDocumentUpload"),
     ("src/views/ValuationsView.vue", "uploadDocumentFiles", "onDocumentUpload"),
+    # Valuations > Budget Review: the partner budget AND the Argus cash flow (the only
+    # place Argus is loaded since Sep 28 2026). Missed in the first pass -- Jim, Oct 6
+    # 2026: "the uploads in this section do not have the sharepoint load buttons".
+    ("src/components/common/LineMappingPanel.vue", "parseFile", "onFile"),
 ]
 REF_HOSTS = [  # the picker assigns the same ref the native input assigns
     ("src/views/TreasuryView.vue", ["activityFile", "statementFile", "stmtFiles"]),
@@ -131,7 +135,8 @@ def static_checks():
         pickers = re.findall(r"<SharePointPicker\b[^>]*@picked=\"([^\"]+)\"", src, re.S)
         chk("%s: has a picker" % Path(rel).stem, bool(pickers))
         chk("%s: the picker emits into %s" % (Path(rel).stem, path_fn),
-            pickers and all(p == path_fn for p in pickers), pickers)
+            pickers and all(p == path_fn or re.search(r"\b%s\(" % path_fn, p) for p in pickers),
+            pickers)
         body = re.search(r"function %s\([^)]*\)[^{]*\{(.*?)\n\}" % re.escape(input_fn), src, re.S)
         chk("%s: the file input's %s calls %s too" % (Path(rel).stem, input_fn, path_fn),
             bool(body) and re.search(r"\b%s\(" % path_fn, body.group(1)) is not None)

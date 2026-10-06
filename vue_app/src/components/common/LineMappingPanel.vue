@@ -13,6 +13,11 @@
                 @click="$refs.fileInput.click()">
           {{ parsed ? 'Choose a different file' : 'Choose file' }}
         </button>
+        <!-- The partner budget and the appraiser's Argus both arrive here; from
+             SharePoint they take the same path as a file from disk (parseFile). -->
+        <SharePointPicker accept=".xlsx,.xls,.csv" :remember-as="'mapping-' + source"
+                          :disabled="parsing || !editable"
+                          @picked="files => files[0] && parseFile(files[0])" />
         <span v-if="parsed" class="lm-filename">{{ parsed.filename }}</span>
       </div>
     </div>
@@ -382,6 +387,7 @@
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import api from '@/api/client'
+import SharePointPicker from '@/components/common/SharePointPicker.vue'
 
 const props = defineProps({
   recordId: { type: [Number, String], required: true },
@@ -640,7 +646,13 @@ async function doExport() {
 
 async function onFile(e) {
   const file = e.target.files?.[0]
+  e.target.value = ''
   if (!file) return
+  await parseFile(file)
+}
+
+// The one path a budget or Argus file takes, from disk or from SharePoint alike.
+async function parseFile(file) {
   parsing.value = true
   error.value = ''
   result.value = null
@@ -669,7 +681,6 @@ async function onFile(e) {
     parsed.value = null
   } finally {
     parsing.value = false
-    e.target.value = ''
   }
 }
 
