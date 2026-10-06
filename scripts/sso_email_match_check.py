@@ -15,12 +15,16 @@ provider's token stubbed. Asserted in BOTH directions:
   3. Refuses: no account with the email -> #sso_error=no_account, and NO account
      is created. An email only ``admin`` carries -> no_account. Two non-admin
      accounts sharing an email -> ambiguous. No email -> no_email.
-  4. The screen agrees: LoginView names every refusal reason the server sends.
+  4. The callback address sent to Entra, through the real /auth/sso/login: behind
+     the Azure ingress (which ends TLS) it is https on the public host -- Entra
+     matches it exactly and refuses http:// -- and with no proxy it is unchanged.
+  5. The screen agrees: LoginView names every refusal reason the server sends.
 
-Usage: python scripts/sso_email_match_check.py [--inject=username|admin|create]
+Usage: python scripts/sso_email_match_check.py [--inject=username|admin|create|noproxy]
   username -- match on username = email (the original code)
   admin    -- the superuser not excluded
   create   -- an account created when none matches
+  noproxy  -- the forwarded headers ignored (ProxyFix removed)
 """
 import os
 import re
@@ -145,7 +149,23 @@ def main():
     u, err = sign_in(None)
     chk("no email refused", u is None and err == "no_email", (u, err))
 
-    print("4. The screen names every refusal")
+    print("4. The callback address Entra is sent")
+    if INJECT == "noproxy":
+        app.wsgi_app = getattr(app.wsgi_app, "app", app.wsgi_app)
+    from flask import Response
+    SSO.oauth.sso.authorize_redirect = lambda redirect_uri, **kw: Response(redirect_uri)
+    public = "app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io"
+    r = client.get("/auth/sso/login", headers={
+        "X-Forwarded-Proto": "https", "X-Forwarded-Host": public, "X-Forwarded-For": "203.0.113.9"})
+    got = r.get_data(as_text=True)
+    chk("behind the Azure ingress: https on the public host",
+        got == "https://%s/auth/sso/callback" % public, got)
+    r = client.get("/auth/sso/login", base_url="http://localhost:5000")
+    got = r.get_data(as_text=True)
+    chk("no proxy (local dev): the plain address, unchanged",
+        got == "http://localhost:5000/auth/sso/callback", got)
+
+    print("5. The screen names every refusal")
     vue = (ROOT / "vue_app/src/views/LoginView.vue").read_text(encoding="utf-8")
     for reason in ("no_account", "ambiguous"):
         chk("LoginView handles %s" % reason, "'%s'" % reason in vue)
