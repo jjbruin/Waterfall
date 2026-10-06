@@ -106,7 +106,7 @@ UW IRR / Proj Yr-1 cell is still an em dash** (`unloaded_figure_field_absent`: 1
 - **Owner:** Charlene (refresh), Alay (precision), whoever maintains the Investment Checklist
   (the two values).
 
-### 20.2 Investment Metrics: first lien reproduces the reference on 42 of 76 — unassigned
+### 20.2 Investment Metrics: first lien reproduces the reference on 42 of 76 — unassigned (the ISBS fallback was removed at `v579`; see 20.12)
 
 Recorded at `v545`/`v546` and still stated in `investment_metrics_config.py`'s own
 header comment. `v551` improved the SOURCE — origination dates are read off the raw
@@ -118,6 +118,23 @@ and all four sit on single-loan deals. Ten deals are named in the
 - **The check:** the config header comment, and the diagnostic on a live payload.
 - **Owner:** unassigned. It is a DATA gap (MRI carries no origination date for most
   loans) before it is a code gap, so it may belong with Alay too.
+
+
+### 20.12 Investment Metrics: the Total / Average shares do not add to 100% when a deal's first lien is unknown (Oct 6 2026) — decision needed, Jim / Charlene
+
+`_total_row` / `_grand_total` use `total_of`, which sums each column on its own and skips
+blanks. A deal with an unknown first lien has `total_size` None, so it leaves the Total Size
+denominator, but its Pref and First-Loss DOLLARS stay in those totals — so the three shares
+(`first_lien_pct + pref_pct + first_loss_pct`) are measured against different populations and
+do not add to 100%. After `v579` switched the ISBS fallback off (16 first-lien dashes, was 9):
+Current 101.3%, Sold 127.5%, Grand 104.8%; before it, 100.2% / 134.4% / 105.9% — the Sold row
+was already wrong from nine dashed deals. The reference's own rows add to 100.0%.
+
+- **The fix to decide on:** total the Pref and First-Loss dollars, and the shares, only over
+  deals where all three pieces are known (or footnote the deals left out). It changes the
+  Total rows by more than `v579` intended, so it was NOT bundled and needs a measure-first
+  pass against the reference's Total / Average and Grand Total rows.
+- **Owner:** Charlene / Jim.
 
 ### 20.3 Freezing is switched off, and 26Q2 has never been frozen — Charlene
 

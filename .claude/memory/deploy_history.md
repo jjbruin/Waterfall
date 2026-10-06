@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v578** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v579** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v578 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v579 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,41 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v579` = `c378927` (INVESTMENT METRICS: THE EARLIEST-ISBS FIRST LIEN FALLBACK IS OFF.
+    `cfg.FIRST_LIEN_ISBS_FALLBACK = False`. A deal with no usable loan record now prints an
+    em dash for First Lien; Total Size and the three % of Cap cells cascade to dashes as for
+    any unknown first lien, and the basis reads `none`. The ISBS figure stays in
+    `alternates.first_lien`, and each deal it was withheld from is listed in
+    `diagnostics.first_lien_isbs_withheld`. WHY, measured at as-of 2026-06-30 against the
+    6/30/26 reference workbook: seven deals reached the fallback -- Pegasus (the PDF's Life
+    Storage), Jefferson Oakhurst, Jefferson Centura, Shoppers World, Camarillo, Willowdale,
+    Village Square -- and NONE tied at +/-$0.05M (differences -$35.1M to +$22.2M); four are
+    sold deals whose balance sheet stops years before the sale. Not a symptom repair: nothing
+    is zeroed or overridden, the value is None not 0, and the premise was enumerated deal by
+    deal. None of the ten dev deals used ISBS (all take the summed loan facility). Cells that
+    changed: 7 deals (1 Current, 6 Sold) x 5 cells (First Lien, Total Size, three % of Cap) =
+    35; First Lien dashes 9 -> 16. Total/Average rows: Current Total Size $3,163.4M ->
+    $3,103.8M, First Lien $1,990.0M -> $1,965.3M; Sold $631.7M -> $462.9M and $604.9M ->
+    $346.3M (First Lien % 95.8% -> 74.8%); Grand Total $3,795.1M -> $3,566.6M and $2,594.9M ->
+    $2,311.6M. Verified on live after deploy: 16 dashes, the 7 deals basis `none`, none left
+    on ISBS, 7 listed as withheld, totals identical to the prediction. **KNOWN CONSEQUENCE,
+    SHIPPED AS IS ON PURPOSE (open_items 20.12):** `total_of` sums each column on its own, so
+    the 7 deals leave Total Size but their Pref and First-Loss dollars stay in the totals and
+    the three shares no longer add to 100% (Current 101.3%, Sold 127.5%, Grand 104.8%; before
+    100.2% / 134.4% / 105.9% -- the Sold row was already wrong from the nine deals that were
+    dashes). Span vs live `c46c11b`: `4d7e8c2` (docs) and this change. Built and pushed from a
+    clean worktree; build `canr`, 2m43s, Succeeded; tag locked; Healthy at 100%. Guardrails:
+    `investment_metrics_check.py` 191/191 (the fixture checks that assumed the fallback were
+    rewritten; flag off, flag ON restoring it, a deal with a loan untouched, neither loan
+    nor ISBS, and the withheld listing -- re-injecting the defect fails 3 of them),
+    `investment_metrics_print_inspect.py` 44/44 on a payload with the seven blanked,
+    `one_engine_per_number_check` 26/26, `section_access_check` 274/274,
+    `claude_md_budget_check` 3/3. Smoke (all 200, 0 tracebacks): auth/me, auth/sections,
+    dashboard/kpis (20s cold), portfolio-snapshot quarters, one-pager P0000044, and
+    /investment-metrics cold 6.2s then warm 0.23s. **Rollback** is FORWARD: `az containerapp
+    update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:c46c11b --revision-suffix v580`; or set
+    `FIRST_LIEN_ISBS_FALLBACK = True` to restore the fallback without touching anything else.)
   - `v578` = `c46c11b` (INVESTMENT METRICS EXCEL EXPORT: PRINT AREA. The workbook's print
     area now starts at the as-of line and title (A3:V<last>), so the orange "Orangewood
     Portfolio One-Pager" banner and the column-label strip -- scaffolding the reference
