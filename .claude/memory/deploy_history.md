@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v579** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v580** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v579 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v580 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,32 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v580` = `6e530b9` (MICROSOFT SIGN-IN AND THE SHAREPOINT PICKER -- branch
+    `feat/sso-email-match`. Sign-in matches the EXISTING account by `users.email`, never
+    opens the `admin` username, creates no account; ProxyFix (x_for/x_proto/x_host=1) so
+    URLs say https behind the ingress; "From SharePoint" beside six importers (browser
+    MSAL popup, delegated read-only Graph, files handed to each screen's own importer),
+    the sign-in window opened only from a click. New settings on the Container App:
+    `SHAREPOINT_CLIENT_ID`/`SHAREPOINT_TENANT_ID`, `SSO_PROVIDER=azure`,
+    `SSO_CLIENT_ID`, `SSO_TENANT_ID`, `SSO_REDIRECT_URL=/login`, and
+    `SSO_CLIENT_SECRET=secretref:sso-client-secret` -- the secret stored by Jim, verified
+    with `scripts/check_sso_secret.py` (OK, 40 characters; the first `secret set`
+    command given stored literal quote marks and was REJECTED). Entra app per IT, Oct 6
+    2026: 4 redirect URIs, 7 delegated Graph scopes, 19 users assigned, secret expires
+    **Oct 5 2028**. Span vs live `c378927`: all mine -- `5e7af84`, `e1af614`, `b600635`,
+    `08a05a7`, `d166c39`, `575877e`, `6d3d3bc`, `6e530b9` and merges; Charlene's v579
+    (`c378927`) built and went live while this waited, the merge redone on top of it.
+    Build `cans`, 3m03s, Succeeded; tag locked; P1 re-run before update (`c378927`;
+    `83a9ae1` docs-only landed meanwhile); rolled out Healthy, `/health` 200. Verified
+    on production: `/auth/sso/config` enabled/azure; `/auth/sso/login` 302 to
+    login.microsoftonline.com with redirect_uri EXACTLY
+    `https://…azurecontainerapps.io/auth/sso/callback`; `/auth/sso/sharepoint` 401
+    unauthenticated; `/msal-redirect.html` is its own page with the bridge bundle;
+    the entry bundle `main-BbZghnBo.js` carries the picker and "Sign in with
+    Microsoft", `LoginView-BuhCq3Ci.js` the no-account message. Guardrails on the exact
+    tree: sharepoint_picker 36, sso_email_match 13, section_access 274, board_access
+    156, accounting_access 56, valuation_summary 132, mapping_feedback 33. A Microsoft
+    sign-in on PRODUCTION not yet done by a person as of this entry.)
   - `v579` = `c378927` (INVESTMENT METRICS: THE EARLIEST-ISBS FIRST LIEN FALLBACK IS OFF.
     `cfg.FIRST_LIEN_ISBS_FALLBACK = False`. A deal with no usable loan record now prints an
     em dash for First Lien; Total Size and the three % of Cap cells cascade to dashes as for

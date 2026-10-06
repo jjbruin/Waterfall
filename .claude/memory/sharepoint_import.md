@@ -8,7 +8,7 @@ delegated Graph permissions, admin consent granted, a client secret (24 months),
 pulls after.** First importers: expense receipts, Data CSVs, Treasury, Lease Review
 documents, Valuations documents, Argus.
 
-## Phase 1 -- the picker (branch `feat/sso-email-match`, not deployed as of Oct 6 2026)
+## Phase 1 -- the picker (LIVE at v580, Oct 6 2026)
 
 A "From SharePoint" button beside each importer's own file input
 (`components/common/SharePointPicker.vue`, `services/sharepoint.ts`).
