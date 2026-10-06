@@ -45,6 +45,13 @@ def identify_sub_portfolio_deals(
         if col not in deals_df.columns:
             return {}
 
+    # NOT THE APP-WIDE CHILD LOOKUP, deliberately (Oct 6 2026). `build_property_map` is
+    # that, and it now finds Burton's three buildings. This answers a different question
+    # -- whose FORECASTS Deal Analysis sums -- and the sub-portfolio branch below sums
+    # the properties' forecasts and ignores the parent's. Burton's forecast lives on the
+    # PARENT (60 rows, none on the buildings), so treating it as a sub-portfolio here
+    # blanked its projection: measured, 60 rows -> 0. Left on the old name-only rule
+    # until the forecast source is decided per deal (open_items 8.5).
     deals_df['InvestmentID'] = deals_df['InvestmentID'].astype(str).str.strip()
     deals_df['Investment_Name'] = deals_df['Investment_Name'].fillna('').astype(str).str.strip()
     deals_df['Portfolio_Name'] = deals_df['Portfolio_Name'].fillna('').astype(str).str.strip()
@@ -87,21 +94,38 @@ def get_deal_vcode(investment_id: str, deals: pd.DataFrame) -> Optional[str]:
 
 
 def build_property_map(deals: pd.DataFrame) -> Dict[str, List[str]]:
-    """Build a lookup dict mapping deal vcode → list of child property vcodes.
+    """THE child-property lookup: parent deal vcode -> its child property vcodes.
 
-    Pre-computes the same result as calling get_property_vcodes_for_deal() for
-    every deal, but normalizes the DataFrame only once. Use this in loops
-    instead of calling get_property_vcodes_for_deal() per deal.
+    ONE RULE, used app-wide (Oct 6 2026). There were three copies and they disagreed:
+    this function matched children on the parent's Investment_Name only, while
+    `one_pager._child_vcodes_for_parent` and `valuation_service._child_parent_map` also
+    matched the parent's own Portfolio_Name and required a parent to be one. Measured on
+    all 134 deals they disagreed on two:
 
-    Returns:
-        Dict mapping parent vcode → [child vcodes]. Only parent deals with
-        children are included; standalone deals are absent (not empty-list).
+      Burton (P0000109)   named "Burton Retail Portfolio", its three buildings labelled
+                          "Burton Portfolio" -- missed here, so the Dashboard listed
+                          them as deals of their own and the capitalization engine put
+                          Burton's debt at 0
+      P0000073            "Donald Lynch" -- here it took the OTHER "Donald Lynch"
+                          (P0000049, Portfolio_Name "Donald Lynch") as its child,
+                          though it is not a portfolio (Property_Count 0)
+
+    The rule:
+      * a PARENT has Property_Count >= 1 (where the column exists; without it, any deal
+        whose name other deals carry as their Portfolio_Name, as before);
+      * a CHILD carries Property_Count 0 and a Portfolio_Name equal to the parent's
+        Investment_Name or the parent's own Portfolio_Name;
+      * a deal is never its own child.
+
+    Returns {parent: [children]}; standalone deals are absent (not empty-list).
     """
     if deals is None or deals.empty:
         return {}
 
     df = deals.copy()
     normalize_columns(df)
+    if 'vcode' not in df.columns and 'vCode' in df.columns:
+        df = df.rename(columns={'vCode': 'vcode'})
     for col in ['vcode', 'Investment_Name', 'Portfolio_Name']:
         if col not in df.columns:
             return {}
@@ -109,22 +133,25 @@ def build_property_map(deals: pd.DataFrame) -> Dict[str, List[str]]:
     df['vcode'] = df['vcode'].astype(str).str.strip()
     df['Investment_Name'] = df['Investment_Name'].fillna('').astype(str).str.strip()
     df['Portfolio_Name'] = df['Portfolio_Name'].fillna('').astype(str).str.strip()
+    has_count = 'Property_Count' in df.columns
+    pc = (pd.to_numeric(df['Property_Count'], errors='coerce').fillna(0)
+          if has_count else pd.Series(0, index=df.index))
 
-    # Build name → vcodes mapping
-    vcode_to_name: Dict[str, str] = {}
-    name_to_vcodes: Dict[str, List[str]] = {}
-    for _, r in df.iterrows():
-        vc = str(r['vcode'])
-        nm = str(r['Investment_Name'])
-        pn = str(r['Portfolio_Name'])
-        vcode_to_name[vc] = nm
-        if pn:
-            name_to_vcodes.setdefault(pn, []).append(vc)
+    by_label: Dict[str, List[str]] = {}
+    for vc, pn, n in zip(df['vcode'], df['Portfolio_Name'], pc):
+        if pn and (not has_count or n < 1):
+            by_label.setdefault(pn, []).append(vc)
 
-    # Map deal vcode → child property vcodes
     prop_map: Dict[str, List[str]] = {}
-    for vc, nm in vcode_to_name.items():
-        children = [c for c in name_to_vcodes.get(nm, []) if c != vc]
+    for vc, nm, pn, n in zip(df['vcode'], df['Investment_Name'], df['Portfolio_Name'], pc):
+        if has_count and n < 1:
+            continue
+        labels = [nm] if not has_count else [nm, pn]
+        children: List[str] = []
+        for label in labels:
+            for c in by_label.get(label, []) if label else []:
+                if c != vc and c not in children:
+                    children.append(c)
         if children:
             prop_map[vc] = children
 
@@ -132,37 +159,16 @@ def build_property_map(deals: pd.DataFrame) -> Dict[str, List[str]]:
 
 
 def get_property_vcodes_for_deal(deal_vcode: str, deals: pd.DataFrame) -> List[str]:
+    """A deal's child property vcodes (not the deal itself); [] for a standalone deal.
+
+    The single rule is `build_property_map`'s; prefer that in loops.
     """
-    Get property vcodes for a deal using Portfolio_Name.
-
-    Returns list of property vcodes (NOT including the deal itself).
-    Returns empty list if deal is standalone (no sub-properties).
-
-    Note: For batch use in loops, prefer build_property_map() to avoid
-    redundant DataFrame normalization per call.
-    """
-    deals_df = deals.copy()
-    normalize_columns(deals_df)
-    deals_df['vcode'] = deals_df['vcode'].astype(str).str.strip()
-
-    # Find the deal's Investment_Name
-    deal_row = deals_df[deals_df['vcode'] == str(deal_vcode)]
-    if deal_row.empty:
-        return []
-
-    deal_inv_name = str(deal_row.iloc[0].get('Investment_Name', '')).strip()
-    if not deal_inv_name:
-        return []
-
-    # Find properties whose Portfolio_Name matches this deal's Investment_Name
-    deals_df['Portfolio_Name'] = deals_df['Portfolio_Name'].fillna('').astype(str).str.strip()
-
-    properties = deals_df[
-        (deals_df['Portfolio_Name'] == deal_inv_name) &
-        (deals_df['vcode'] != str(deal_vcode))  # exclude self
-    ]
-
-    return properties['vcode'].astype(str).tolist()
+    if not isinstance(deals, pd.DataFrame):
+        # The arguments have been passed reversed before (ownership_service), and the
+        # error that raised was swallowed by the caller. Fail loudly instead.
+        raise TypeError("get_property_vcodes_for_deal(deal_vcode, deals): "
+                        f"deals must be a DataFrame, got {type(deals).__name__}")
+    return list(build_property_map(deals).get(str(deal_vcode).strip(), []))
 
 
 def get_parent_deal_for_property(property_vcode: str, deals: pd.DataFrame) -> Optional[dict]:

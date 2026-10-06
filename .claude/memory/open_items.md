@@ -1848,7 +1848,33 @@ with no ISBS debt, so both fall back to MRI origination amounts:
   `valuation_debt_service`, ownership, financials and the assistant. Across all 134
   deals the two lookups disagree on 2: Burton, and P0000073 (consolidation calls the
   OTHER "Donald Lynch", P0000049, its child; no debt moves). Fix: ONE child lookup.
-  Measure every consumer before and after -- the Dashboard deal count drops by 3.
+  **BUILT Oct 6 2026, branch `fix/one-child-lookup`, not deployed.** Five copies found
+  (consolidation x2, `compute.prepare_cap_lookups`, one_pager, valuation_service); four
+  now ARE `consolidation.build_property_map`. Measured on local data: one_pager and
+  valuation_service unchanged on all 134 deals; Dashboard 55 -> 53 deals, Burton's
+  buildings folded into Burton (debt 0 -> 75,302,500, total cap 68.7M -> 144.0M,
+  matching the cap stack), Deal Analysis forecasts identical on every deal;
+  `ownership_service`'s reversed call fixed (P0000049 seed capital 0 -> 59,100, every
+  other parent unchanged). Guardrail `scripts/child_lookup_check.py`.
+  - **The fifth copy is deliberately NOT unified** (`identify_sub_portfolio_deals`):
+    it decides whose FORECASTS Deal Analysis sums, and sums only the properties'.
+    Burton's forecast is on the parent (60 rows, none on the buildings) -- unified, its
+    projection went 60 rows -> 0. **§8.5 below.**
+  - **BLOCKER, data:** Donald Lynch sold 9/4/2026, but only P0000073 is SOLD;
+    P0000049 (the parent, Property_Count 1) has Sale_Date 9/4/2026 and a blank
+    Sale_Status. The old rule hid both from the Dashboard by accident; the right rule
+    shows P0000049 as active and brings its sold child's 8,651,000 loan onto the
+    Dashboard. Mark P0000049 SOLD (app-managed, survives MRI refresh) BEFORE deploying.
+
+### 8.5 Burton in Deal Analysis: forecast on the parent, loans on the buildings — OPEN
+`build_consolidated_forecast` treats a sub-portfolio as "sum the properties' forecasts,
+ignore the parent's" and takes loans from the properties too. Burton's forecast is on the
+parent and its three loans (75.3M) on the buildings, and on the old rule Burton is not a
+sub-portfolio -- so its Deal Analysis projection runs on the parent forecast WITH NO
+LOANS (`deal_loans` = 0 rows): no debt service in the waterfall or XIRR. Making it a
+sub-portfolio blanks the forecast instead. Needs the forecast source chosen per deal
+(properties if they carry forecasts, else the parent) with loans always from the
+properties -- a change to the projection engine; measure Burton's XIRR before and after.
 - **OREI is a DATA question (Jim/Charlene):** loan 313 on the parent (34,851,000) and
   loans 285 + 286 on Whitney Manor / Westchase (10,901,000 + 23,295,000 = 34,196,000),
   all active. Same debt recorded at two levels, or two layers? compute says 69.0M,

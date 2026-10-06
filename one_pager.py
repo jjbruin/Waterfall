@@ -362,37 +362,14 @@ def _child_vcodes_for_parent(vcode: str, inv_map: pd.DataFrame) -> List[str]:
     (the usual convention, e.g. 'Berger Pittsburgh Portfolio') or the parent's own
     Portfolio_Name, which covers deals whose portfolio label differs from their name
     (e.g. 'Burton Retail Portfolio' sitting inside the 'Burton Portfolio' group).
+
+    ONE LOOKUP: this delegates to `consolidation.build_property_map`, which now holds
+    the rule for the whole app (Oct 6 2026; it was three copies that disagreed).
     """
     if inv_map is None or inv_map.empty:
         return []
-
-    df = inv_map.copy()
-    normalize_columns(df)
-    if 'vcode' not in df.columns and 'vCode' in df.columns:
-        df = df.rename(columns={'vCode': 'vcode'})
-    if 'vcode' not in df.columns or 'Portfolio_Name' not in df.columns:
-        return []
-
-    df['vcode'] = df['vcode'].astype(str).str.strip()
-    df['Portfolio_Name'] = df['Portfolio_Name'].fillna('').astype(str).str.strip()
-    df['Investment_Name'] = df['Investment_Name'].fillna('').astype(str).str.strip() \
-        if 'Investment_Name' in df.columns else ''
-
-    deal_row = df[df['vcode'] == str(vcode).strip()]
-    if deal_row.empty:
-        return []
-    row = deal_row.iloc[0]
-
-    prop_count = pd.to_numeric(row.get('Property_Count'), errors='coerce')
-    if pd.isna(prop_count) or prop_count < 1:
-        return []
-
-    labels = {row['Investment_Name'], row['Portfolio_Name']} - {''}
-    if not labels:
-        return []
-
-    children = df[(df['Portfolio_Name'].isin(labels)) & (df['vcode'] != row['vcode'])]
-    return children['vcode'].tolist()
+    from consolidation import get_property_vcodes_for_deal
+    return get_property_vcodes_for_deal(vcode, inv_map)
 
 
 def _loans_share_terms(deal_loans: pd.DataFrame) -> bool:

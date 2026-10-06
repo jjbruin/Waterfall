@@ -415,26 +415,18 @@ def _child_parent_map(inv: pd.DataFrame) -> Dict[str, str]:
     Parents have Property_Count >= 1; genuine children carry 0. A child's
     Portfolio_Name matches the parent's Investment_Name or (Burton exception)
     the parent's own Portfolio_Name.
+
+    ONE LOOKUP: inverted from `consolidation.build_property_map`, which holds the
+    rule for the whole app (Oct 6 2026). A child claimed by two parents keeps the
+    first, as this function always did.
     """
     out: Dict[str, str] = {}
     if inv is None or inv.empty:
         return out
-    df = inv.copy()
-    for col in ("Portfolio_Name", "Investment_Name"):
-        if col not in df.columns:
-            return out
-        df[col] = df[col].fillna("").astype(str).str.strip()
-    pc = pd.to_numeric(df.get("Property_Count"), errors="coerce").fillna(0)
-    parents = df[pc >= 1]
-    children = df[(pc == 0) & (df["Portfolio_Name"] != "")]
-    for _, ch in children.iterrows():
-        grp = ch["Portfolio_Name"]
-        match = parents[
-            (parents["Investment_Name"] == grp) | (parents["Portfolio_Name"] == grp)
-        ]
-        match = match[match["vcode"] != ch["vcode"]]
-        if not match.empty:
-            out[str(ch["vcode"])] = str(match.iloc[0]["vcode"])
+    from consolidation import build_property_map
+    for parent, children in build_property_map(inv).items():
+        for ch in children:
+            out.setdefault(str(ch), str(parent))
     return out
 
 

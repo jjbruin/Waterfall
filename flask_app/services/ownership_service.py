@@ -434,7 +434,10 @@ def run_upstream_analysis(entity_id: str, distribution_amount: float,
             child_vcodes = None
             try:
                 from consolidation import get_property_vcodes_for_deal
-                child_vcodes = get_property_vcodes_for_deal(inv, str(entity_id))
+                # (deal_vcode, deals). This was called reversed until Oct 6 2026; the
+                # TypeError it raised was caught below, so every portfolio deal was
+                # seeded WITHOUT its child properties' accounting.
+                child_vcodes = get_property_vcodes_for_deal(str(entity_id), inv)
             except Exception:
                 logger.warning("upstream: child vcodes unavailable for %s",
                                entity_id, exc_info=True)

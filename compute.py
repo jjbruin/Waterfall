@@ -199,28 +199,11 @@ def prepare_cap_lookups(acct, inv, mri_val, mri_loans):
     else:
         lookups["val_norm"] = None
 
-    # 5. Pre-compute property vcodes for all deals
-    inv_df = inv.copy()
-    normalize_columns(inv_df)
-    inv_df['vcode'] = inv_df['vcode'].astype(str).str.strip()
-    inv_df['Portfolio_Name'] = inv_df['Portfolio_Name'].fillna('').astype(str).str.strip() if 'Portfolio_Name' in inv_df.columns else ''
-    # Build name→vcode and vcode→name
-    name_to_vcodes: dict[str, list[str]] = {}
-    vcode_to_name: dict[str, str] = {}
-    for _, r in inv_df.iterrows():
-        vc = str(r['vcode'])
-        nm = str(r.get('Investment_Name', '')).strip()
-        vcode_to_name[vc] = nm
-        pn = str(r.get('Portfolio_Name', '')).strip()
-        if pn:
-            name_to_vcodes.setdefault(pn, []).append(vc)
-    # Map deal vcode → child property vcodes
-    prop_map: dict[str, list[str]] = {}
-    for vc, nm in vcode_to_name.items():
-        children = [c for c in name_to_vcodes.get(nm, []) if c != vc]
-        if children:
-            prop_map[vc] = children
-    lookups["prop_map"] = prop_map
+    # 5. Pre-compute property vcodes for all deals -- THE app-wide child lookup.
+    # This was a fourth copy of the old name-only rule (Oct 6 2026), which is why the
+    # Dashboard put Burton's debt at 0 and listed its buildings as deals of their own.
+    from consolidation import build_property_map
+    lookups["prop_map"] = build_property_map(inv)
 
     return lookups
 
