@@ -2198,13 +2198,21 @@ Jack re-sent `2025 Valuation Summary Report - LIVE.xlsx` (Jim's OneDrive) asking
 tabs `2025_Val_Summary_1/2`. **Both already exist** (§5.10, `v503`); measured against his
 workbook Oct 6 2026, the gaps are:
 
-- **Total Capitalization: not built.** Jim, Oct 6 2026: debt balance + preferred equity
-  balance + the operating partner's equity balance, **as of the valuation date** (the
-  workbook typed it in at 9/30). Find the existing engines for each before writing
-  anything (ONE NUMBER, ONE ENGINE); `compute.get_deal_capitalization` is a candidate.
-- **Pegasus split into Pref A / Pref B rows: required** (Jim, Oct 6 2026). The workbook
-  does it by hand (`MIN(mezz, B balance)` then the rest to A) -- that is a waterfall
-  split; it must come from the waterfall, not a typed formula.
+- **Total Capitalization: BUILT Oct 6 2026** (branch `feat/total-cap-pegasus-split`).
+  Jim: debt balance + preferred equity balance + the operating partner's equity balance,
+  as of the valuation date. It is `one_pager.get_capitalization_stack`'s
+  `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called exactly as the
+  Portfolio Snapshot calls it, at the quarter holding the cycle date -- NOT the
+  Snapshot's printed `total_cap`, which re-foots dev deals to committed figures.
+  Parent/standalone rows only; a child row points at its parent. Pegasus 34,908,128 vs
+  the workbook's hand-rounded 34,910,000. `compute.get_deal_capitalization` is a
+  SECOND, dateless implementation of the same three legs (abs()-based, no sale
+  suppression) -- not used here; measure it against the cap stack before touching it.
+- **Pegasus split: BUILT Oct 6 2026**, by rule (any deal with 2+ PSC-side pref
+  investors -- today only Pegasus): each investor's line is its own pref walk and the
+  NAV waterfall's ALLOCATION to it, detail under the deal row, never in a subtotal.
+  Balances tie to the workbook (TGA22 24,150,000; PPILFS 8,184,654.75). The tranche
+  NAV needs Pegasus's NAV to be run on the cycle; MRI holds no prior-year split.
 - **Grand totals must not count a row twice** (Jim, Oct 6 2026). His sheet's formulas
   overlap; the app's `_sections()` straight sum is the rule. Child property rows
   (Giant 7's, Berger's, OREI's, PMAT's) must not be added on top of their parent.

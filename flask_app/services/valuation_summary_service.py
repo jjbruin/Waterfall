@@ -144,7 +144,8 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
             SELECT r.id, r.vcode, r.method, r.concluded_value, r.cap_rate,
                    r.term_cap_rate, r.discount_rate, r.direct_cap_noi,
                    r.classification, r.status, r.group_label,
-                   n.net_proceeds, n.psc_nav, n.op_nav, n.inputs_json, n.computed_at
+                   n.net_proceeds, n.psc_nav, n.op_nav, n.inputs_json, n.computed_at,
+                   n.walk_json, r.parent_vcode
               FROM valuation_records r
               LEFT JOIN valuation_nav_results n ON n.record_id = r.id
              WHERE r.cycle_id = :c
@@ -156,11 +157,19 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
         op_balance = op_accrued = None
         pref_source = None
         debt = None
+        by_investor: Dict[str, Any] = {}
+        walk_lines = None
+        if r[16]:
+            try:
+                walk_lines = json.loads(r[16])
+            except ValueError as e:
+                logger.info("Unreadable NAV walk for record %s: %s", r[0], e)
         if r[14]:
             try:
                 inp = json.loads(r[14])
                 debt = inp.get("debt")
-                split = _split_pref(inp.get("pref") or {})
+                by_investor = inp.get("pref") or {}
+                split = _split_pref(by_investor)
                 pref_balance = split["pref_balance"]
                 pref_accrued = split["pref_accrued"]
                 op_balance, op_accrued = split["op_balance"], split["op_accrued"]
@@ -177,7 +186,10 @@ def _records(engine, cycle_id: int, data: Optional[dict] = None,
             op_balance, op_accrued = live.get("op_balance"), live.get("op_accrued")
             pref_source = live["pref_source"]
             pref_note = live["pref_note"]
+            by_investor = live.get("by_investor") or {}
         out[str(r[1])] = {
+            "parent_vcode": (str(r[17]).strip() or None) if r[17] else None,
+            "tranches": _tranches(by_investor, walk_lines),
             "record_id": r[0], "vcode": str(r[1]), "method": r[2],
             "concluded_value": r[3], "cap_rate": r[4], "term_cap_rate": r[5],
             "discount_rate": r[6], "direct_cap_noi": r[7],
@@ -308,7 +320,107 @@ def _live_pref(data: dict, vcode: str, as_of) -> Dict[str, Any]:
         return {**split, "pref_source": None,
                 "pref_note": "no PSC pref steps on this deal"}
     return {**split, "pref_source": "Pref Balance Detail, run at the cycle date",
-            "pref_note": None}
+            "pref_note": None, "by_investor": walks}
+
+
+def _quarter_of(as_of) -> Optional[str]:
+    d = _as_date(as_of)
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}" if d else None
+
+
+def _total_cap(data: dict, vcode: str, as_of) -> Dict[str, Any]:
+    """Total capitalization AS OF THE VALUATION DATE, from the cap-stack engine.
+
+    Jim, Oct 6 2026: "total capitalization is the debt balance plus the preferred
+    equity balance plus the operating partner's equity balance as of the date of the
+    valuation." That is `one_pager.get_capitalization_stack`'s `total_cap_isbs`, called
+    exactly as the Portfolio Snapshot calls it, at the quarter holding the valuation
+    date:
+
+        debt_isbs        ISBS debt balance at quarter end (a sold deal's debt is 0)
+        pref_equity      funded pref balance from the accounting feed, to quarter end
+        partner_equity   funded operating-partner balance, likewise
+
+    NOT the Snapshot's printed `total_cap`, which re-foots development deals to the
+    COMMITTED facility and committed pref -- a presentation for the PDF, not balances.
+    The Snapshot carries this same funded-throughout figure as `total_cap_funded`.
+
+    None, never 0, when there is nothing to add up: the engine defaults every leg to
+    0.0, and a deal with no debt, no pref and no partner equity on file is unknown, not
+    a deal capitalised at nothing.
+    """
+    quarter = _quarter_of(as_of)
+    if not quarter:
+        return {"total_cap": None, "total_cap_note": "cycle has no usable as-of date"}
+    try:
+        from one_pager import get_capitalization_stack
+        cap = get_capitalization_stack(
+            vcode, data.get("mri_loans_raw"), data.get("mri_val"),
+            data.get("wf"), data.get("acct"), data.get("inv"),
+            isbs_raw=data.get("isbs_raw"), quarter_str=quarter,
+            relationships=data.get("relationships_raw"),
+            inspection=data.get("inspection_raw"),
+            commitments=data.get("commitments_raw"),
+        )
+    except Exception as e:
+        logger.info("Cap stack failed for %s at %s: %s", vcode, quarter, e)
+        return {"total_cap": None, "total_cap_note": f"cap stack unavailable: {e}"}
+    debt = 0.0 if cap.get("sold_suppressed") else float(cap.get("debt_isbs") or 0)
+    pref = float(cap.get("pref_equity") or 0)
+    ptr = float(cap.get("partner_equity") or 0)
+    total = cap.get("total_cap_isbs")
+    if not (debt or pref or ptr):
+        return {"total_cap": None, "total_cap_quarter": quarter,
+                "total_cap_note": "no debt, pref or partner equity on file"}
+    return {"total_cap": total, "total_cap_debt": debt, "total_cap_pref": pref,
+            "total_cap_partner": ptr, "total_cap_quarter": quarter,
+            "total_cap_note": "debt not reported: sold by the valuation date"
+                              if cap.get("sold_suppressed") else None}
+
+
+def _tranches(by_investor: Dict[str, Any],
+              walk_lines: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    """One line per PSC-side pref investor, where a deal has more than one.
+
+    Jim, Oct 6 2026: Pegasus "does need to be split into separate rows" -- its Pref A
+    (PPILFS) and Pref B (TGA22). Asset management's workbook does the split BY HAND:
+    `MIN(deal NAV, Pref B with accrual)` to one row and the remainder to the other, which
+    is a waterfall typed into Excel. Here NOTHING IS SPLIT BY FORMULA:
+
+      balance and accrual   the Pref Balance Detail engine's own walk for that investor
+                            (the same walks summed into the deal row)
+      pref NAV              what the NAV run's waterfall ALLOCATED to that investor --
+                            the step order does the split (valuation_nav_module decision
+                            8, "no special-case code"); None until a NAV has been run
+
+    By rule, not by vcode: any deal with two or more PSC-side investors gets its lines.
+    The lines are DETAIL UNDER the deal row and never enter a subtotal -- they are the
+    deal row taken apart, and adding them as well would count the deal twice (Jim, Oct 6
+    2026: grand totals must not count the same rows twice).
+    """
+    psc = [code for code in (by_investor or {}) if _is_psc_side(code)]
+    if len(psc) < 2:
+        return None
+    alloc: Dict[str, float] = {}
+    order: Dict[str, int] = {}
+    for line in walk_lines or []:
+        who = str(line.get("recipient") or "").strip()
+        alloc[who] = alloc.get(who, 0.0) + float(line.get("allocated") or 0)
+        order.setdefault(who, int(line.get("iorder") or 0))
+    out = []
+    for code in sorted(psc, key=lambda c: (order.get(c, 10 ** 6), c)):
+        w = by_investor[code] or {}
+        h = (w.get("header") if isinstance(w, dict) and "header" in w else w) or {}
+        bal, acc = h.get("investment_balance"), h.get("accrued_pref")
+        out.append({
+            "investor": code,
+            "pref_balance": bal,
+            "pref_accrued": acc,
+            "pref_with_accrual": (None if bal is None and acc is None
+                                  else (bal or 0) + (acc or 0)),
+            "pref_nav": alloc.get(code) if walk_lines is not None else None,
+        })
+    return out
 
 
 def _prior_from_mri(data: dict, prior_year: int) -> Dict[str, Dict[str, Any]]:
@@ -412,6 +524,7 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "pref_with_accrual": (None if bal is None and acc is None
                                   else (bal or 0) + (acc or 0)),
             "pref_nav": rec["psc_nav"],
+            "tranches": rec.get("tranches"),
             "prior_pref_nav": p.get("psc_nav"),
             "var_to_prior": _delta(rec["psc_nav"], p.get("psc_nav")),
             "pref_source": rec["pref_source"], "pref_note": rec["pref_note"],
@@ -455,12 +568,22 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     for vcode, rec in sorted(a["current"].items()):
         p = a["prior"].get(vcode, {})
         meta = a["names"].get(vcode, {})
+        # A deal-level figure: the cap stack is the DEAL's, so a child property's row
+        # carries none and says where it is -- summing both would count the parent's
+        # debt twice in a subtotal.
+        if rec.get("parent_vcode"):
+            tc = {"total_cap": None,
+                  "total_cap_note": f"on the parent deal's row ({rec['parent_vcode']})"}
+        else:
+            tc = _total_cap(data, vcode, cy["as_of"])
         rows.append({
             "vcode": vcode,
             "investment_id": meta.get("investment_id"),
             "name": meta.get("name") or vcode,
             "portfolio": meta.get("portfolio"),
             "group_label": rec.get("group_label"),
+            "parent_vcode": rec.get("parent_vcode"),
+            **tc,
             "prior_method": p.get("method"), "method": rec["method"],
             "prior_cap_rate": p.get("cap_rate"), "cap_rate": rec["cap_rate"],
             "prior_exit_cap": p.get("term_cap_rate"), "exit_cap": rec["term_cap_rate"],
@@ -487,7 +610,8 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         "sections": _sections(rows, ["value", "prior_value", "var_to_prior_value",
                                      "debt", "prior_debt", "net_proceeds",
                                      "prior_net_proceeds", "var_to_prior_proceeds",
-                                     "direct_cap_noi"]),
+                                     "direct_cap_noi", "total_cap"]),
+        "total_cap_as_of": _quarter_of(cy["as_of"]),
         "group_labels": group_labels(engine, cycle_id),
         "ungrouped": [r["vcode"] for r in rows if not r.get("group_label")],
         "missing_nav": [r["vcode"] for r in rows if not r["nav_computed"]],
