@@ -1335,7 +1335,8 @@ watch(selectedCycleId, () => {
                       <span class="section-count">{{ section.count }} deal{{ section.count === 1 ? '' : 's' }}</span>
                     </td>
                   </tr>
-                  <tr v-for="r in section.rows" :key="r.vcode" class="summary-row">
+                  <template v-for="r in section.rows" :key="r.vcode">
+                  <tr class="summary-row">
                     <td class="tick no-print">
                       <input type="checkbox" v-if="canEdit" :checked="summarySelected.has(r.vcode)"
                              @change="toggleSummaryRow(r.vcode)" />
@@ -1361,6 +1362,24 @@ watch(selectedCycleId, () => {
                       {{ fmtCurrency(r.var_to_prior) }}
                     </td>
                   </tr>
+                  <!-- One line per pref investor where a deal has more than one
+                       (Pegasus: Pref A / Pref B). The deal's own walks and the NAV
+                       waterfall's allocation to each -- detail UNDER the deal row,
+                       never added into a subtotal (that would count the deal twice).
+                       MRI holds last year's NAV for the deal only, so no prior split. -->
+                  <tr v-for="t in r.tranches || []" :key="r.vcode + '-' + t.investor" class="tranche-row">
+                    <td class="tick no-print"></td>
+                    <td class="deal-name tranche-name">{{ t.investor }}</td>
+                    <td class="num">{{ fmtCurrency(t.pref_balance) }}</td>
+                    <td class="num">{{ fmtCurrency(t.pref_accrued) }}</td>
+                    <td class="num">{{ fmtCurrency(t.pref_with_accrual) }}</td>
+                    <td class="num" :title="r.nav_computed ? 'Allocated by the NAV waterfall' : 'NAV not yet run for this deal'">
+                      {{ fmtCurrency(t.pref_nav) }}
+                    </td>
+                    <td class="num"></td>
+                    <td class="num"></td>
+                  </tr>
+                  </template>
                   <tr class="subtotal-row">
                     <td class="tick no-print"></td>
                     <td>
@@ -1402,6 +1421,9 @@ watch(selectedCycleId, () => {
                     <th class="num">Net Proceeds {{ summaryTab.prior_year ?? '&mdash;' }}</th>
                     <th class="num">Net Proceeds {{ summaryTab.current_year }}</th>
                     <th class="num">Variance</th>
+                    <th class="num" title="Debt balance + preferred equity balance + operating partner's equity balance, as of the valuation date (the cap-stack engine the One Pager and Portfolio Snapshot use)">
+                      Total Cap {{ summaryTab.total_cap_as_of }}
+                    </th>
                   </tr>
                 </thead>
                 <tbody v-for="section in summaryTab.sections" :key="section.label">
@@ -1410,7 +1432,7 @@ watch(selectedCycleId, () => {
                       <input type="checkbox" v-if="canEdit" :checked="sectionAllSelected(section)"
                              @change="toggleSummarySection(section)" />
                     </td>
-                    <td colspan="14" :class="{ unlabelled: !section.labelled }">
+                    <td colspan="15" :class="{ unlabelled: !section.labelled }">
                       {{ section.label }}
                       <span class="section-count">{{ section.count }} deal{{ section.count === 1 ? '' : 's' }}</span>
                     </td>
@@ -1445,6 +1467,11 @@ watch(selectedCycleId, () => {
                     <td class="num" :class="{ pos: (r.var_to_prior_proceeds ?? 0) > 0, neg: (r.var_to_prior_proceeds ?? 0) < 0 }">
                       {{ fmtCurrency(r.var_to_prior_proceeds) }}
                     </td>
+                    <td class="num" :title="r.total_cap_note || (r.total_cap != null
+                          ? `Debt ${fmtCurrency(r.total_cap_debt)} + pref ${fmtCurrency(r.total_cap_pref)} + partner ${fmtCurrency(r.total_cap_partner)}`
+                          : '')">
+                      {{ fmtCurrency(r.total_cap) }}
+                    </td>
                   </tr>
                   <tr class="subtotal-row">
                     <td class="tick no-print"></td>
@@ -1463,6 +1490,7 @@ watch(selectedCycleId, () => {
                     <td class="num">{{ fmtCurrency(section.totals.prior_net_proceeds) }}</td>
                     <td class="num">{{ fmtCurrency(section.totals.net_proceeds) }}</td>
                     <td class="num">{{ fmtCurrency(section.totals.var_to_prior_proceeds) }}</td>
+                    <td class="num">{{ fmtCurrency(section.totals.total_cap) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -2378,6 +2406,9 @@ h3 { font-size: 14px; margin: 0 0 10px; }
 .child-indent { margin-right: 4px; }
 .deal-name { font-weight: 600; }
 .vcode-tag { font-size: 11px; font-weight: 400; color: var(--color-text-secondary); margin-left: 6px; }
+/* A pref investor's line under its deal: detail, not a deal of its own. */
+.tranche-row td { font-size: 12px; color: var(--color-text-secondary); font-style: italic; }
+.tranche-name { padding-left: 28px !important; }
 .pos { color: #2e7d32; }
 .neg { color: #b3402f; }
 
