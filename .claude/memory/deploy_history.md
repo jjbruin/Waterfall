@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v580** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v581** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v580 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v581 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,18 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v581` = `770acee` (SHAREPOINT PICKER ON VALUATIONS > BUDGET REVIEW -- Jim, testing v580:
+    "the uploads in this section do not have the sharepoint load buttons." The v580
+    pass put the Argus picker on ArgusImport (Deal Analysis / Pipeline), but Valuations
+    loads the partner budget AND the Argus cash flow through LineMappingPanel; only the
+    documents upload had one. LineMappingPanel's input now routes through
+    `parseFile(file)` and the picker feeds it. Span vs live `6e530b9`: `b3e77fe` (this),
+    docs `d20673d` and Charlene's docs `83a9ae1`, merge `770acee`. Build `cant`,
+    2m53s, Succeeded; tag locked; P1 re-run before update; Healthy, `/health` 200; the
+    seven SSO_/SHAREPOINT_ settings carried over (image-only update), sso config still
+    enabled. Served: entry `main-CtDP5ynj.js` -> `ValuationsView-iU10JlsN.js` carries
+    the Budget Review picker. Guardrails: sharepoint_picker 39, mapping_feedback 33,
+    section_access 274.)
   - `v580` = `6e530b9` (MICROSOFT SIGN-IN AND THE SHAREPOINT PICKER -- branch
     `feat/sso-email-match`. Sign-in matches the EXISTING account by `users.email`, never
     opens the `admin` username, creates no account; ProxyFix (x_for/x_proto/x_host=1) so
