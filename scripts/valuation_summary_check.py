@@ -117,11 +117,37 @@ with eng.begin() as c:
                   '{"investment_balance": 802308.0, "accrued_pref": 14243.7}}}',
              'np': val - 5247905.97, 'pn': 2347830.79, 'on': 500000.0})
 
-_pref = S.pref_summary(eng, cur, {})
-_row = _pref['rows'][0]
+# LAST YEAR IS MRI'S VALUATION (Jim, Oct 6 2026). The 2025 cycle record above carries
+# figures too -- deliberately DIFFERENT from MRI's below on value and cap -- so a tab
+# still reading the prior cycle fails, and one reading MRI passes.
+import pandas as _pd  # noqa: E402
+with eng.begin() as c:
+    c.execute(text("UPDATE valuation_records SET concluded_value = 1.0, cap_rate = 0.5 "
+                   "WHERE cycle_id = :c"), {'c': old})
+    c.execute(text("INSERT INTO valuation_records (cycle_id, vcode, method, concluded_value) "
+                   "VALUES (:c, 'P0000999', 'Direct Cap', 1000000.0)"), {'c': cur})
+MRI = {'mri_val': _pd.DataFrame([
+    # the prior year-end: what the tab must read
+    {'vCode': 'P0000004', 'dtValuation': '12/31/2025', 'vMethod': 'DCF', 'fCapRate': 0.075,
+     'nTermCapRate': 0.08, 'nDiscountRateForEquityInterest': 0.09, 'mAnnualNOI': 650000.0,
+     'mIncomeCapConcludedValue': 8900000.0, 'mDebtValue': 5247905.97,
+     'mEquityValue': 3652094.03, 'mMezzanineValue': 2347830.79},
+    # an older year: must not be read for 2025
+    {'vCode': 'P0000004', 'dtValuation': '2024-12-31', 'vMethod': 'Direct Cap',
+     'fCapRate': 0.07, 'mIncomeCapConcludedValue': 7000000.0, 'mMezzanineValue': 1.0},
+])}
+
+_pref = S.pref_summary(eng, cur, MRI)
+_row = next(r for r in _pref['rows'] if r['vcode'] == 'P0000004')
 check('the tab compares this cycle with the prior year',
       (_pref['current_year'], _pref['prior_year']) == (2026, 2025),
       f"{_pref['current_year']} vs {_pref['prior_year']}")
+check('...and says the prior year is MRI\'s, at its date',
+      _pref['prior_source'] == 'MRI valuations, 2025-12-31', _pref['prior_source'])
+check('a deal MRI has no prior valuation for is named, not zeroed',
+      _pref['prior_missing'] == ['P0000999']
+      and next(r for r in _pref['rows'] if r['vcode'] == 'P0000999')['prior_pref_nav'] is None,
+      str(_pref['prior_missing']))
 check('the stored pref figure is the PSC side only',
       _row['pref_balance'] == 1490000.0, str(_row['pref_balance']))
 check('balance and accrual are added for the combined column',
@@ -129,26 +155,43 @@ check('balance and accrual are added for the combined column',
       str(_row['pref_with_accrual']))
 check('the stored figure says it came from the NAV run',
       'NAV run' in (_row['pref_source'] or ''), str(_row['pref_source']))
-check('the prior year NAV is carried across',
-      _row['prior_pref_nav'] == 2347830.79)
+check('the prior year pref NAV is MRI\'s mMezzanineValue at 12/31/2025',
+      _row['prior_pref_nav'] == 2347830.79, str(_row['prior_pref_nav']))
 check('the variance is the move, not a restatement',
       _row['var_to_prior'] == 0.0)
 
-_val = S.valuation_summary(eng, cur, {})
-_vrow = _val['rows'][0]
-check('the valuation tab carries both years of method and rates',
+_val = S.valuation_summary(eng, cur, MRI)
+_vrow = next(r for r in _val['rows'] if r['vcode'] == 'P0000004')
+check('the valuation tab carries both years of method and rates, last year MRI\'s',
       (_vrow['method'], _vrow['prior_method']) == ('DCF', 'DCF')
-      and _vrow['cap_rate'] == 0.0725 and _vrow['prior_cap_rate'] == 0.075)
-check('value variance is computed from the two cycles',
+      and _vrow['cap_rate'] == 0.0725 and _vrow['prior_cap_rate'] == 0.075
+      and _vrow['prior_exit_cap'] == 0.08 and _vrow['prior_discount'] == 0.09,
+      str((_vrow['prior_method'], _vrow['prior_cap_rate'])))
+check('NOT the prior cycle\'s own record (value 1.0, cap 50%)',
+      _vrow['prior_value'] == 8900000.0 and _vrow['prior_cap_rate'] != 0.5,
+      str(_vrow['prior_value']))
+check('NOT an older MRI year (2024: 7.0M, Direct Cap)',
+      _vrow['prior_value'] != 7000000.0 and _vrow['prior_method'] != 'Direct Cap')
+check('value variance is this cycle against MRI\'s prior year',
       _vrow['var_to_prior_value'] == 500000.0, str(_vrow['var_to_prior_value']))
+check('prior NOI, debt and net proceeds are MRI\'s (mAnnualNOI, mDebtValue, mEquityValue)',
+      _vrow['prior_direct_cap_noi'] == 650000.0 and _vrow['prior_debt'] == 5247905.97
+      and _vrow['prior_net_proceeds'] == 3652094.03,
+      str((_vrow['prior_direct_cap_noi'], _vrow['prior_debt'], _vrow['prior_net_proceeds'])))
 check('debt is read from the NAV inputs, not recomputed',
       _vrow['debt'] == 5247905.97)
+check('the same reader as the Committee Summary (valuation_service._prior_rows)',
+      'valuation_service._prior_rows(' in open(S.__file__, encoding='utf-8').read())
 
-_alone = S.pref_summary(eng, old, {})
-check('a cycle with no prior year says so, rather than showing zeros',
-      _alone['no_prior_cycle'] and _alone['rows'][0]['prior_pref_nav'] is None)
+_alone = S.pref_summary(eng, cur, {'mri_val': MRI['mri_val'].iloc[1:]})
+check('no MRI valuations for the prior year says so, rather than showing zeros',
+      _alone['no_prior_data'] and all(r['prior_pref_nav'] is None for r in _alone['rows']))
 check('...and its variance is blank, not 0',
-      _alone['rows'][0]['var_to_prior'] is None)
+      all(r['var_to_prior'] is None for r in _alone['rows']))
+# The deal with no MRI valuation was only for the checks above; the grouping
+# section below counts the cycle's deals.
+with eng.begin() as c:
+    c.execute(text("DELETE FROM valuation_records WHERE vcode = 'P0000999'"))
 
 section('The NAV collects the accrual the One Pager suppresses')
 
@@ -325,7 +368,8 @@ else:
                      'prior_debt', 'debt', 'prior_net_proceeds', 'net_proceeds',
                      'var_to_prior_proceeds']
     _TOP_KEYS = ['title', 'current_year', 'prior_year', 'rows', 'sections',
-                 'group_labels', 'ungrouped', 'missing_nav', 'no_prior_cycle']
+                 'group_labels', 'ungrouped', 'missing_nav', 'no_prior_data',
+                 'prior_source', 'prior_deal_count', 'prior_missing']
     _SEC_KEYS = ['label', 'labelled', 'rows', 'count', 'totals', 'missing_counts']
 
     for k in _ROW_KEYS_PREF + _ROW_KEYS_VAL:

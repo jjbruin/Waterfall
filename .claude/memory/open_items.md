@@ -1825,7 +1825,19 @@ locally, so a local comparison proves nothing. This needs
 `scripts/` run against production (the image ships `scripts/` since `v474`). Until then,
 treat the two Debt columns as potentially different numbers.
 
-### 8.3 Prior-year figures: two SOURCES (not two engines)
+### 8.3 Prior-year figures: two SOURCES (not two engines) — DECIDED Oct 6 2026
+**Jim, Oct 6 2026: "use MRI valuations as the prior-year source."** The two summary tabs
+now read last year through `valuation_service._prior_rows` -- the Committee Summary's own
+reader -- at the prior year-end (`valuation_summary_service._prior_from_mri`), with net
+proceeds = mEquityValue and pref NAV = mMezzanineValue. On local data the 2026 cycle's
+prior value fills on 48 of 82 deals (from ~1, read off the near-empty 2025 cycle); the
+28 with no 2025 MRI valuation are named on the tab with their vcode. Built on branch
+`feat/valuation-summary-mri-prior`, not deployed as of Oct 6 2026.
+**Still open:** the Committee Summary's PRIOR net proceeds is `value - debt`, while
+MRI carries mEquityValue -- the same class as the Sep 18 fix to its current-year column.
+Measure both across every deal before changing either.
+
+Original note:
 The Committee Summary reads last year from MRI's `valuations` feed (`_prior_rows`, using
 `mIncomeCapConcludedValue`, `mDebtValue`, `mMezzanineValue`). The valuation summary tabs
 read last year from **the prior cycle's own `valuation_records`**. These should be the

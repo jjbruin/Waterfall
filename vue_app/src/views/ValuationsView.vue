@@ -1249,12 +1249,26 @@ watch(selectedCycleId, () => {
               <button class="btn-secondary no-print" @click="printSummary">Print</button>
             </div>
 
-            <!-- A prior year that does not exist is stated once, at the top. Every
-                 prior-year column below then reads as a dash for a reason the reader
-                 has already been given, rather than looking like missing data. -->
-            <div v-if="summaryTab.no_prior_cycle" class="summary-notice">
-              There is no {{ summaryTab.current_year - 1 }} cycle in the app, so every
-              prior-year column is blank. This is the first cycle, not missing data.
+            <!-- Where last year came from, stated once at the top (Jim, Oct 6 2026:
+                 MRI valuations are the prior-year source). A deal MRI has no prior
+                 valuation for reads as a dash, and is named here so the dash has a
+                 reason -- WITH its vcode: two deals are called "Donald Lynch"
+                 (P0000049, P0000073) and only one of them has a 2025 valuation. -->
+            <div class="summary-notice">
+              <template v-if="summaryTab.no_prior_data">
+                MRI holds no {{ summaryTab.prior_year }} valuations, so every prior-year
+                column is blank.
+              </template>
+              <template v-else>
+                {{ summaryTab.prior_year }} figures are from {{ summaryTab.prior_source }}
+                ({{ summaryTab.prior_deal_count }} of {{ summaryTab.rows.length }} deals).
+                <template v-if="summaryTab.prior_missing?.length">
+                  No {{ summaryTab.prior_year }} valuation in MRI for
+                  {{ summaryTab.prior_missing.length }}:
+                  {{ summaryTab.rows.filter((r: any) => summaryTab.prior_missing.includes(r.vcode))
+                       .map((r: any) => `${r.name} (${r.vcode})`).join(', ') }}.
+                </template>
+              </template>
             </div>
 
             <div v-if="prefGapTotal" class="summary-notice no-print">
