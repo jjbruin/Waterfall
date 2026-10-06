@@ -49,10 +49,16 @@ sign-in stops (the picker needs no secret and keeps working).
 Web platform (server sign-in, `sso.py`): `.../auth/sso/callback` on both hosts
 (`http://localhost:5000/auth/sso/callback` locally).
 
-### Not yet verified
-The Microsoft sign-in itself: the in-app preview pane blocks popups, and the redirect
-URIs above were not confirmed registered. Verified locally: config route, all
-pickers render, dialog opens, popup-blocked message, return page served.
+### Verified
+**Jim signed in through the picker in Chrome, locally, Oct 6 2026** -- against the real
+Entra app, after IT registered the URIs. Two lessons from getting there:
+- **The popup must open from the click.** The first version awaited config, MSAL and a
+  Graph call before asking for the popup, and Chrome blocked it. The dialog now shows
+  "Sign in with Microsoft" and that handler calls `sp.signIn()` first; `token()` never
+  opens a window (guarded in `sharepoint_picker_check.py`, `--inject=popup`).
+- **The Claude app's built-in browser pane blocks EVERY popup.** It cannot test this
+  flow at all; use a real Chrome/Edge window on `localhost:5173`. MSAL 5 itself opens
+  synchronously (`navigatePopups` defaults to true -> `about:blank` inside the call).
 
 ## Microsoft sign-in (same branch)
 `sso.py` matches the EXISTING account by the `users.email` column, never opens the
