@@ -2181,6 +2181,29 @@ the whole table to MRI to load. Nothing built. Note this is the reason the table
 `PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
 until this export exists, its only copy.
 
+### 5.11 Valuation Summary tabs vs Jack's 2025 workbook — OPEN (Oct 6 2026)
+Jack re-sent `2025 Valuation Summary Report - LIVE.xlsx` (Jim's OneDrive) asking for
+tabs `2025_Val_Summary_1/2`. **Both already exist** (§5.10, `v503`); measured against his
+workbook Oct 6 2026, the gaps are:
+
+- **Total Capitalization: not built.** Jim, Oct 6 2026: debt balance + preferred equity
+  balance + the operating partner's equity balance, **as of the valuation date** (the
+  workbook typed it in at 9/30). Find the existing engines for each before writing
+  anything (ONE NUMBER, ONE ENGINE); `compute.get_deal_capitalization` is a candidate.
+- **Pegasus split into Pref A / Pref B rows: required** (Jim, Oct 6 2026). The workbook
+  does it by hand (`MIN(mezz, B balance)` then the rest to A) -- that is a waterfall
+  split; it must come from the waterfall, not a typed formula.
+- **Grand totals must not count a row twice** (Jim, Oct 6 2026). His sheet's formulas
+  overlap; the app's `_sections()` straight sum is the rule. Child property rows
+  (Giant 7's, Berger's, OREI's, PMAT's) must not be added on top of their parent.
+- **Prior year is blank for 2026 vs 2025**: the 2025 cycle's records are nearly empty;
+  the real 2025 figures are in MRI `valuations`. Source of record is §8.3 -- Jim's call.
+- No group labels are set on any record; Up/Down, rate deltas, % change, prior-year NOI
+  and an Excel export are not on the tabs. Questions sent to Jack Oct 6 2026 (Jim).
+- Pref spot check, 70 deals at 12/31/2025: 37 within $1, 13 differ (mostly accrual,
+  app lower -- likely later payments; unproven), 20 have no app figure (no Cap_WF or no
+  PSC pref steps). Pegasus TGA22: workbook 2,857,750.00 vs app 1,909,023.05.
+
 ### 5.10 Jack Day's valuation list (Sep 17 2026) — DONE, live at `v503`
 Nine asks from asset management, shipped in `v500`–`v502`.
 
