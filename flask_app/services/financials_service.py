@@ -1141,19 +1141,26 @@ def get_tenant_roster(tenants_raw: pd.DataFrame, vcode: str, inv: Optional[pd.Da
 def compute_pe_yield_on_exposure(prop_perf, cap_stack, is_dev):
     """P.E. Yield on Exposure = Projected YE NOI / (Debt + Pref Equity), or None.
 
-    None means "not printed" (the page renders N/A): a development deal, a deal
-    with no NOI at all, or one with no exposure. A negative NOI over a positive
-    exposure on a NON-development deal is a real negative yield and is returned.
+    None means "not printed" (the page renders N/A): a deal with no NOI at all,
+    one with no exposure, or a DEVELOPMENT deal whose NOI is not yet positive.
+
+    A development deal in lease-up prints its yield once it has positive NOI
+    (Jefferson Waters Creek, +2.5%, as on the sent 26Q2 report) and prints N/A
+    until then (Addison Heights and Eastchase, negative NOI). The rule is on the
+    data, not on a vcode, so a deal starts printing the quarter it turns positive.
+
+    A NON-development deal prints whatever it computes, including a negative
+    yield: a negative NOI over a positive exposure is a real figure there.
 
     Pure, so the rule can be tested without assembling a whole One Pager. See the
     comment at the call site for why each branch exists.
     """
-    if is_dev:
-        return None
     if not prop_perf or not cap_stack:
         return None
     noi = prop_perf.get('noi', {}) or {}
     noi_ye = noi.get('actual_ye', 0) or noi.get('ytd_actual', 0) or 0
+    if is_dev and noi_ye <= 0:
+        return None
     senior_plus_pe = (cap_stack.get('debt', 0) or 0) + (cap_stack.get('pref_equity', 0) or 0)
     if senior_plus_pe > 0 and noi_ye:
         return noi_ye / senior_plus_pe
@@ -1247,14 +1254,20 @@ def get_one_pager_data(vcode, quarter_str, inv, isbs_raw, mri_loans, mri_val,
     # (and revenue/expenses beside it) a None default, which is a wider change
     # than this one and would move other readers.
     #
-    # A DEVELOPMENT DEAL PRINTS N/A, NOT A YIELD. The Portfolio Snapshot already
-    # reads "Dev" for every ratio of a development deal (LTV, DSCR, Debt Yield),
-    # because a building in lease-up has no stabilised NOI to yield on. Printing
-    # a negative P.E. Yield on Exposure here for the same deal made the two tabs
-    # disagree about it: Addison Heights -0.38% and Eastchase -0.98% on the One
-    # Pager at 26Q2 against "Dev" on the Snapshot, and N/A on the sent report.
-    # The test is `_is_dev_deal`, the app's one definition (config.DEV_STRATEGIES).
-    # A NON-development deal with negative NOI still prints its negative yield.
+    # A DEVELOPMENT DEAL PRINTS N/A UNTIL ITS NOI IS POSITIVE. A building in
+    # lease-up has no stabilised NOI to yield on, and the Portfolio Snapshot
+    # reads "Dev" for every ratio of such a deal. Printing a NEGATIVE P.E. Yield
+    # on Exposure for it made the two tabs disagree: Addison Heights -0.38% and
+    # Eastchase -0.98% on the One Pager at 26Q2, against "Dev" on the Snapshot
+    # and N/A on the sent report.
+    #
+    # BUT NOT EVERY DEVELOPMENT DEAL IS BLANK. Jefferson Waters Creek is in
+    # lease-up with positive NOI and the sent 26Q2 report printed +2.5% for it, so
+    # the gate is on the data (positive NOI), not on the classification alone and
+    # not on a vcode. A development deal therefore starts printing the quarter it
+    # turns positive. The test is `_is_dev_deal`, the app's one definition
+    # (config.DEV_STRATEGIES). A NON-development deal with negative NOI still
+    # prints its negative yield.
     if prop_perf and cap_stack:
         _y = compute_pe_yield_on_exposure(
             prop_perf, cap_stack, _is_dev_deal(vcode, inv))
