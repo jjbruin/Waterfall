@@ -36,9 +36,13 @@ A "From SharePoint" button beside each importer's own file input
   signed-in only); `--inject=scope|token|entry|fork|open` each fail it.
 
 ### What must be registered in Entra (SPA platform) before it works
-Jim sent IT the corrected list (both platforms, all four URIs below) on Oct 6 2026;
-awaiting IT's confirmation, along with the secret (by Mimecast), the user
-assignments and the exact Graph permissions granted.
+**IT confirmed Oct 6 2026:** all four URIs below registered exactly; delegated Graph
+`openid email profile offline_access User.Read Files.Read.All Sites.Read.All`, admin
+consent granted; all 19 users assigned (Assignment required = Yes, so only they can
+sign in -- a new user must be assigned in Entra AND exist in User Management). **The
+client secret expires October 5, 2028**; IT sends the value by Mimecast to Jim, who
+puts it in the Container App secrets himself. Rotate before that date or Microsoft
+sign-in stops (the picker needs no secret and keeps working).
 - `https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io/msal-redirect.html`
 - `http://localhost:5173/msal-redirect.html`
 
