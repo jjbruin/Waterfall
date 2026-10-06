@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v572** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v573** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v572 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v573 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,39 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v573` = `d5bd2c4` (INVESTMENT METRICS: UW PROJ. IRR AND PROJ YR-1 COC READ FROM
+    `deal_terms`. `Prop_Info_DealTerms.sql` pivots MRI's `'U/W IRR'` and
+    `'Projected Yr 1 CoC Returns'` (NOT the look-alikes `'UW IRR'` / `'Projected Yr 1
+    CoC'`) into `uw_irr` and `proj_yr1_coc`: latest `dtEffective` per deal, `UID` as the
+    tiebreak (P0000044 has two U/W IRR rows, both 0.12), undated underwriting figures,
+    stored as fractions and read through `_as_rate` like `pe_coupon`. `UNLOADED_FIGURES`
+    `uw_irr` / `proj_yr1_coc` are mode `mri`; `act_yr1_coc` untouched. A column the table
+    lacks is reported `unloaded_figure_field_absent`; a deal with no value is reported
+    `unloaded_figure_value_null`. **NOTHING CHANGES ON SCREEN UNTIL `deal_terms` IS
+    REFRESHED** -- every UW IRR / Proj Yr-1 cell stays an em dash, and the live
+    `deal_terms` has no new columns. **The refresh was deliberately NOT run and NOT
+    triggered**: Jim/Charlene are holding it until the precision question with Alay is
+    answered (MRI holds whole percents, e.g. 0.11, where the PDF shows 10.7%).
+    Span vs live `1d97985`: `d5bd2c4` (this change), plus Jim's docs-only `1e3138d`,
+    `98a8b9e`, `d5b236c`, `1a049b0` (`.claude/memory/` only). Build `canj`, 3m04s,
+    Succeeded; tag locked; rolled out Healthy at 100% traffic. SQL proved by Charlene in
+    SSMS: 89 rows (= the old table), the five original columns identical on all 89, 76
+    `uw_irr` and 55 `proj_yr1_coc` populated. Preview on those values (as of 2026-06-30):
+    50 Current + 26 Sold deals gain a UW IRR / Proj Yr-1; seven of the nine footnote-(5)
+    deals switch from a dash to the projected value; Trolley Square and Jefferson
+    Stephens have no Proj Yr-1 in MRI and are unchanged; Current Total Proj Yr-1
+    8.0%, UW IRR 15.4%; Sold Total 10.4% / 15.7%. **TWO DATA QUESTIONS FOR MRI, not code:**
+    Plaza Del Mar (P0000116, a young deal) has `proj_yr1_coc` = 0.0 -- the only zero of
+    55, and footnote (5) would print it in three cells; and 30 Bearfoot (P0000001) has
+    `uw_irr` = 0.33 against a next-highest of 0.24 and a median of 0.15. Smoke (all 200,
+    0 tracebacks, working set 1.15 GB of 2 GB): auth/me, auth/sections, dashboard/kpis,
+    portfolio-snapshot quarters + investors, one-pager P0000044, /investment-metrics
+    cold 22.5s then warm 0.26s. Guardrail: `investment_metrics_check.py` 186/186
+    (present / NULL / absent, units, the young-deal substitution turning on),
+    `investment_metrics_print_inspect.py` 44/44. Preview script for the full refresh:
+    `scripts/investment_metrics_preview_new_fields.py`. **Rollback if needed** is
+    FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:1d97985 --revision-suffix v574`.)
   - `v572` = `1d97985` (BOARD SECTION, PHASE 0 -- an OPT-IN section granted only by the
     admin USERNAME (optionally with an end date), permissions by username (editor,
     package builder, salary view/edit) that need the section, the append-only access
