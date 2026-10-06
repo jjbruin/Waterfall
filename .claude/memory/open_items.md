@@ -22,6 +22,92 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ---
 
+## 21. Sold deals still carry stale debt / loans — HELD, off the 26Q3 critical path (Oct 6 2026)
+
+**Held by Charlene's call, Oct 6 2026:** none of this changes Investment Metrics, the One
+Pager's PRINTED figures or the Portfolio Snapshot, so it waits — but it has to be solved,
+because the leaks below sit in Deal Analysis, the assistant, the One Pager's loan-terms text
+and the valuation cycles. Source: `payoffs_to_book.csv` (Downloads): 10 sold / paid-off deals
+plus the Berger parent roll-up, whose ISBS 2150/2152 balances and MRI loan rows are still
+live — **$249.99M of balance-sheet debt on the 10 deals** (Berger's $190.8M is the sum of its
+four children and is not counted twice). Audited Oct 6 2026 in-process against the local copy
+(pulled Oct 5) AND by read-only GETs against production at `v585`; **local and production agree
+on every screen compared.**
+
+The 10 deals: Bear Run, Heritage Hills, Lindenbrooke, Stonecliffe (Berger children, sold
+2026-04-22), 30 Bearfoot and Donald Lynch (2026-09-04), Quakertown and Airport Plaza
+(2026-03-04), Clima Secur (2026-07-01), East Manchester (2026-06-25, the only one whose MRI
+Paid Off date is present).
+
+**Already correct, verified, no action:** Dashboard (KPIs, Capitalization, Maturity buckets —
+KPI debt outstanding $2,042.4M, none of the 11 in any list), Surveillance, both Dashboard Excel
+exports, Portfolio Snapshot (nothing for any of the 11 across all 147 investors at 26Q3), the
+One Pager's Debt cell (`debt_display` None once sold as of the quarter), Reports / PE exposure
+and Sold Portfolio (read no debt), Ownership, Review Tracking (lists the deals, no debt fields),
+Investment Metrics (First Lien is the loan at ORIGINATION, not a balance — Berger $197.8M,
+Bearfoot $12.6M, Quakertown $12.2M, Clima $10.7M, East Manchester $10.0M, Airport $6.5M), and
+the deal's own balance sheet / Property Financials Excel (its statement of record, by design).
+**Pre-sale quarters are right** — the same `is_sold_as_of` test gives debt before the sale and a
+blank after: Berger $190,763,346 at 26Q1 on both the One Pager and the Snapshot, Quakertown
+$11,611,949 at 25Q4, Airport Plaza $5,762,332 at 25Q4, East Manchester $9,641,912 at 26Q1,
+Clima Secur $10,577,673 at 26Q2, Bear Run $80,043,352 at 26Q1.
+
+**THE REAL FIX is data, not code:** book each payoff in MRI — a `Paid Off` Loan_Date event on
+every loan (or a Disposition in `event_dates`). That removes the stale loans from 21.2, 21.3
+and 21.4 at once. Berger has no loan row at all (its four children carry them).
+
+### 21.1 One Pager still prints Loan Terms for a sold deal
+`OnePagerView.vue` prints `loan_terms_str` / `second_loan_terms_str` with no sold gate, so 26Q3
+shows e.g. Bear Run "2.93% | Fixed | 8/1/2030" and "7.28% | Fixed | 8/1/2030" beside a blank Debt
+cell. The Snapshot blanks rate and maturity (`portfolio_snapshot_loan.py`); the One Pager does
+not. The API payload also still carries the raw `cap_stack.debt` beside `debt_display=None`.
+**Fix:** gate the loan-terms text on `cap.sold_suppressed`. **Closed when:** a 26Q3 One Pager
+for Bear Run prints no loan terms, and 26Q1 still prints them.
+
+### 21.2 Deal Analysis models the sale at the stale loan's maturity
+`Sale_Date` is deliberately not consulted (priority: UI override, `event_dates`, then horizon
+end / max loan maturity), so with the loan live the modeled sale is Bear Run 2030-08-31 (actual
+2026-04-22), Heritage Hills / Lindenbrooke / Stonecliffe / Berger 2030-09-30, Quakertown
+2028-01-31 (2026-03-04), Clima Secur 2031-09-30 (2026-07-01), East Manchester 2031-01-31
+(2026-06-25), Airport Plaza 2026-11-30 (2026-03-04). Only 30 Bearfoot and Donald Lynch are right
+(2026-09-30), via `sale_overrides`. Debt-service schedules run past the sale. **Fix:** booking
+the payoffs (above). **Closed when:** `/api/deals/<vcode>/debt-service` lists no loan for these
+deals and the modeled sale is the actual one.
+
+### 21.3 `_filter_paid_off_loans` works per ROW, not per loan
+East Manchester's Paid Off row (2026-06-25) is dropped, but its Origination and Maturity rows
+keep LoanID 257 alive (maturity 2031-01-11) — so the loan is still modeled. The comment on
+`_collapse_loan_date_events` says a repaid loan carries only a Paid Off event; it does not.
+**Fix:** drop the whole LoanID when any of its rows is Paid Off. NOTE: `loaders.py` has a bare
+`to_datetime` that raises on East Manchester's `T`-format `dtEvent` — **local only; production
+does NOT hit it** (Deal Analysis returns normally there for East Manchester, Quakertown, Bear
+Run and Berger).
+
+### 21.4 Assistant tools
+* `get_loan_details` reads `data["loans"]`, a key that does not exist, and returns nothing for
+  every deal.
+* `get_debt_service` reads `original_amount` / `rate` / `rate_type` / `lender`, which the Loan
+  object does not have (0 / blank), and its annual `ending_balance` is one loan's last row, not
+  the deal's sum.
+* `get_capitalization` has no sold filter and double-counts a parent roll-up: **Berger returns
+  $381.5M of debt, LTV 1.50, against $190.8M** — the one number here that is actively
+  misleading. Bear Run alone returns $80.0M, LTV 0.84.
+* `get_one_pager` returns the loan terms and the raw debt beside `debt_display=None`.
+**Closed when:** each tool is correct on a live deal, refuses or flags a sold deal, and Berger
+returns $190.8M.
+
+### 21.5 Valuation cycles seed with `exclude_sold` at seed time
+Wrong in both directions. Cycle 1 (as of 2026-12-31) holds **30 Bearfoot and Donald Lynch, both
+sold 2026-09-04**, and Bearfoot's stored NAV carries **$11,973,158.81 of debt**
+(`valuation_nav_results`). Cycle 2 (as of 2025-12-31) is MISSING deals that were owned then —
+all 11 were — because they were marked sold by the time it was seeded (production holds only
+Donald Lynch of the 11). **Fix:** seed by the cycle's own as-of (sold on or before it, not sold
+today) — the Snapshot's `is_sold_as_of` is the test to reuse — then reseed.
+
+**Owner:** Charlene / Jim for the MRI payoffs; code fixes unassigned.
+
+---
+
 ## 20. Board package section -- planned, not started (Oct 5 2026)
 
 Development plan (a shared doc, private until shared): https://claude.ai/code/artifact/71e5c89f-933f-4b88-9e3e-f1b2e1d7a5b9
