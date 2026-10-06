@@ -2198,7 +2198,7 @@ Jack re-sent `2025 Valuation Summary Report - LIVE.xlsx` (Jim's OneDrive) asking
 tabs `2025_Val_Summary_1/2`. **Both already exist** (§5.10, `v503`); measured against his
 workbook Oct 6 2026, the gaps are:
 
-- **Total Capitalization: BUILT Oct 6 2026** (branch `feat/total-cap-pegasus-split`).
+- **Total Capitalization: BUILT Oct 6 2026** (LIVE at v576).
   Jim: debt balance + preferred equity balance + the operating partner's equity balance,
   as of the valuation date. It is `one_pager.get_capitalization_stack`'s
   `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called exactly as the

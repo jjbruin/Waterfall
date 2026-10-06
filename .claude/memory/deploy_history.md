@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v575** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v576** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v575 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v576 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,27 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v576` = `495b7b9` (VALUATION SUMMARY: TOTAL CAPITALIZATION AND THE PEGASUS SPLIT --
+    Jim, Oct 6 2026. Total Cap = `one_pager.get_capitalization_stack`'s
+    `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called as the
+    Portfolio Snapshot calls it at the quarter holding the cycle date; NOT the
+    Snapshot's printed `total_cap` (committed re-foot for dev deals). Parent/standalone
+    rows only, a child names its parent; None with a reason when nothing is on file.
+    Pegasus split BY RULE (2+ PSC-side pref investors; only P0000066 today): per-investor
+    pref walk and the NAV waterfall's allocation, detail under the deal row, never in a
+    subtotal. Local 2026 cycle: Total Cap on 52 of 82 rows (28 children, 2 nothing on
+    file), Pegasus 34,908,128 vs workbook 34,910,000 (hand-rounded); tranche balances
+    tie (TGA22 24,150,000; PPILFS 8,184,654.75). The valuation tab now runs the cap
+    stack per parent deal: 3.9s locally. Span vs live `ad390a8`: `b82e47a` (this), docs
+    `f1ea271`, merge `495b7b9`. Build `cann`, 2m59s, Succeeded; tag locked; P1 re-run
+    before update; rolled out Healthy, `/health` 200. Served bundle from the ENTRY
+    `index-B18ipERl.js` -> `ValuationsView-EOkoMfMg.js`: `total_cap_as_of`,
+    `total_cap_note`, `tranche-row` present. Guardrails on the merged tree:
+    valuation_summary 132 (fails on 4 injected defects), valuation_committee_scope 13,
+    capitalization_valuation_fields 9, onepager_valuation_selection 10,
+    one_engine_per_number 26, section_access 274, mapping_feedback 33. NOT measured on
+    production data -- doing so means starting the app against production, whose
+    startup creates tables.)
   - `v575` = `ad390a8` (VALUATION SUMMARY TABS: LAST YEAR IS MRI'S PUBLISHED VALUATION --
     Jim, Oct 6 2026, settling open_items 8.3. Pref Summary and Valuation Summary read the
     prior year through `valuation_service._prior_rows` (the Committee Summary's own
