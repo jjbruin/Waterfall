@@ -79,6 +79,13 @@ function border(cell: Cell, sides: Record<string, string>) {
   cell.border = next
 }
 
+/** 1 -> A, 22 -> V. */
+function colLetter(n: number): string {
+  let s = ''
+  while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26) }
+  return s
+}
+
 function numFmtFor(key: string, markers?: number[], isTotal?: boolean): string | null {
   let f: string | null = null
   if (MONEY_KEYS.has(key)) f = MONEY_FMT
@@ -324,12 +331,22 @@ export function buildInvestmentMetricsWorkbook(ExcelJS: any, data: any): any {
   ws.getCell(r, 1).value = BANNER
   ws.mergeCells(r, 1, r, BLOCK_COLS)
   r += 2
+  const printFrom = r
   r = addTable(ws, data, data.current, r, { asOf: true })
   r += 5
-  addTable(ws, data, data.sold, r, {
+  const end = addTable(ws, data, data.sold, r, {
     totalMarkers: data.sold.total_markers,
     grandTotal: data.grand_total,
   })
+  // THE BANNER AND THE LABEL STRIP ARE ON SCREEN ONLY. The reference workbook
+  // carries them as scaffolding above the table, but the reference DOCUMENT --
+  // what comes off the printer -- starts at the as-of line and title. So the
+  // print area begins there, and printing or saving a PDF from this file gives
+  // the document. A DRAFT banner (row 1) must still print, so the area is left
+  // unset while the report is a draft.
+  if (!data.draft) {
+    ws.pageSetup.printArea = `A${printFrom}:${colLetter(BLOCK_COLS)}${end - 1}`
+  }
   return wb
 }
 
