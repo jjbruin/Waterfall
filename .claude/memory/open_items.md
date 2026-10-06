@@ -136,6 +136,25 @@ was already wrong from nine dashed deals. The reference's own rows add to 100.0%
   pass against the reference's Total / Average and Grand Total rows.
 - **Owner:** Charlene / Jim.
 
+
+### 20.13 Investment Metrics: a deal sold AFTER the as-of still sits in the Sold table, with whole-life figures (Oct 6 2026) — decision needed, Charlene / Jim
+
+`classify` goes by the SOLD marker, not the sale date, so a deal sold after the quarter being
+viewed is in Sold with a footnote (4), and `cashflow_cutoff` deliberately leaves its proceeds and
+realized IRR whole-life. That is the reference's own convention at 26Q2 (Clima Secur, 30 Bearfoot,
+870 Donald Lynch, "sold after June 2026"), but at earlier quarters it breaks "values in a quarter
+stay in that quarter": 7 deals at 25Q4, 5 at 26Q1, 3 at 26Q2, 0 at 26Q3
+(`diagnostics.sold_after_as_of_full_life`).
+
+- **The alternative:** a deal is Current until its sale quarter, with its figures as of that
+  quarter. It would move those three deals into Current at 26Q2 and stop the Sold table
+  matching the reference's printed page, and `investment_metrics_check.py` section 22 (marker
+  regression against the reference at 2026-06-30) would have to change with it.
+- **Not quarter-aware by design, for the record:** First Lien (MRI has an origination date on
+  only 4 loans, so the loans cannot be cut by quarter), and the deal terms and underwriting
+  figures (coupon, split, lookback, UW IRR, Proj Yr-1).
+- **Owner:** Charlene / Jim.
+
 ### 20.3 Freezing is switched off, and 26Q2 has never been frozen — Charlene
 
 `FREEZE_ENABLED` defaults FALSE (`flask_app/config.py:51`) and has never been set on

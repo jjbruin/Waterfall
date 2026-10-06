@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v582** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v583** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v582 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v583 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,47 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v583` = `02a2155` (INVESTMENT METRICS: EVERY FIGURE BELONGS TO THE QUARTER SELECTED.
+    FOUND by running the report at 25Q4, 26Q1, 26Q2 and 26Q3 on the same data: PSC Pref,
+    First-Loss, Total Size, Proceeds and Realized IRR were IDENTICAL in every quarter, and deals
+    invested after the as-of were shown (5 at 25Q4, 3 at 26Q1). Burton printed the 26Q3
+    pledge, $54.2M, at 26Q2 while the One Pager's committed pref, which reads the same
+    commitments, said $26.6M. ROOT CAUSE: `_build_row` called `capitalization_sources` with NO
+    as-of, so the commitment chain was read as it stands today. FIXED: `capitalization_sources`
+    now receives the as-of -- the PSC pref through `committed_pref.resolve_committed_pref` as
+    in force on the quarter (ONE ENGINE with the One Pager), the operating partner's first-loss
+    side by the same StartDate/EndDate range rule (`_op_side_in_effect`), and the accounting
+    Commitment and funded-to-date fallbacks cut at the as-of; `proceeds_to_date` and
+    `realized_irr` are cut at the as-of (`cashflow_cutoff`); a deal invested after the as-of is
+    not in that quarter's report and is listed in `diagnostics.not_yet_invested` (and not
+    reported as a missing reference row). THE ONE EXEMPTION, NAMED: a deal in the SOLD table
+    whose sale is AFTER the as-of keeps whole-life proceeds and realized IRR, as the
+    reference's footnote (4), and is listed in `diagnostics.sold_after_as_of_full_life`
+    (7 deals at 25Q4, 5 at 26Q1, 3 at 26Q2, 0 at 26Q3). NOT QUARTER-AWARE, DELIBERATELY: First
+    Lien (MRI carries an origination date on only 4 loans, so the loans cannot be cut),
+    and the deal terms and underwriting figures (coupon, split, lookback, UW IRR, Proj Yr-1),
+    which are static attributes of the deal. MEASURED ON LIVE, verified after deploy: Burton
+    pref $26.5975M at 25Q4/26Q1/26Q2 and $54.2275M at 26Q3; deals shown 71 / 73 / 76 / 76
+    with none dated after its as-of; 26Q2 JB Fair Park $14.3M (was $29.8M), Nottingham $9.135M
+    (was $12.5M), Apple Bales Drive $3.0M (the accounting commitment; was $0.1M from
+    auto-generated back-fill rows) -- JB Fair Park, Nottingham and Burton are the three figures
+    the `committed_pref` docstring records from the sent 26Q2 TIAA report. 26Q2 effect, 29 of
+    76 deals: Current Total Size $3,103.8M -> $3,049.8M, Pref $784.8M -> $741.1M, First-Loss
+    $395.0M -> $387.6M, Proceeds $146.6M -> $139.5M (28 Current deals lose their Jul-Sep
+    distributions); Sold unchanged; Grand Total now Size $3,641.7M, Proceeds $453.5M. Span vs live
+    `90aadc9`: `a635111` (docs) and this change. Built and pushed from a clean worktree; build
+    `canv`, 2m56s, Succeeded; tag locked; Healthy at 100%. Guardrails:
+    `investment_metrics_check.py` 211/211 (new section 23 -- the Burton shape, first-loss, the
+    population and its boundary, proceeds to the dollar, the exemption -- both directions;
+    run against the ORIGINAL engine, 10 of the new checks fail, among them 54.227 read at
+    26Q2), `committed_pref_check` 47/47, `one_engine_per_number_check` 26/26,
+    `section_access_check` 274/274, `claude_md_budget_check` 3/3,
+    `investment_metrics_print_inspect` 44/44. Smoke (all 200, 0 tracebacks): auth/me,
+    auth/sections, dashboard/kpis (49s on the first call after the roll-out, 20s on earlier
+    deploys -- watch it), portfolio-snapshot quarters, one-pager P0000044 (5.1s),
+    /investment-metrics at four as-ofs (15-17s cold each, 0.22s warm). **Rollback** is
+    FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:90aadc9 --revision-suffix v584`.)
   - `v582` = `90aadc9` (A DEVELOPMENT DEAL PRINTS N/A FOR P.E. YIELD ON EXPOSURE -- Oct 6 2026,
     branch `fix/onepager-pe-yield-dev-na`, merge `90aadc9`. Since bcf19f2 (Sep 30) a negative NOI
     published a negative yield, which reached two development deals in lease-up: Jefferson Addison
