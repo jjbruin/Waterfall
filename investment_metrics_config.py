@@ -447,10 +447,13 @@ LEASE_UP_DEALS = {
 #   `field`    the column name. **None until Alay loads it.**
 #   `variant`  for a computed figure with more than one defined form
 #
-# TODO(alay): set `field` for each of the three below once the values are
-# loaded into MRI, and move `mode` to "mri". Nothing else has to change — the
-# engine reads this dict, the footnote (5)/(6) substitution reads the resulting
-# `proj_yr1_coc`, and the pref-weighted averages skip whatever is still None.
+# `uw_irr` and `proj_yr1_coc` are now "mri": `Prop_Info_DealTerms.sql` pivots
+# them into `deal_terms.uw_irr` / `deal_terms.proj_yr1_coc`. Until a refresh of
+# that table lands them the column is ABSENT and every deal prints an em dash;
+# after it, a deal MRI has no row for is NULL and prints an em dash too. The two
+# are reported separately (`unloaded_figure_field_absent` /
+# `unloaded_figure_value_null`). The footnote (5)/(6) substitution reads the
+# resulting `proj_yr1_coc`, and the pref-weighted averages skip None.
 #
 # WHY act_yr1_coc PRINTS NOTHING TODAY even though the engine can derive it:
 # the reference's figures in that column are not reproducible from the
@@ -459,19 +462,21 @@ LEASE_UP_DEALS = {
 # quantity. It is computed, kept, and not shown.
 UNLOADED_FIGURES = {
     "uw_irr": {
-        "mode": "none",
+        "mode": "mri",
         "table": "deal_terms",
-        "field": None,                       # TODO(alay): e.g. "uw_projected_irr"
+        "field": "uw_irr",                   # MRI vtranstype 'U/W IRR'
         "label": "UW Proj. IRR",
-        "note": "underwritten projected IRR is not held anywhere in MRI",
+        "note": "MRI Financial Transaction Summary 'U/W IRR', an undated "
+                "underwriting figure; latest dtEffective per deal",
     },
     "proj_yr1_coc": {
-        "mode": "none",
+        "mode": "mri",
         "table": "deal_terms",
-        "field": None,                       # TODO(alay): e.g. "proj_yr1_coc"
+        "field": "proj_yr1_coc",             # MRI vtranstype 'Projected Yr 1 CoC Returns'
         "label": "Proj Yr-1 CoC Returns",
-        "note": "projected year-1 cash-on-cash is not held anywhere in MRI; "
-                "footnotes (5) and (6) cannot substitute without it",
+        "note": "MRI Financial Transaction Summary 'Projected Yr 1 CoC "
+                "Returns', an undated underwriting figure; feeds the "
+                "footnote (5)/(6) substitution",
     },
     # SWITCHED ON. This column now PRINTS a derived figure — the one defined by
     # `investment_metrics.act_year_one_coc_roe`: the One Pager's ROE engine,
