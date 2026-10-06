@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v576** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v577** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v576 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v577 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,41 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v577` = `b2e2a0d` (INVESTMENT METRICS: EXPORT EXCEL BUTTON. A button on the tab builds
+    a styled .xlsx in the browser (ExcelJS, a lazy 940 kB chunk loaded only on click) from
+    the payload already on screen -- no new request, no new calculation, no route, no
+    section, no engine change, so the file cannot disagree with the page. Cells hold real
+    numbers with the reference workbook's number formats (a pref amount plain `$0.0` on a
+    deal row, red-parenthesis only on the Total row); Garamond 11; three stacked heading
+    rows with the grouped headings merged; "PSC" over Residual CF Split as in the reference
+    (the screen and print sheet keep it over Pref Coupon -- moved in the export only); the
+    boxed title block; the thin vertical rules from the payload's `vertical_rules`; the
+    grey `#D9D9D9` band on every second deal row; the orange "Orangewood Portfolio One-Pager"
+    banner and column-label strip; italic 14pt footnotes; the merged disclaimer. NOT copied:
+    the reference's hidden helper columns, input cells, formulas (totals are the engine's
+    values), and five hand-italicised Proj/Act Yr-1 cells (editorial, not derivable); the
+    Sold pref column is 1 dp to match the screen, the reference's is 2. The cell formatter
+    moved out of `InvestmentMetricsTable.vue` into `utils/investmentMetricsFormat.ts`, so the
+    screen, the print sheet and the export share one formatter. A first version exported CSV;
+    it was replaced before shipping because a CSV cannot carry fonts, fills, borders or merges.
+    Span vs live `495b7b9`: `b2e2a0d` (this change) plus Jim's docs-only `205dafd`, `840783c`.
+    **BUILT AND PUSHED FROM A SEPARATE CLEAN WORKTREE** of the target commit, because the
+    working checkout held two modified tracked files and two untracked files that were not
+    this change and that Charlene did not want touched; ACR uploads the working tree, so the
+    build came from `git worktree add --detach` of origin/main plus the squashed change.
+    Build `canp`, 2m47s, Succeeded; tag locked; rolled out Healthy at 100% traffic after
+    `v576`. Guardrails: `investment_metrics_check.py` 186/186,
+    `investment_metrics_print_inspect.py` 44/44 (the table component was edited), `vue-tsc`
+    no errors in the touched files (30 pre-existing elsewhere, unchanged). Verified the SERVED
+    bundle: the Investment Metrics view chunk, resolved from the entry bundle, contains
+    "Export Excel" and no "Export CSV", the exceljs chunk serves 940,366 B, and the banner text
+    is present. Smoke (all 200, 0 tracebacks): auth/me, auth/sections, dashboard/kpis (20s
+    cold), portfolio-snapshot quarters + investors, one-pager P0000044 (2.6s),
+    /investment-metrics?as_of=2026-06-30 cold 6.1s then warm 0.21s. **NOT TESTED: an actual
+    click of the button in a browser** -- the workbook was generated and inspected in Node
+    against the live payload; the Blob download path is the standard one. **Rollback if
+    needed** is FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2
+    --image acrwaterfalldev.azurecr.io/waterfall-xirr:495b7b9 --revision-suffix v578`.)
   - `v576` = `495b7b9` (VALUATION SUMMARY: TOTAL CAPITALIZATION AND THE PEGASUS SPLIT --
     Jim, Oct 6 2026. Total Cap = `one_pager.get_capitalization_stack`'s
     `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called as the
