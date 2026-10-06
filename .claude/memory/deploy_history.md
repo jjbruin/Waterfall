@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v577** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v578** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v577 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v578 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,23 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v578` = `c46c11b` (INVESTMENT METRICS EXCEL EXPORT: PRINT AREA. The workbook's print
+    area now starts at the as-of line and title (A3:V<last>), so the orange "Orangewood
+    Portfolio One-Pager" banner and the column-label strip -- scaffolding the reference
+    WORKBOOK carries above its table, absent from the reference DOCUMENT -- stay on screen
+    but do not print or export to PDF. Left unset while the report is a draft, so a DRAFT
+    banner still prints. One file, `investmentMetricsXlsx.ts`, +18/-1. Span vs live `b2e2a0d`:
+    `55e2d81` (docs) and this change. Built and pushed from a clean worktree again; build
+    `canq`, 2m41s, Succeeded; tag locked; Healthy at 100%. Guardrail
+    `investment_metrics_check.py` 186/186; served bundle contains `printArea` and "Export
+    Excel", not "Export CSV"; smoke all 200, 0 tracebacks. **LESSON: a worktree path given to
+    `git worktree add` while `MSYS2_ARG_CONV_EXCL=*` is set is NOT converted from `/c/...`, so
+    git created the directory at `C:/c/Users/...`, the following `cd` failed, and the next
+    commands ran in the MAIN checkout. Nothing was lost (the push was rejected as a
+    non-fast-forward and the working tree was untouched), but guard every `cd` with
+    `|| exit 1` and use a Windows-style path.** **Rollback** is FORWARD: `az containerapp
+    update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:b2e2a0d --revision-suffix v579`.)
   - `v577` = `b2e2a0d` (INVESTMENT METRICS: EXPORT EXCEL BUTTON. A button on the tab builds
     a styled .xlsx in the browser (ExcelJS, a lazy 940 kB chunk loaded only on click) from
     the payload already on screen -- no new request, no new calculation, no route, no

@@ -83,21 +83,28 @@ for coupon and participation**, so the item is closed and removed; the resolutio
 recorded against `v547` in `deploy_history.md`. Numbers are never reused here — a gap
 means an item closed, and renumbering would break every reference written before it.
 
-### 20.1 Investment Metrics: two columns are still unloaded — Alay
+### 20.1 Investment Metrics: UW Proj. IRR and Proj Yr-1 CoC — SHIPPED `v573`, WAITING ON A deal_terms REFRESH (updated Oct 6 2026)
 
-`investment_metrics_config.UNLOADED_FIGURES` holds `uw_irr` ("UW Proj. IRR") and
-`proj_yr1_coc` ("Proj Yr-1 CoC Returns") in `mode: "none"` with `field: None` and a
-`TODO(alay)` against each. The note on both: *"not held anywhere in MRI"*. Open since
-`v545`; the draft gate coming off at `v546` did not close it, and `v551` deliberately
-left them — it computed **Act.** Yr-1 CoC from the ROE engine and wired the footnote
-(5) substitution so that it **activates by itself the moment `proj_yr1_coc` is switched
-on**.
+MRI now holds both fields (`'U/W IRR'`, `'Projected Yr 1 CoC Returns'`; NOT the older
+look-alikes `'UW IRR'` / `'Projected Yr 1 CoC'`). `queries/Prop_Info_DealTerms.sql` pivots them
+into `deal_terms.uw_irr` / `deal_terms.proj_yr1_coc` (latest `dtEffective` per deal, undated
+figures, fractions) and `UNLOADED_FIGURES` reads them in mode `mri`. Charlene proved the SQL
+in SSMS: 89 rows, the five original columns unchanged, 76 `uw_irr` and 55 `proj_yr1_coc`.
+**Until `deal_terms` is refreshed on production the columns do not exist there, so every
+UW IRR / Proj Yr-1 cell is still an em dash** (`unloaded_figure_field_absent`: 152).
 
-- **The check:** `grep -n "TODO(alay)" investment_metrics_config.py` — two hits is the
-  open state, zero is done.
-- **What it blocks:** three cells on nine footnote-(5) deals currently BLANK rather
-  than showing a stub period.
-- **Owner:** Alay, for the MRI field. Wiring is already written and waiting.
+- **Waiting on:** Charlene/Jim holding the refresh until the PRECISION question with Alay is
+  answered — MRI holds whole percents (0.11) where the reference PDF shows 10.7%. Nothing
+  is rounded or altered. Run only `POST /api/data/mri/refresh/Prop_Info_DealTerms`.
+- **After the refresh, verify:** `unloaded_figure_field_absent` is gone and
+  `unloaded_figure_value_null` shows ~21 `proj_yr1_coc` deals; seven of the nine footnote-(5)
+  deals take the projected figure in three cells; Current Total Proj Yr-1 ~8.0%, UW IRR
+  ~15.4%. Preview without refreshing: `scripts/investment_metrics_preview_new_fields.py`.
+- **Two data questions for MRI (not code):** Plaza Del Mar (P0000116, a young deal) has
+  `proj_yr1_coc` = 0.0, the only zero of 55, and footnote (5) would print it in three cells;
+  30 Bearfoot (P0000001) has `uw_irr` = 0.33 against a next-highest of 0.24.
+- **Owner:** Charlene (refresh), Alay (precision), whoever maintains the Investment Checklist
+  (the two values).
 
 ### 20.2 Investment Metrics: first lien reproduces the reference on 42 of 76 — unassigned
 
