@@ -94,9 +94,12 @@ fsrc = read(FS)
 # are different answers. The gate is truthiness, never `> 0` and never
 # `is not None`; see the note at the assignment for why each alternative is
 # wrong.
+# The gate now lives inside compute_pe_yield_on_exposure (the development gate
+# was added in front of it), so the division is a `return`, not an assignment.
+# The truthiness test itself is unchanged.
 chk("the gate is truthiness on NOI, so a negative yield is computed",
     re.search(r"if senior_plus_pe > 0 and noi_ye:\s*\n\s*"
-              r"cap_stack\['pe_yield_on_exposure'\]\s*=", fsrc) is not None)
+              r"return noi_ye / senior_plus_pe", fsrc) is not None)
 # These two match the `if` STATEMENT, not the bare text: the note above the
 # assignment quotes both rejected forms verbatim to explain why they are
 # wrong, and a plain substring test scores its own documentation as a defect.
