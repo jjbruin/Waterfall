@@ -23,6 +23,7 @@ Endpoints (registered at /api/valuations):
     GET    /records/<id>/mapping/draft            — a mapping in progress, or one already applied
     PUT    /records/<id>/mapping/draft            — store a mapping in progress
     DELETE /records/<id>/mapping/draft            — discard it
+    GET    /records/<id>/mapping/export           — the stored mapping as Excel
     GET    /cycles/<id>/summary/<pref|valuation>   — the two portfolio summary tabs
     PUT    /cycles/<id>/groups                    — label deals into a portfolio group
     POST   /cycles/<id>/groups/carry-forward      — copy last year's grouping
@@ -866,6 +867,28 @@ def mapping_draft_delete(record_id):
     except Exception as e:
         logger.error(f"mapping_draft_delete failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+@valuations_bp.route("/records/<int:record_id>/mapping/export", methods=["GET"])
+@login_required
+def mapping_export(record_id):
+    """The stored mapping as Excel, to lay beside the source spreadsheet.
+
+    Readable by anyone who can open the record, like the draft it is built from.
+    """
+    import io
+    from flask import send_file
+    source = (request.args.get("source") or "budget").strip().lower()
+    try:
+        content, filename = line_mapping_service.export_workbook(
+            get_engine(), record_id, source, data_service.get_data())
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"mapping_export failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    return send_file(io.BytesIO(content), as_attachment=True, download_name=filename,
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @valuations_bp.route("/records/<int:record_id>/mapping/commit", methods=["POST"])

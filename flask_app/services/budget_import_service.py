@@ -675,11 +675,13 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "stated_account": stated_account,
         })
 
-    return {
+    return without_zero_lines({
         "filename": filename,
         "sheet": det.get("sheet_name"),
         "periods": [p["period"] for p in periods],
         "lines": lines,
+        # From EVERY line, before the $0 ones are set aside: a stated total is read
+        # off the sheet, and setting lines aside must not change what the sheet says.
         "stated_totals": _stated_totals(lines),
         "account_column": acct_col,
         "label_column": label_col,
@@ -689,7 +691,49 @@ def parse_budget_workbook(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "description_column_used": desc_shift,
         "stated_account_count": sum(1 for l in lines if l.get("stated_account")),
         "occupancy": occupancy,
-    }
+    })
+
+
+def without_zero_lines(parsed: Dict[str, Any],
+                       mapping: Optional[Dict[str, Any]] = None):
+    """Set aside every line that is $0 in every month.
+
+    Jack, Oct 6 2026: "If a line has a $0 twelve month total, don't import it ... There's
+    nothing to map it to, so it just adds rows to review." A partner budget carries its
+    whole chart whether used or not -- 221 of one file's 309 lines were $0.
+
+    ALL MONTHS ZERO, not "the months sum to zero": a line of +500 in March and -500 in
+    June nets to $0 for the year but moves two months, and dropping it would move the
+    Budget column's monthly figures. (Measured Oct 6 2026: no saved file holds such a
+    line, so the two rules pick the same lines today.)
+
+    Set aside, NOT dropped: they are returned as `zero_lines` and counted, so the
+    screen can say how many were left out and name them. Applied to a stored draft as
+    well as a fresh upload, with any mapping on those rows removed -- a $0 line writes
+    nothing whatever it is mapped to. Returns the parsed file, or (parsed, mapping)
+    when a mapping is passed.
+    """
+    lines = parsed.get("lines") or []
+
+    def is_zero(l):
+        # Evidence required: months read, and every one of them $0. A line carrying
+        # no months at all is not shown to be $0 -- it is shown to be unread.
+        amts = l.get("amounts") or {}
+        return (not l.get("proposed") and bool(amts)
+                and all(float(v) == 0 for v in amts.values()))
+
+    zero = [l for l in lines if is_zero(l)]
+    if zero:
+        kept = [l for l in lines if not is_zero(l)]
+        prior = parsed.get("zero_lines") or []
+        parsed = {**parsed, "lines": kept,
+                  "zero_lines": prior + [{"row": l["row"], "label": l["label"]} for l in zero]}
+    else:
+        parsed = {**parsed, "zero_lines": parsed.get("zero_lines") or []}
+    if mapping is None:
+        return parsed
+    gone = {str(l["row"]) for l in zero}
+    return parsed, {k: v for k, v in (mapping or {}).items() if k not in gone}
 
 
 def _as_written(v) -> Optional[float]:

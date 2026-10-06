@@ -232,12 +232,15 @@ print("\n3b. The tie-out's NOI is the Budget column's NOI")
 # partnership costs mapped from the file sat INSIDE its NOI while the
 # comparison, reading IS_ACCOUNTS, puts them below it -- and it ignored the 7070
 # abatement the comparison folds into expenses.
+# The months carry the figures: since Oct 6 2026 the tie-out reads what the import
+# WRITES (`imported_amounts`, per month), and a line with a total but no months writes
+# nothing. The old fixture's empty `amounts` was a shape no parsed file has.
 tie = {"lines": [
-    {"row": 1, "label": "Rent", "total": -100000.0, "amounts": {}, "months": 12},
-    {"row": 2, "label": "Repairs", "total": 30000.0, "amounts": {}, "months": 12},
-    {"row": 3, "label": "Partnership", "total": 20000.0, "amounts": {}, "months": 12},
-    {"row": 4, "label": "Interest", "total": 10000.0, "amounts": {}, "months": 12},
-    {"row": 5, "label": "Abatement", "total": -5000.0, "amounts": {}, "months": 12},
+    {"row": 1, "label": "Rent", "total": -100000.0, "amounts": {"2027-01-31": -100000.0}, "months": 1},
+    {"row": 2, "label": "Repairs", "total": 30000.0, "amounts": {"2027-01-31": 30000.0}, "months": 1},
+    {"row": 3, "label": "Partnership", "total": 20000.0, "amounts": {"2027-01-31": 20000.0}, "months": 1},
+    {"row": 4, "label": "Interest", "total": 10000.0, "amounts": {"2027-01-31": 10000.0}, "months": 1},
+    {"row": 5, "label": "Abatement", "total": -5000.0, "amounts": {"2027-01-31": -5000.0}, "months": 1},
 ], "stated_totals": {"revenue": 100000.0, "expense": 25000.0, "noi": 75000.0}}
 tmap = {"1": {"account": "4010"}, "2": {"account": "5060"}, "3": {"account": "5130"},
         "4": {"account": "5190"}, "5": {"account": "7070"}}

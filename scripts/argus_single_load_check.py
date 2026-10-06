@@ -257,8 +257,12 @@ else:
     check("the panel shows no keyword-guess tag", "from_keywords" not in pn)
     check("the subtotal reading can be overturned",
           "setNotSubtotal" in pn and "not a subtotal" in pn and "not_subtotal" in pn)
-    check("no flip box for Argus (signs come from the account)",
-          "v-if=\"source !== 'argus'\" class=\"ctr\"" in pn)
+    # Jack, Oct 6 2026: "Add the flip sign checkbox. The budget upload has it and the
+    # Argus load doesn't." It writes `reverse` for Argus, never `flip`.
+    check("the flip box is offered for Argus too, writing its own key",
+          "v-if=\"source !== 'argus'\" class=\"ctr\"" not in pn
+          and "source === 'argus' ? 'reverse' : 'flip'" in pn
+          and "[flipKey]" in pn)
     check("a ticked proposal rides on the parsed file", "accepted_proposals" in pn)
 
 print("\n%d passed, %d failed, %d skipped" % (len(PASS), len(FAIL), len(SKIP)))
