@@ -1,41 +1,51 @@
-"""Guardrail: a development deal prints N/A for P.E. Yield on Exposure; a
-non-development deal with negative NOI still prints its negative yield.
+"""Guardrail: P.E. Yield on Exposure on the One Pager.
+
+  * a development deal with NO positive NOI yet prints N/A;
+  * a development deal in lease-up with POSITIVE NOI prints its yield;
+  * a non-development deal prints whatever it computes, including a negative.
 
 THE DEFECT. Commit bcf19f2 (Sep 30 2026) stopped treating a negative NOI as
 "cannot compute", so the One Pager started printing -0.38% (Jefferson Addison
-Heights) and -0.98% (Jefferson Eastchase) for yield on exposure. Both are
-development deals in lease-up. The Portfolio Snapshot reads "Dev" for every
-ratio of a development deal and the sent 26Q2 report printed N/A for these two,
-so the two tabs disagreed about the same deal. The fix gates the yield on the
-app's one development test (`one_pager._is_dev_deal`).
+Heights) and -0.98% (Jefferson Eastchase). Both are development deals in
+lease-up. The Portfolio Snapshot reads "Dev" for every ratio of a development
+deal and the sent 26Q2 report printed N/A for these two, so the two tabs
+disagreed about the same deal.
+
+THE FIRST FIX WAS TOO BROAD. Gating on the classification alone (every
+development deal blank) also blanked Jefferson Waters Creek, which is in lease-up
+with positive NOI and which the sent report printed at +2.5%. The gate is now
+"development AND NOI not positive": no vcode, and a deal starts printing the
+quarter its NOI turns positive.
 
 WHAT IS ASSERTED, IN BOTH DIRECTIONS:
-  * a development deal gets None (rendered N/A) whatever its NOI, positive or
-    negative;
-  * a NON-development deal with negative NOI still gets its negative yield, so
-    the fix cannot be satisfied by blanking every negative;
-  * a non-development deal with positive NOI still gets its yield;
-  * a deal with no NOI, or no exposure, still gets None (no fake 0.0%);
-  * the One Pager actually routes the figure through the rule (source check);
-  * on real data, every development deal at the quarter prints no yield and the
-    non-development deals that printed one before still print it.
+  * development deal, negative or zero NOI -> None (N/A);
+  * development deal, POSITIVE NOI -> its yield (so the fix cannot be satisfied
+    by blanking every development deal);
+  * non-development deal, negative NOI -> still its negative yield (so it cannot
+    be satisfied by blanking every negative);
+  * non-development deal, positive NOI -> its yield;
+  * no NOI at all, or no exposure -> None (no fake 0.0%);
+  * the One Pager routes the figure through the rule (source check);
+  * on real data: Addison Heights and Eastchase print N/A, Waters Creek prints
+    its +2.5%, every development deal with no positive NOI prints N/A, and the
+    non-development deals that carry a yield keep it.
 
-Run with --inject to restore the two ways this can go wrong. Every check in the
+Run with --inject to restore the three ways this can go wrong. Every check in the
 named section must then fail.
 
-  --inject=nogate      the development gate is dropped  -> Addison Heights and
+  --inject=nogate      development gate dropped      -> Addison Heights and
                        Eastchase print negative yields again
-  --inject=blankneg    negatives are blanked for everyone (the pre-bcf19f2
-                       rule)                            -> the non-dev negative
-                       check fails
+  --inject=devblank    every development deal blank  -> Waters Creek loses +2.5%
+  --inject=blankneg    negatives blanked for everyone -> the non-development
+                       negative check fails
 
 The data section reads the local database READ-ONLY (SQLite, DB_PATH or
-./waterfall.db). If neither exists it prints SKIPPED and the exit code is still
-success for the rule sections only: a skipped section is not a pass.
+./waterfall.db). If neither exists it prints SKIPPED: a skipped section is not a
+pass.
 
 Usage
     python scripts/onepager_pe_yield_dev_check.py
-    python scripts/onepager_pe_yield_dev_check.py --inject=nogate
+    python scripts/onepager_pe_yield_dev_check.py --inject=devblank
 """
 from __future__ import annotations
 
@@ -71,15 +81,18 @@ def chk(label: str, cond: bool, detail: str = "") -> None:
 
 
 def _inject(mode: str) -> None:
+    orig = FS.compute_pe_yield_on_exposure
     if mode == "nogate":
         print("=== INJECTION: the development gate is dropped ===")
-        print("    Sections A (dev cases) and C MUST fail.\n")
-        orig = FS.compute_pe_yield_on_exposure
+        print("    The development negative / zero cases and Section C MUST fail.\n")
         FS.compute_pe_yield_on_exposure = lambda pp, cs, is_dev: orig(pp, cs, False)
+    elif mode == "devblank":
+        print("=== INJECTION: every development deal is blank ===")
+        print("    The development POSITIVE case and Waters Creek MUST fail.\n")
+        FS.compute_pe_yield_on_exposure = lambda pp, cs, is_dev: None if is_dev else orig(pp, cs, False)
     elif mode == "blankneg":
         print("=== INJECTION: negatives are blanked for everyone ===")
         print("    The non-development negative check MUST fail.\n")
-        orig = FS.compute_pe_yield_on_exposure
 
         def blank_negative(pp, cs, is_dev):
             v = orig(pp, cs, is_dev)
@@ -106,9 +119,11 @@ def section_rule() -> None:
 
     chk("development deal, NEGATIVE NOI -> no yield (Addison Heights shape)",
         f(_pp(-235_114.0), _cs(37_053_983.1, 24_800_999.99), True) is None)
-    chk("development deal, POSITIVE NOI -> no yield either (the gate is on the "
-        "classification, not on the sign)",
-        f(_pp(900_000.0), _cs(), True) is None)
+    chk("development deal, ZERO NOI (never assigned) -> no yield",
+        f(_pp(0), _cs(), True) is None)
+    dpos = f(_pp(1_800_000.0), _cs(50_000_000.0, 22_000_000.0), True)
+    chk("development deal, POSITIVE NOI -> prints its yield (Waters Creek shape)",
+        dpos is not None and abs(dpos - 1_800_000.0 / 72_000_000.0) < 1e-12, f"got {dpos!r}")
 
     neg = f(_pp(-500_000.0), _cs(), False)
     chk("NON-development deal, negative NOI -> still prints a negative yield",
@@ -127,7 +142,8 @@ def section_rule() -> None:
     chk("NON-development deal, actual_ye 0 falls back to ytd_actual",
         abs((f(_pp(0, 400_000.0), _cs(), False) or 0) - 0.005) < 1e-12)
     chk("no exposure (debt + pref = 0) -> None, not a division by zero",
-        f(_pp(1_000_000.0), _cs(0.0, 0.0), False) is None)
+        f(_pp(1_000_000.0), _cs(0.0, 0.0), False) is None
+        and f(_pp(1_000_000.0), _cs(0.0, 0.0), True) is None)
     chk("missing property performance -> None",
         f({}, _cs(), False) is None and f(None, _cs(), False) is None)
     chk("missing cap stack -> None",
@@ -179,14 +195,16 @@ def section_data(quarter: str = "2026-Q2") -> None:
         inv = d["inv"]
 
         def one(vc):
-            return FS.get_one_pager_data(
+            r = FS.get_one_pager_data(
                 vc, quarter, d["inv"], d["isbs_raw"], d["mri_loans_raw"], d["mri_val"],
                 d["wf"], d["acct"], occupancy_raw=d["occupancy_raw"],
                 budget_econ_occ=d.get("budget_econ_occ"), deal_terms=d.get("deal_terms_raw"),
                 at_close_noi=d.get("at_close_noi_raw"), commitments_raw=d.get("commitments_raw"),
                 event_dates=d.get("event_dates_raw"), full_data=d,
                 relationships=d.get("relationships_raw"), mri_loans_all=d.get("mri_loans_all"),
-                inspection=d.get("inspection_raw"))["cap_stack"].get("pe_yield_on_exposure")
+                inspection=d.get("inspection_raw"))
+            noi = (r["property_performance"].get("noi") or {})
+            return r["cap_stack"].get("pe_yield_on_exposure"), (noi.get("actual_ye") or noi.get("ytd_actual") or 0)
 
         devs = []
         for _, r in inv.iterrows():
@@ -194,17 +212,23 @@ def section_data(quarter: str = "2026-Q2") -> None:
             sold = str(r.get("Sale_Status", "")).upper() == "SOLD"
             if is_dev_deal(strat) and not sold and int(pd.to_numeric(r.get("Property_Count"), errors="coerce") or 0) >= 1:
                 devs.append((str(r["vcode"]), str(r["Investment_Name"])))
-        ys = {vc: one(vc) for vc, _ in devs}
+        res = {vc: one(vc) for vc, _ in devs}
         chk(f"there are development deals to test ({len(devs)})", len(devs) >= 5)
-        bad = {vc: y for vc, y in ys.items() if y is not None}
-        chk("EVERY development deal prints no yield", not bad, f"printing: {bad}")
+
+        no_pos = {vc: y for vc, (y, noi) in res.items() if noi <= 0 and y is not None}
+        chk("EVERY development deal with no positive NOI prints no yield", not no_pos, f"printing: {no_pos}")
         for vc, nm in devs:
             if vc in ("P0000077", "P0000085"):
-                chk(f"{nm} ({vc}) prints N/A", ys[vc] is None, f"got {ys[vc]!r}")
-        # non-development deals that carry a yield today must keep it
+                chk(f"{nm} ({vc}) prints N/A", res[vc][0] is None, f"got {res[vc][0]!r}")
+        pos = {vc: y for vc, (y, noi) in res.items() if noi > 0}
+        chk("EVERY development deal with positive NOI prints its yield",
+            all(y is not None and y > 0 for y in pos.values()) and len(pos) >= 1, f"{pos}")
+        wc = res.get("P0000078")
+        chk("Jefferson Waters Creek (P0000078), development in lease-up, prints ~2.5% as on the sent report",
+            wc is not None and wc[0] is not None and 0.024 < wc[0] < 0.026, f"got {wc!r}")
         keep = {"P0000028": "Merle Hay", "P0000119": "Presidential Arms", "P0000018": "Evergreen Plaza"}
         for vc, nm in keep.items():
-            y = one(vc)
+            y, _ = one(vc)
             chk(f"{nm} ({vc}), non-development, still prints a yield", y is not None and y > 0, f"got {y!r}")
 
 
