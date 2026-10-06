@@ -16,6 +16,7 @@ import api from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDataStore } from '@/stores/data'
 import ReceiptViewer from '@/components/expenses/ReceiptViewer.vue'
+import SharePointPicker from '@/components/common/SharePointPicker.vue'
 
 const auth = useAuthStore()
 const dataStore = useDataStore()
@@ -333,6 +334,11 @@ async function uploadFiles(ev: Event) {
   const input = ev.target as HTMLInputElement
   const files = Array.from(input.files || [])
   input.value = ''
+  await uploadFileList(files)
+}
+
+// The one path a receipt takes, from disk or from SharePoint alike.
+async function uploadFileList(files: File[]) {
   if (!files.length || !report.value) return
   const problems: string[] = []
   const stored: number[] = []
@@ -747,6 +753,8 @@ onMounted(async () => {
               <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
             <label class="btn-primary file-btn">Upload a folder
               <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
+            <SharePointPicker :accept="RECEIPT_ACCEPT" multiple folders remember-as="expense-receipts"
+                              :disabled="!!progress" @picked="uploadFileList" />
             <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
               Read {{ pendingCount }} waiting</button>
           </template>

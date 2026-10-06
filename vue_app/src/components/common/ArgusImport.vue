@@ -21,6 +21,8 @@
           <button class="btn-select" @click="$refs.cashflowInput.click()">
             {{ cashflowFile ? 'Change File' : 'Select File' }}
           </button>
+          <SharePointPicker accept=".xlsx,.xls" remember-as="argus" button-class="btn-select"
+                            @picked="f => cashflowFile = f[0] || null" />
         </div>
 
         <!-- Rent Roll Summary -->
@@ -35,6 +37,8 @@
           <button class="btn-select" @click="$refs.rentRollInput.click()">
             {{ rentRollFile ? 'Change File' : 'Select File' }}
           </button>
+          <SharePointPicker accept=".xlsx,.xls" remember-as="argus" button-class="btn-select"
+                            @picked="f => rentRollFile = f[0] || null" />
         </div>
 
         <!-- Revenue Assumptions -->
@@ -49,6 +53,8 @@
           <button class="btn-select" @click="$refs.revenueInput.click()">
             {{ revenueFile ? 'Change File' : 'Select File' }}
           </button>
+          <SharePointPicker accept=".xlsx,.xls" remember-as="argus" button-class="btn-select"
+                            @picked="f => revenueFile = f[0] || null" />
         </div>
       </div>
 
@@ -122,6 +128,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import api from '@/api/client'
+import SharePointPicker from '@/components/common/SharePointPicker.vue'
 
 const props = defineProps({
   vcode: { type: String, required: true },

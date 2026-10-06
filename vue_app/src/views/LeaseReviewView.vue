@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/client'
+import SharePointPicker from '../components/common/SharePointPicker.vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -889,11 +890,23 @@ async function uploadOneFile(
 
 async function onDocumentUpload(event: Event) {
   const input = event.target as HTMLInputElement
-  if (!input.files?.length || !selectedReviewId.value) return
+  if (!input.files?.length) return
+  try {
+    await uploadDocumentFiles(Array.from(input.files))
+  } finally {
+    input.value = ''
+  }
+}
+
+// The one path a lease document takes, from disk or from SharePoint alike. A
+// SharePoint folder pick carries webkitRelativePath too, so the folder hint
+// that matches documents to tenants works the same.
+async function uploadDocumentFiles(files: File[]) {
+  if (!files.length || !selectedReviewId.value) return
 
   // Collect PDF files and their folder hints
   const pdfFiles: { file: File; hint: string }[] = []
-  for (const f of input.files) {
+  for (const f of files) {
     if (!f.name.toLowerCase().endsWith('.pdf')) continue
     const relPath = (f as any).webkitRelativePath || ''
     const parts = relPath.split('/')
@@ -950,7 +963,6 @@ async function onDocumentUpload(event: Event) {
   await loadReview(reviewId)
   await loadUnmatchedDocs()
   uploadingDocs.value = false
-  input.value = ''
 }
 
 // Unmatched document management
@@ -1814,6 +1826,9 @@ function statusClass(s: string): string {
             {{ uploadingDocs ? 'Uploading...' : 'Select Folder' }}
             <input type="file" webkitdirectory @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
           </label>
+          <SharePointPicker accept=".pdf" multiple folders remember-as="lease-documents"
+                            button-class="btn-primary" :max-files="500"
+                            :disabled="uploadingDocs" @picked="uploadDocumentFiles" />
           <span v-if="docUploadProgress" class="upload-progress-text">{{ docUploadProgress }}</span>
           <button v-if="uploadingDocs && !uploadCancelled" class="btn-cancel" @click="cancelUpload">Cancel</button>
         </div>

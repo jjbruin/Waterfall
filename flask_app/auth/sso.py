@@ -22,7 +22,7 @@ import os
 from flask import Blueprint, redirect, request, current_app, url_for
 from authlib.integrations.flask_client import OAuth
 
-from flask_app.auth.routes import _create_token
+from flask_app.auth.routes import _create_token, login_required
 
 sso_bp = Blueprint("sso", __name__)
 oauth = OAuth()
@@ -147,6 +147,24 @@ def sso_callback():
         current_app.logger.error(f"SSO callback error: {e}")
         frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
         return redirect(f"{frontend_url}#sso_error=authentication_failed")
+
+
+@sso_bp.route("/sharepoint", methods=["GET"])
+@login_required
+def sharepoint_config():
+    """The Entra app the browser's SharePoint picker signs in with.
+
+    The picker runs entirely in the browser (MSAL, delegated Graph read
+    scopes): no Microsoft token reaches this server and no secret is needed,
+    so it can be on while password sign-in is still the only sign-in.
+    ``SHAREPOINT_CLIENT_ID``/``SHAREPOINT_TENANT_ID`` switch it on, falling back
+    to the SSO pair -- it is the same app registration. Signed-in users only.
+    """
+    client_id = os.environ.get("SHAREPOINT_CLIENT_ID") or os.environ.get("SSO_CLIENT_ID")
+    tenant_id = os.environ.get("SHAREPOINT_TENANT_ID") or os.environ.get("SSO_TENANT_ID")
+    if not (client_id and tenant_id):
+        return {"enabled": False}
+    return {"enabled": True, "client_id": client_id, "tenant_id": tenant_id}
 
 
 @sso_bp.route("/config", methods=["GET"])
