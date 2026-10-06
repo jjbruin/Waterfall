@@ -78,10 +78,14 @@ const MSAL_ERRORS: Record<string, string> = {
   access_denied: 'Your Microsoft account has not been allowed to use Waterfall XIRR. Ask IT to assign you to the app.',
 }
 
+// True while the dialog is waiting for the user to click "Sign in with Microsoft".
+const signInNeeded = ref(false)
+
 async function run<T>(what: string, fn: () => Promise<T>): Promise<T | undefined> {
   busy.value = what
   error.value = ''
   try { return await fn() } catch (e: any) {
+    if (e instanceof sp.SignInRequired) { signInNeeded.value = true; return undefined }
     error.value = MSAL_ERRORS[e?.errorCode] || e?.message || String(e)
   } finally { busy.value = '' }
 }
@@ -90,6 +94,26 @@ async function start() {
   open.value = true
   picked.value = new Map()
   error.value = ''
+  signInNeeded.value = false
+  // Get MSAL ready NOW, so the sign-in click has nothing to wait for; then, with no
+  // Microsoft account in this tab, ask for the click instead of opening a window the
+  // browser would block.
+  await run('Connecting to Microsoft…', sp.ready)
+  if (error.value) return
+  if (sp.needsSignIn()) { signInNeeded.value = true; return }
+  await browse()
+}
+
+// The click handler. sp.signIn() is called FIRST, with nothing awaited before it --
+// that is what keeps the popup inside the click (see services/sharepoint.ts).
+function doSignIn() {
+  error.value = ''
+  sp.signIn()
+    .then(() => { signInNeeded.value = false; return browse() })
+    .catch((e: any) => { error.value = MSAL_ERRORS[e?.errorCode] || e?.message || String(e) })
+}
+
+async function browse() {
   let saved: any = null
   try { saved = STORE_KEY.value ? JSON.parse(localStorage.getItem(STORE_KEY.value) || 'null') : null } catch { saved = null }
   if (saved?.drive) {
@@ -268,6 +292,13 @@ async function importPicked() {
         <div class="sp-body">
           <div v-if="busy" class="sp-muted sp-busy">{{ busy }}</div>
 
+          <div v-else-if="signInNeeded" class="sp-signin">
+            <p>Sign in with your Peaceable Street Microsoft account to browse SharePoint and
+              OneDrive. A Microsoft window opens; it closes by itself when you are done.</p>
+            <button type="button" class="btn-primary" @click="doSignIn">Sign in with Microsoft</button>
+            <p class="sp-muted">Read-only: Waterfall XIRR can open your files, never change them.</p>
+          </div>
+
           <!-- sites -->
           <template v-else-if="view === 'home'">
             <form class="sp-search" @submit.prevent="search">
@@ -359,6 +390,8 @@ async function importPicked() {
 .sp-crumbs { font-size: 13px; gap: 4px; }
 .sp-body { overflow: auto; padding: 4px 14px 8px; min-height: 240px; flex: 1; }
 .sp-busy { padding: 24px 0; text-align: center; }
+.sp-signin { padding: 32px 12px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.sp-signin p { margin: 0; max-width: 460px; font-size: 13px; }
 .sp-error { margin: 6px 14px 0; padding: 6px 10px; border-radius: 6px; background: rgba(170, 40, 40, .1); color: #a33; font-size: 13px; }
 .sp-foot { border-top: 1px solid var(--color-border); justify-content: flex-end; }
 .sp-foot > .sp-muted { margin-right: auto; }

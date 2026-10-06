@@ -79,6 +79,42 @@ export async function warmUp(): Promise<void> {
   try { await client() } catch { /* not configured: the button stays hidden */ }
 }
 
+/** Thrown when only an interactive Microsoft sign-in will do. The picker shows a
+ *  "Sign in with Microsoft" button rather than opening the window itself. */
+export class SignInRequired extends Error {
+  constructor() {
+    super('Sign in to Microsoft to browse SharePoint.')
+    this.name = 'SignInRequired'
+  }
+}
+
+/** Load MSAL and the app's Entra settings. Call when the dialog opens, so that the
+ *  sign-in button's click has nothing left to wait for. */
+export async function ready(): Promise<void> {
+  await client()
+}
+
+/** True when this tab has no Microsoft account yet. */
+export function needsSignIn(): boolean {
+  return !(pca?.getActiveAccount() || pca?.getAllAccounts()[0])
+}
+
+/**
+ * The interactive sign-in. CALL IT DIRECTLY FROM A CLICK HANDLER, with nothing
+ * awaited first, after `ready()`.
+ *
+ * A browser allows a popup only while the click that asked for it is still "live".
+ * The first version opened the dialog, awaited the config, MSAL and a Graph call, and
+ * only then asked MSAL for the popup -- Jim, testing Oct 6 2026, got "The Microsoft
+ * sign-in window was blocked". `acquireTokenPopup` opens its window synchronously, so
+ * calling it first thing in the click keeps it inside the gesture.
+ */
+export function signIn(): Promise<void> {
+  if (!pca) return Promise.reject(new Error('Microsoft sign-in is still loading. Try again in a moment.'))
+  const app = pca
+  return app.acquireTokenPopup({ scopes: SCOPES }).then(r => { app.setActiveAccount(r.account) })
+}
+
 async function token(): Promise<string> {
   const app = await client()
   const account: AccountInfo | undefined = app.getActiveAccount() || app.getAllAccounts()[0]
@@ -89,9 +125,9 @@ async function token(): Promise<string> {
       if (!(msal && e instanceof msal.InteractionRequiredAuthError)) throw e
     }
   }
-  const r = await app.acquireTokenPopup({ scopes: SCOPES })
-  app.setActiveAccount(r.account)
-  return r.accessToken
+  // Never open the popup from here: by now the click is long past and the browser
+  // would block it. The dialog asks the user to click "Sign in with Microsoft".
+  throw new SignInRequired()
 }
 
 /** The signed-in Microsoft account, if this tab has one. */

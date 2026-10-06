@@ -19,7 +19,8 @@ own file input uses. What must stay true:
      function the screen's own file input feeds, so a SharePoint file is
      imported exactly as a dragged-in one -- never through a second importer.
 
-Usage: python scripts/sharepoint_picker_check.py [--inject=scope|token|entry|fork|open]
+Usage: python scripts/sharepoint_picker_check.py [--inject=scope|token|entry|fork|open|popup]
+  popup -- the sign-in popup opened from token(), after awaits (blocked by browsers)
   scope -- a write scope requested
   token -- the service posts to our API
   entry -- the return page dropped from the build
@@ -83,6 +84,30 @@ def static_checks():
     calls = re.findall(r"\bapi\.(\w+)\(\s*'([^']+)'", svc)
     chk("the service calls our API only to GET its config",
         calls == [("get", "/auth/sso/sharepoint")], calls)
+
+    print("2b. The sign-in window opens ONLY from the click")
+    # Jim, Oct 6 2026, first real test: "The Microsoft sign-in window was blocked."
+    # The popup was requested after several awaits, outside the click's activation.
+    if INJECT == "popup":
+        svc = svc.replace("  throw new SignInRequired()\n}",
+                          "  const r = await app.acquireTokenPopup({ scopes: SCOPES })\n"
+                          "  return r.accessToken\n}")
+    tok = svc.split("async function token()", 1)[1].split("\n}\n", 1)[0]
+    chk("token() never opens the popup (it throws SignInRequired instead)",
+        "acquireTokenPopup" not in tok and "throw new SignInRequired()" in tok)
+    sign = svc.split("export function signIn()", 1)[1].split("\n}\n", 1)[0]
+    chk("signIn() is NOT async, so acquireTokenPopup runs inside the click",
+        "export async function signIn" not in svc and "acquireTokenPopup" in sign
+        and "await" not in sign)
+    pick = read("src/components/common/SharePointPicker.vue")
+    handler = pick.split("function doSignIn()", 1)[1].split("\n}\n", 1)[0]
+    first = [ln.strip() for ln in handler.splitlines()[1:] if ln.strip()]
+    chk("the picker's click handler calls sp.signIn() before awaiting anything",
+        "await" not in handler.split("sp.signIn()")[0] and any("sp.signIn()" in ln for ln in first[:2]),
+        first[:3])
+    chk("the dialog offers the button rather than opening a window itself",
+        '@click="doSignIn"' in pick and "Sign in with Microsoft" in pick
+        and "sp.ready" in pick)
 
     print("4. The popup return page is built and bridges")
     vite = read("vite.config.ts")
