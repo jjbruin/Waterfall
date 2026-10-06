@@ -393,6 +393,9 @@ def row_of(out, vcode):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+Q_ASOF = dt.date(2026, 6, 30)
+
+
 def main():
     # ── 1. key normalisation ──────────────────────────────────────────────
     section("1. Identifiers are stripped and upper-cased before every join")
@@ -405,6 +408,7 @@ def main():
         im.norm_name("Declan & Walton, LLC") == "declan walton llc")
 
     out = build()
+    out_dec = build(as_of=dt.date(2026, 12, 31))
 
     # ── 2. the twin rule, BOTH directions ─────────────────────────────────
     section("2. The twin rule (asserted both ways: merged, and NOT over-merged)")
@@ -435,13 +439,36 @@ def main():
     _, mcx = row_of(out, "P0000006")
     chk("one InvestmentID on two rows picks the PARENT",
         mcx is not None and mcx["vcode"] == "P0000006")
-    chk("...and still takes the SOLD marker from its sibling",
-        row_of(out, "P0000006")[0] == "sold")
+    chk("...and still takes the SOLD marker from its sibling (once the sale is past)",
+        row_of(out_dec, "P0000006")[0] == "sold")
 
     # ── 3. classification ─────────────────────────────────────────────────
     section("3. Current vs Sold")
-    chk("a deal sold AFTER the as-of date is still Sold (footnote 4's case)",
-        row_of(out, "P0000006")[0] == "sold")
+    # A DEAL IS SOLD AT A QUARTER ONLY ONCE ITS SALE IS ON OR BEFORE THE AS-OF.
+    # Asserted at the boundary, both sides, and against the two ways to get it
+    # wrong: "everything marked SOLD is Sold" (the old rule) and "everything with
+    # a sale date is Sold".
+    chk("a deal sold AFTER the as-of date is CURRENT: it was held at the quarter end",
+        row_of(out, "P0000006")[0] == "current",
+        f"got {row_of(out, 'P0000006')[0]} -- McX sold 2026-09-04, as-of 2026-06-30")
+    chk("...and is named, not quietly moved",
+        any(x["vcode"] == "P0000006" and x["sale_date"] == "2026-09-04"
+            for x in out["diagnostics"].get("sold_after_as_of_shown_current", [])))
+    chk("the same deal is SOLD once the quarter is after the sale",
+        row_of(out_dec, "P0000006")[0] == "sold"
+        and not any(x["vcode"] == "P0000006" for x in
+                    out_dec["diagnostics"].get("sold_after_as_of_shown_current", [])))
+    chk("a sale ON the as-of date is Sold (the boundary)",
+        row_of(build(as_of=dt.date(2026, 9, 4)), "P0000006")[0] == "sold")
+    chk("...and the day before it is Current",
+        row_of(build(as_of=dt.date(2026, 9, 3)), "P0000006")[0] == "current")
+    chk("a deal sold BEFORE the as-of stays Sold",
+        row_of(out, "P0000002")[0] == "sold")
+    chk("a SOLD marker with NO sale date stays Sold: nothing says it was held",
+        im.classify(im.DealIdentity(sale_status="SOLD", sale_date=None), Q_ASOF) == "sold"
+        and im.classify(im.DealIdentity(sale_status=None,
+                                        sale_date=dt.date(2020, 1, 1)), Q_ASOF)
+        == "current")
     chk("a live deal is Current", row_of(out, "P0000001")[0] == "current")
 
     # ── 4. capitalization ─────────────────────────────────────────────────
@@ -579,7 +606,7 @@ def main():
         "365 days from 2019-03-01" in (alt.get("basis") or ""))
     chk("both denominators are carried, so the difference stays measurable",
         "on_funded" in alt and "on_commitment" in alt)
-    _, mcxr = row_of(out, "P0000006")
+    _, mcxr = row_of(out_dec, "P0000006")
     chk("a sold deal's proceeds are EVERY distribution",
         mcxr and abs(mcxr["proceeds"] - 5.2) < 1e-9)
 
@@ -636,7 +663,7 @@ def main():
                 for ms in cfg.ROW_MARKERS_SOLD.values() for n in ms))
     chk("the footnotes are numbered 1..N with no gaps",
         [n for n, _ in cfg.FOOTNOTES_CURRENT] == list(range(1, 9))
-        and [n for n, _ in cfg.FOOTNOTES_SOLD] == list(range(1, 5)))
+        and [n for n, _ in cfg.FOOTNOTES_SOLD] == list(range(1, 4)))
     chk("the CAD footnote and the rate in use agree",
         f"{cfg.CAD_TO_USD}" in dict(cfg.FOOTNOTES_CURRENT)[2])
     chk("every ordered vcode appears at most once, on one table",
@@ -1127,11 +1154,13 @@ def main():
         f"got {cur_marks.get('P0000200')}")
     chk("...and a USD deal does not",
         cfg.NON_USD_MARKER not in cur_marks.get("P0000001", []))
-    chk("a deal sold AFTER the as-of date carries the Sold page's (4)",
-        sold_marks.get("P0000006") == [cfg.SOLD_AFTER_AS_OF_MARKER],
-        f"got {sold_marks.get('P0000006')} — McX sold 2026-09-04")
-    chk("a deal sold BEFORE it does not",
-        cfg.SOLD_AFTER_AS_OF_MARKER not in sold_marks.get("P0000002", []))
+    chk("a deal sold AFTER the as-of is a Current row and carries NO Sold-page marker",
+        "P0000006" in cur_marks and "P0000006" not in sold_marks
+        and cur_marks["P0000006"] == [],
+        f"got current {cur_marks.get('P0000006')} / sold {sold_marks.get('P0000006')}")
+    chk("the Sold page has no footnote (4): nothing in it can be sold after the as-of",
+        all(n != 4 for n, _ in cfg.FOOTNOTES_SOLD)
+        and not any(4 in m for m in sold_marks.values()))
     chk("markers print in ascending order, however they were reached",
         all(m == sorted(m) for m in
             list(cur_marks.values()) + list(sold_marks.values())))
@@ -1301,10 +1330,12 @@ def main():
         "P0000120": [5, 6],      # Swartz Creek Mini Storage
         "P0000117": [5, 6],      # Fairview Center
         "P0000011": [2],         # City West          (Sold)
-        "P0000012": [4],         # Clima Secur        (Sold)
-        "P0000001": [4],         # 30 Bearfoot        (Sold)
-        "P0000049": [4],         # 870 Donald Lynch   (Sold)
     }
+    # THE REFERENCE PAGE ALSO MARKS Clima Secur, 30 Bearfoot and 870 Donald Lynch
+    # (4) "sold after June 2026" in its Sold table. The report no longer does:
+    # a deal sold after the as-of is CURRENT at that quarter (section 3), where
+    # the page's (4) is Woodlands Square's note and none of them carries a marker.
+    # This is the one deliberate departure from the printed page.
     NINE = ["P0000115", "P0000109", "P0000110", "P0000114", "P0000116",
             "P0000118", "P0000119", "P0000120", "P0000117"]
     THREE_SOLD = ["P0000012", "P0000001", "P0000049"]
@@ -1317,7 +1348,9 @@ def main():
             invest_date=dt.date.fromisoformat(inv_d) if inv_d else None,
             sale_date=dt.date.fromisoformat(sale_d) if sale_d else None,
         )
-        m = im.row_markers(ident, "current" if tbl == "c" else "sold", as_of22)
+        ident.sale_status = "SOLD" if tbl == "s" else None
+        table22 = im.classify(ident, as_of22)
+        m = im.row_markers(ident, table22, as_of22)
         if m:
             derived[vcode] = m
 
@@ -1332,22 +1365,30 @@ def main():
     chk("footnote (5) names exactly the nine deals the reference marks",
         sorted(k for k, v in derived.items() if 5 in v) == sorted(NINE),
         str(sorted(k for k, v in derived.items() if 5 in v)))
-    chk("the Sold page's (4) names exactly Clima Secur, 30 Bearfoot, "
-        "870 Donald Lynch",
-        sorted(k for k, v in derived.items()
-               if 4 in v and k != "P0000044") == sorted(THREE_SOLD),
-        str(sorted(k for k, v in derived.items() if 4 in v)))
-    chk("...and East Manchester, sold five days BEFORE the as-of date, is not",
-        "P0000017" not in derived)
+    t22 = {}
+    for vcode, tbl, inv_d, sale_d, ccy in POPULATION_26Q2:
+        t22[vcode] = im.classify(im.DealIdentity(
+            sale_status="SOLD" if tbl == "s" else None,
+            sale_date=dt.date.fromisoformat(sale_d) if sale_d else None), as_of22)
+    moved22 = sorted(
+        vcode for vcode, tbl, inv_d, sale_d, ccy in POPULATION_26Q2
+        if tbl == "s" and sale_d and dt.date.fromisoformat(sale_d) > as_of22)
+    chk("the deals the report moves from the reference's Sold page to Current are "
+        "exactly Clima Secur, 30 Bearfoot, 870 Donald Lynch",
+        moved22 == sorted(THREE_SOLD), str(moved22))
+    chk("...and East Manchester, sold five days BEFORE the as-of date, stays Sold",
+        "P0000017" not in derived and "P0000017" not in moved22)
+    chk("none of the moved deals carries a marker on its Current row",
+        all(v not in derived for v in THREE_SOLD),
+        str({v: derived.get(v) for v in THREE_SOLD}))
     chk("the currency note (2) names exactly the one CAD deal",
         [k for k, v in derived.items()
          if 2 in v and k != "P0000011"] == ["P0000115"])
     chk("every footnote number used exists in its table's footnote list",
-        all(n in {x for x, _ in (cfg.FOOTNOTES_CURRENT if p["table"] == "current"
+        all(n in {x for x, _ in (cfg.FOOTNOTES_CURRENT if t22[vcode] == "current"
                                  else cfg.FOOTNOTES_SOLD)}
-            for vcode, tbl, *_ in POPULATION_26Q2
-            for n in derived.get(vcode, [])
-            for p in [{"table": "current" if tbl == "c" else "sold"}]))
+            for vcode in derived for n in derived[vcode]),
+        "a marker printed on a page whose footnote list lacks it")
 
     # ── 23. quarter integrity ─────────────────────────────────────────────
     section("23. Quarter integrity (both ways: later data is CUT from an earlier "
@@ -1443,27 +1484,66 @@ def main():
                    ["current"]["rows"][0]["proceeds"]) < 1e-9
         if build(as_of=dt.date(2030, 12, 31))["current"]["rows"] else False)
 
-    # THE ONE EXEMPTION: a deal in Sold whose sale is AFTER the as-of keeps its
-    # whole-life figures, and is NAMED. BETA sold 2024-06-01.
+    # NO EXEMPTION: a deal sold after the as-of is Current at that quarter, so the
+    # same cutoff applies to it. BETA sold 2024-06-01 (a 1.4M return of capital).
     s_pre = build(as_of=dt.date(2023, 12, 31))
     s_post = build(as_of=dt.date(2026, 6, 30))
-    _, bpre = row_of(s_pre, "P0000002")
-    _, bpost = row_of(s_post, "P0000002")
-    chk("a deal sold AFTER the as-of keeps its whole-life proceeds (footnote 4)",
-        bpre and bpost and abs(bpre["proceeds"] - bpost["proceeds"]) < 1e-9,
+    tpre, bpre = row_of(s_pre, "P0000002")
+    tpost, bpost = row_of(s_post, "P0000002")
+    chk("BETA, sold 2024-06-01, is CURRENT at 2023-12-31 and SOLD at 2026-06-30",
+        tpre == "current" and tpost == "sold", f"got {tpre} / {tpost}")
+    chk("...at 2023-12-31 its proceeds do not include the 2024 sale distribution",
+        bpre and bpost and bpre["proceeds"] < bpost["proceeds"],
         f"got {(bpre or {}).get('proceeds')} vs {(bpost or {}).get('proceeds')}")
-    chk("...and is listed as full-life, not hidden",
-        any(x["vcode"] == "P0000002"
-            for x in s_pre["diagnostics"].get("sold_after_as_of_full_life", [])))
-    chk("...but a deal sold BEFORE the as-of is not listed",
-        not any(x["vcode"] == "P0000002"
-                for x in s_post["diagnostics"].get("sold_after_as_of_full_life", [])))
-    chk("a CURRENT deal is never exempt: the cutoff applies",
-        im.cashflow_cutoff(im.DealIdentity(sale_date=None), im.CURRENT, Q2) == Q2
-        and im.cashflow_cutoff(im.DealIdentity(sale_date=dt.date(2026, 9, 4)),
-                               im.SOLD, Q2) is None
-        and im.cashflow_cutoff(im.DealIdentity(sale_date=dt.date(2026, 5, 1)),
-                               im.SOLD, Q2) == Q2)
+    chk("...and it has no realized IRR yet: it is not realized",
+        bpre and bpre.get("realized_irr") is None
+        and bpost and bpost.get("realized_irr") is not None)
+    chk("its figures at 2023-12-31 ignore every later row (quarter integrity)",
+        bpre and abs(bpre["proceeds"] - 0.12) < 1e-9,
+        f"got {(bpre or {}).get('proceeds')} -- only the 2019 pref distribution is dated by then")
+    chk("the sold-after-the-as-of deal is listed in diagnostics at 2023-12-31, not at 2026-06-30",
+        any(x["vcode"] == "P0000002" for x in
+            s_pre["diagnostics"].get("sold_after_as_of_shown_current", []))
+        and not any(x["vcode"] == "P0000002" for x in
+                    s_post["diagnostics"].get("sold_after_as_of_shown_current", [])))
+    # THE STALE-CONFIG CHECK, BOTH WAYS. Clima Secur (P0000012) is named in
+    # ROW_ORDER_SOLD. If a quarter puts it in Current that entry is still right, so
+    # it must not be flagged; if it is on NEITHER page it must be.
+    def stale_for(other):
+        d = {}
+        im._check_config_population(
+            [{"vcode": "P0000011", "name": "x", "markers": []}], "sold",
+            cfg.FOOTNOTES_SOLD, d, other)
+        return [x for x in d.get("config_entries_without_a_deal", [])
+                if x.get("vcode") == "P0000012" and x.get("config") == "ROW_ORDER_SOLD"]
+    chk("a Sold-config deal that sits in Current this quarter is NOT flagged stale",
+        not stale_for([{"vcode": "P0000012"}]))
+    chk("...but the same deal on NEITHER page is still flagged",
+        stale_for([]) and stale_for(None))
+
+    # LABELS DESCRIBE THE DEAL. 30 Bearfoot's "Dev." entry is keyed to the Sold
+    # table, so it must follow the deal into Current; where a deal HAS its own
+    # entry for the table it is in, that one wins.
+    _, lab1 = row_of(build(), "P0000001")
+    _, lab6 = row_of(build(), "P0000006")
+    chk("a label keyed to the Sold table follows the deal into Current",
+        lab1 and lab1["labels"].get("proj_yr1_coc") == "Dev."
+        and lab1["labels"].get("act_yr1_coc") == "Dev.",
+        f"got {(lab1 or {}).get('labels')}")
+    chk("...and a deal's OWN table entry wins over the other table's",
+        lab6 and lab6["labels"].get("proj_yr1_coc") == "Lease up",
+        f"got {(lab6 or {}).get('labels')}")
+
+    # A deal the rule moved is not reported as missing from, or foreign to, the
+    # reference order; one the reference simply does not carry still is.
+    dq = build(as_of=dt.date(2026, 6, 30))["diagnostics"]
+    chk("a deal moved by the rule is not a 'reference row absent' in the list it left",
+        not any(x.get("vcode") == "P0000006" for x in dq.get("reference_rows_absent", [])))
+    chk("...nor 'not in the reference order' in the list it joined",
+        not any(x.get("vcode") == "P0000006" for x in dq.get("not_in_reference_order", [])))
+    chk("...while a deal the reference has never carried IS still reported",
+        any(x.get("vcode") == "P0000200" for x in dq.get("not_in_reference_order", [])),
+        f"got {[x.get('vcode') for x in dq.get('not_in_reference_order', [])]}")
 
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:

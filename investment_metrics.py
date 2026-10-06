@@ -400,13 +400,23 @@ def resolved_inv_frame(inv: pd.DataFrame,
 def classify(ident: DealIdentity, as_of: _dt.date) -> str:
     """Current or Sold.
 
-    SOLD is the marker, not the date: a deal sold AFTER the as-of date still
-    belongs in the Sold table (the reference says so with footnote (4) on
-    Clima Secur, 30 Bearfoot and 870 Donald Lynch, all sold after 30 Jun 26).
-    A deal carrying a sale date but no SOLD marker is still CURRENT — the
-    marker is what accounting sets when the deal is closed out.
+    A deal is SOLD at a quarter when it carries the SOLD marker AND its sale date
+    is on or before the as-of. A deal sold AFTER the as-of was still held at that
+    quarter end, so it is CURRENT and every figure on its row is as of the
+    quarter -- values in a quarter stay in that quarter. (The reference prints
+    Clima Secur, 30 Bearfoot and 870 Donald Lynch in Sold at 30 Jun 26 under a
+    footnote (4) "sold after June 2026"; that was true of the day it was
+    produced and not of the quarter, and it is the one place this report
+    deliberately departs from the reference page.)
+
+    A SOLD marker with NO sale date stays SOLD: nothing says it was held. A deal
+    carrying a sale date but no SOLD marker is still CURRENT -- the marker is what
+    accounting sets when the deal is closed out. Deals moved to Current by this
+    rule are listed in ``diagnostics["sold_after_as_of_shown_current"]``.
     """
-    return SOLD if ident.is_sold else CURRENT
+    if ident.is_sold and (ident.sale_date is None or ident.sale_date <= as_of):
+        return SOLD
+    return CURRENT
 
 
 def is_young_deal(ident: DealIdentity, as_of: _dt.date) -> bool:
@@ -436,8 +446,6 @@ def row_markers(ident: DealIdentity, table: str, as_of: _dt.date) -> List[int]:
             marks.add(cfg.YOUNG_DEAL_MARKER)
     else:
         marks = set(cfg.ROW_MARKERS_SOLD.get(ident.vcode, []))
-        if ident.sale_date and ident.sale_date > as_of:
-            marks.add(cfg.SOLD_AFTER_AS_OF_MARKER)
     return sorted(marks)
 
 
@@ -999,48 +1007,24 @@ def _earliest_isbs_debt(isbs: Optional[pd.DataFrame], want: set) -> Tuple[Option
 # ══════════════════════════════════════════════════════════════════════════
 # proceeds and Year-1 CoC
 # ══════════════════════════════════════════════════════════════════════════
-def cashflow_cutoff(ident: DealIdentity, table: str,
-                    as_of: Optional[_dt.date]) -> Optional[_dt.date]:
-    """The date after which a cash flow does not belong in this quarter's figure.
-
-    QUARTER INTEGRITY: Proceeds To-Date and Realized IRR are cumulative figures,
-    and a cumulative figure at 26Q2 is the total THROUGH 30 Jun, not through
-    today. The cutoff is the as-of date.
-
-    ONE EXEMPTION, NAMED RATHER THAN HIDDEN: a deal in the SOLD table whose sale
-    falls AFTER the as-of (the reference's footnote (4): "sold after June 2026")
-    keeps its whole-life figures. The reference prints those deals in Sold with
-    their final distributions, and cutting them at the as-of would take the sale
-    proceeds out of a deal the table calls sold. They are listed in
-    ``diagnostics["sold_after_as_of_full_life"]``; whether they belong in the
-    Sold table at this quarter at all is a decision for the owner of the report.
-    """
-    if as_of is None:
-        return None
-    if table == SOLD and ident.sale_date and ident.sale_date > as_of:
-        return None
-    return as_of
-
-
 def proceeds_to_date(ident: DealIdentity, acct: pd.DataFrame, table: str,
                      as_of: Optional[_dt.date] = None) -> Optional[float]:
     """Cash returned to PSC, in dollars, through the as-of date.
 
     The column is headed *To-Date*, and "to date" means to the quarter being
-    reported -- see ``cashflow_cutoff``, which also names the one exemption. It
-    used to carry NO cutoff, so a 26Q2 report counted July and August. On a
-    CURRENT deal it is the four distribution subtypes footnote (1) names; on a
-    SOLD deal it is every distribution, because the deal is finished and the
-    question is the total.
+    reported. It used to carry NO cutoff, so a 26Q2 report counted July and
+    August. On a CURRENT deal it is the four distribution subtypes footnote (1)
+    names; on a SOLD deal it is every distribution, because the deal is finished
+    and the question is the total -- and a deal is only Sold once its sale is on
+    or before the as-of, so the cutoff never removes a sale distribution.
     """
     rows = _deal_accounting(acct, ident.investment_id)
     if rows.empty:
         return None
     rows = rows[rows["InvestorID"].map(is_psc_side)]
-    cut = cashflow_cutoff(ident, table, as_of)
-    if cut is not None and not rows.empty and "EffectiveDate" in rows.columns:
+    if as_of is not None and not rows.empty and "EffectiveDate" in rows.columns:
         when = pd.to_datetime(rows["EffectiveDate"], errors="coerce")
-        rows = rows[when <= pd.Timestamp(cut)]
+        rows = rows[when <= pd.Timestamp(as_of)]
     if rows.empty:
         return None
     if table == SOLD:
@@ -1263,8 +1247,8 @@ def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
                  cutoff: Optional[_dt.date] = None) -> Optional[float]:
     """XIRR over PSC's contributions and distributions. ONE ENGINE: ``metrics.xirr``.
 
-    ``cutoff`` is ``cashflow_cutoff`` for the quarter: flows dated after it are
-    not in this quarter's figure.
+    ``cutoff`` is the quarter's as-of: flows dated after it are not in this
+    quarter's figure.
 
     Commitment rows are pledges and are excluded — including them dates the
     first cash flow at the signing rather than the funding and shifts the IRR.
@@ -1388,6 +1372,13 @@ def build_investment_metrics(
                  "as_of": as_of.isoformat()})
             continue
         table = classify(ident, as_of)
+        if table == CURRENT and ident.is_sold:
+            diag.setdefault("sold_after_as_of_shown_current", []).append(
+                {"vcode": ident.vcode, "name": ident.name,
+                 "sale_date": ident.sale_date.isoformat() if ident.sale_date else None,
+                 "as_of": as_of.isoformat(),
+                 "reason": "carries the SOLD marker but the sale is after the "
+                           "as-of: held at the quarter end, so shown as Current"})
         ident_by_vcode[ident.vcode] = ident
         rows_by_table[table].append(
             _build_row(ident, table, as_of, acct, commitments, dt_index,
@@ -1418,10 +1409,12 @@ def build_investment_metrics(
         (SOLD, cfg.ROW_ORDER_SOLD, cfg.TITLE_SOLD, cfg.FOOTNOTES_SOLD),
     ):
         rows = _ordered(rows_by_table[table], order, diag, table)
+        other_table = SOLD if table == CURRENT else CURRENT
+        other_vcodes = [{"vcode": r["vcode"]} for r in rows_by_table[other_table]]
         for r in rows:
             r["markers"] = row_markers(ident_by_vcode[r["vcode"]], table, as_of)
             _apply_young_deal_substitution(r, diag)
-        _check_config_population(rows, table, footnotes, diag)
+        _check_config_population(rows, table, footnotes, diag, other_vcodes)
         out[table] = {
             "title": title,
             "rows": rows,
@@ -1589,7 +1582,8 @@ _VCODE_CONFIGS_ANY = ("DEV_DEALS", "LEASE_UP_DEALS", "EXCLUDED_DEALS")
 
 
 def _check_config_population(rows: List[dict], table: str, footnotes,
-                             diag: dict) -> None:
+                             diag: dict,
+                             other_rows: Optional[List[dict]] = None) -> None:
     """A transcribed vcode that no longer names a deal, and a marker with no note.
 
     A REPORTED FINDING, NOT AN ERROR. Every entry in this file's hand-maintained
@@ -1611,7 +1605,9 @@ def _check_config_population(rows: List[dict], table: str, footnotes,
     to the other would print a number that refers to the wrong note or to no
     note at all.
     """
-    present = {r["vcode"] for r in rows}
+    # A deal the quarter put in the OTHER table is not a stale entry: its config
+    # is still correct, it is simply not on this page this quarter.
+    present = {r["vcode"] for r in rows} | {r["vcode"] for r in (other_rows or [])}
     known = {n for n, _ in footnotes}
     stale: List[dict] = []
     for attr, label in _VCODE_CONFIGS[table]:
@@ -1723,8 +1719,12 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     roe, uw_roe = _coc_since_close(ident, as_of, acct, waterfalls, inv, isbs_raw)
 
     terms = dt_index.get(norm_id(ident.vcode), {})
-    labels = (cfg.CELL_LABELS_CURRENT if table == CURRENT
-              else cfg.CELL_LABELS_SOLD).get(ident.vcode, {})
+    # A label (Dev., N/A, Inf.) describes the DEAL, so it follows the deal when a
+    # quarter puts it in the other table than the reference does. The table's
+    # own entry wins; the other table's is the fallback.
+    own, other = ((cfg.CELL_LABELS_CURRENT, cfg.CELL_LABELS_SOLD) if table == CURRENT
+                  else (cfg.CELL_LABELS_SOLD, cfg.CELL_LABELS_CURRENT))
+    labels = own.get(ident.vcode) or other.get(ident.vcode) or {}
 
     # The three columns with no source in the app go through ONE switch. The
     # derived Year-1 figures are computed either way and kept below in
@@ -1834,15 +1834,8 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
             row["realized_irr"] = None
             row["basis"]["realized_irr"] = cfg.REALIZED_IRR_SUPPRESSED[ident.vcode]
         else:
-            row["realized_irr"] = realized_irr(
-                ident, acct, cashflow_cutoff(ident, table, as_of))
+            row["realized_irr"] = realized_irr(ident, acct, as_of)
             row["basis"]["realized_irr"] = "XIRR over PSC contributions and distributions"
-            if ident.sale_date and ident.sale_date > as_of:
-                diag.setdefault("sold_after_as_of_full_life", []).append(
-                    {"vcode": ident.vcode, "name": ident.name,
-                     "sale_date": ident.sale_date.isoformat(),
-                     "reason": "sold after the as-of; proceeds and realized IRR "
-                               "are whole-life, as the reference's footnote (4)"})
     return row
 
 
@@ -1946,12 +1939,22 @@ def _ordered(rows: List[dict], order: List[str], diag: dict, table: str) -> List
     extra = [r for r in rows if r["vcode"] not in index]
     known.sort(key=lambda r: index[r["vcode"]])
     extra.sort(key=lambda r: (r["invest_date"] or "9999"))
-    if extra:
+    # EXACTLY the deals `classify` moved from Sold to Current this quarter -- no
+    # broader. They are still in the reference's order (in the Sold list), so
+    # appending them here is not "a deal the reference has never carried", and
+    # their absence from the Sold list is not a missing row; the diagnostic
+    # `sold_after_as_of_shown_current` already names them. A deal the reference
+    # puts in one table and the data puts in the other, for any other reason, is
+    # still reported.
+    moved = {x["vcode"] for x in diag.get("sold_after_as_of_shown_current", [])}
+    reported = [r for r in extra if r["vcode"] not in moved]
+    if reported:
         diag.setdefault("not_in_reference_order", []).extend(
-            {"table": table, "vcode": r["vcode"], "name": r["name"]} for r in extra)
+            {"table": table, "vcode": r["vcode"], "name": r["name"]} for r in reported)
     not_yet = {x["vcode"] for x in diag.get("not_yet_invested", [])}
     missing = [v for v in order
-               if v not in {r["vcode"] for r in rows} and v not in not_yet]
+               if v not in {r["vcode"] for r in rows}
+               and v not in not_yet and v not in moved]
     if missing:
         diag.setdefault("reference_rows_absent", []).extend(
             {"table": table, "vcode": v} for v in missing)

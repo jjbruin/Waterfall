@@ -118,7 +118,6 @@ FOOTNOTES_SOLD = [
     (3, "Apple portfolio is sold on January, 2026; However, the portfolio is "
         "not moved to the sold section until final distributions are "
         "received, which is expected by the end of 2Q27."),
-    (4, "Deals sold after June 2026"),
 ]
 
 #: Printed under both tables, in italic, wrapping to two lines.
@@ -142,7 +141,6 @@ DISCLAIMER = (
 #:
 #:   (2) on the Current page   -> ``deals.Currency != 'USD'``  (NON_USD_MARKER)
 #:   (5) on the Current page   -> invest date + 12 months > as-of (YOUNG_DEAL_*)
-#:   (4) on the Sold page      -> ``sale_date > as_of``   (SOLD_AFTER_AS_OF_MARKER)
 #:
 #: Everything else stays transcribed: (3) proceeds include a realization, (4) on
 #: the CURRENT page (Woodlands Square's lookback/claw-back terms — a different
@@ -172,20 +170,10 @@ ROW_MARKERS_CURRENT = {
 
 ROW_MARKERS_SOLD = {
     "P0000011": [2],         # City West — foreclosure; NOT the currency note
-    # Clima Secur, 30 Bearfoot and 870 Donald Lynch carried (4) here and now
-    # derive it from their sale dates. See SOLD_AFTER_AS_OF_MARKER.
+    # Clima Secur, 30 Bearfoot and 870 Donald Lynch carried (4) "sold after June
+    # 2026" in the reference. A deal sold after the as-of is now shown as CURRENT
+    # (see investment_metrics.classify), so the Sold page never carries it.
 }
-
-#: Footnote (4) on the SOLD page — "Deals sold after June 2026". DERIVED from
-#: ``sale_date > as_of``, which is the same test ``classify`` already relies on
-#: to keep those deals in the Sold table at all.
-#:
-#: Verified at as-of 2026-06-30 against the reference: the rule selects exactly
-#: Clima Secur (2026-07-01), 30 Bearfoot (2026-09-04) and 870 Donald Lynch
-#: (2026-09-04), and nothing else. The margin is five days — East Manchester
-#: sold 2026-06-25 and is correctly NOT marked — so the guardrail asserts the
-#: set rather than the count.
-SOLD_AFTER_AS_OF_MARKER = 4
 
 #: Footnote (5) — "less than 1 year of operating history". DERIVED: the deal's
 #: PSC Invest. Date plus ``YOUNG_DEAL_MONTHS`` calendar months falls after the
