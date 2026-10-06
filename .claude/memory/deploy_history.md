@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v583** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v584** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v583 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v584 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,24 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v584` = `c3500ff` (A DEVELOPMENT DEAL WITH POSITIVE NOI PRINTS ITS P.E. YIELD ON EXPOSURE --
+    Oct 6 2026, branch `fix/onepager-pe-yield-dev-positive`, merge `c3500ff`. v582 blanked every
+    development deal, which also blanked Jefferson Waters Creek: in lease-up, positive NOI
+    (+1.84M projected YE), and printed +2.5% on the sent 26Q2 report. The gate is now on the data,
+    not the classification alone and not a vcode: a development deal prints N/A while its NOI is
+    not positive (Addison Heights, Eastchase) and prints its yield once it is (Waters Creek).
+    A non-development deal is unchanged and still prints a negative yield. CONSEQUENCE: Addison
+    Heights and Eastchase print N/A only because their NOI is negative; each starts printing the
+    quarter its NOI turns positive. Span vs live `02a2155`: docs `ccb2827`, `eac95ff` (this), merge
+    `c3500ff`. Built from the CLEAN deploy worktree, run `canw`, 2m51s, Succeeded; tag locked
+    (writeEnabled false); P1 re-run before update (v583 = 02a2155). After cutover v584 at 100%,
+    root 200 in 0.22s. Served, read-only, 26Q2: Addison Heights and Eastchase None, Waters Creek
+    0.0252, Brainerd (no NOI) None, Merle Hay 0.0067 and Evergreen Plaza 0.1030 unchanged.
+    Guardrails on the merged tree: pe_yield_dev 24 (fails 4 under --inject=nogate, 3 under
+    --inject=devblank, 2 under --inject=blankneg), debt_free 41, quarter_hardcode 24,
+    one_engine_per_number 26, section_access --static 193, claude_md_budget 3;
+    onepager_missing_vs_zero 31/32, the one failure (fmtOccVariance) already on main. NOT run
+    inside the container: the check's data section reads SQLite and skips there.)
   - `v583` = `02a2155` (INVESTMENT METRICS: EVERY FIGURE BELONGS TO THE QUARTER SELECTED.
     FOUND by running the report at 25Q4, 26Q1, 26Q2 and 26Q3 on the same data: PSC Pref,
     First-Loss, Total Size, Proceeds and Realized IRR were IDENTICAL in every quarter, and deals
