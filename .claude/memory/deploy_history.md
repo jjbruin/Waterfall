@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v574** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v575** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v574 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v575 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,26 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v575` = `ad390a8` (VALUATION SUMMARY TABS: LAST YEAR IS MRI'S PUBLISHED VALUATION --
+    Jim, Oct 6 2026, settling open_items 8.3. Pref Summary and Valuation Summary read the
+    prior year through `valuation_service._prior_rows` (the Committee Summary's own
+    reader) at the prior year-end, not the prior cycle's records: pref NAV =
+    mMezzanineValue, net proceeds = mEquityValue (added to `_prior_rows` with the date;
+    the committee path ignores both keys). The tab states the source and names, WITH
+    vcode, every deal MRI has no prior valuation for (two deals are "Donald Lynch").
+    Production measured read-only after deploy: 2026 cycle 54 of 82 records have a 2025
+    MRI row, 48 a 2025 value (from ~1 read off the near-empty 2025 cycle); the 2025
+    cycle now compares against 2024 MRI, 50 with a value. Span vs live `d5fda63`:
+    `b37dd76` (this), docs `ea5fb95`, merge `ad390a8`. Build `canm`, 3m00s, Succeeded;
+    tag locked; P1 re-run before update; rolled out Healthy, `/health` 200. Served
+    bundle from the ENTRY `index-C01SXyjs.js` -> `ValuationsView-CW6F3djt.js`:
+    `prior_source`, `prior_missing`, `no_prior_data` present, `no_prior_cycle` and the
+    old "cycle in the app" notice absent; summary route 401 unauthenticated. Guardrails
+    on the merged tree: valuation_summary 109 (reading the prior cycle instead fails 7),
+    valuation_committee_scope 13, capitalization_valuation_fields 9,
+    onepager_valuation_selection 10, valuation_admin_override 22,
+    valuation_debt_service 34, one_engine_per_number 26, section_access 274. Still open
+    (8.3): the Committee Summary's PRIOR net proceeds is value - debt, not mEquityValue.)
   - `v574` = `d5fda63` (BUDGET / ARGUS MAPPING, ASSET MANAGEMENT'S OCT 6 2026 CHANGES --
     Jack Day: $0 lines set aside (every month $0, not "nets to $0"; reported as
     `zero_lines`, applied to stored drafts too; one production budget was 221 of 309
