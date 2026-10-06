@@ -11,6 +11,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import api from '@/api/client'
 import InvestmentMetricsTable from '@/components/reports/InvestmentMetricsTable.vue'
+import { downloadInvestmentMetricsXlsx } from '@/utils/investmentMetricsXlsx'
 
 const data = ref<any>(null)
 const quarters = ref<string[]>([])
@@ -67,6 +68,21 @@ function openPrint() {
   window.open(`/investment-metrics/print${q}`, '_blank')
 }
 
+const exporting = ref(false)
+const exportError = ref('')
+async function exportExcel() {
+  if (!data.value || exporting.value) return
+  exporting.value = true
+  exportError.value = ''
+  try {
+    await downloadInvestmentMetricsXlsx(data.value)
+  } catch (e: any) {
+    exportError.value = `Excel export failed: ${e?.message || e}`
+  } finally {
+    exporting.value = false
+  }
+}
+
 onMounted(async () => {
   await loadQuarters()
   await load()
@@ -88,6 +104,9 @@ watch(asOf, (v, old) => { if (old !== '' && v !== old) load() })
       <button class="btn btn-sm" @click="showDiagnostics = !showDiagnostics">
         {{ showDiagnostics ? 'Hide' : 'Show' }} how it was built
       </button>
+      <button class="btn btn-sm" :disabled="!data || exporting" @click="exportExcel">
+        {{ exporting ? 'Exporting…' : 'Export Excel' }}
+      </button>
       <button class="btn btn-sm btn-primary" :disabled="!data" @click="openPrint">
         Print
       </button>
@@ -100,6 +119,8 @@ watch(asOf, (v, old) => { if (old !== '' && v !== old) load() })
       the server flag is turned off.
     -->
     <div v-if="data?.draft" class="draft-banner">{{ data.draft_banner }}</div>
+
+    <div v-if="exportError" class="msg err no-print">{{ exportError }}</div>
 
     <div v-if="loading" class="msg">Loading…</div>
     <div v-else-if="loadError" class="msg err">
