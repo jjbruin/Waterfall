@@ -311,13 +311,39 @@ def _live_pref(data: dict, vcode: str, as_of) -> Dict[str, Any]:
             "pref_note": None}
 
 
+def _prior_from_mri(data: dict, prior_year: int) -> Dict[str, Dict[str, Any]]:
+    """LAST YEAR IS MRI'S PUBLISHED VALUATION (Jim, Oct 6 2026: "use MRI valuations as
+    the prior-year source"; settles open_items 8.3).
+
+    The prior cycle's own records were the source before, and for 2026 vs 2025 they are
+    nearly empty -- the 2025 figures were concluded outside the app and live in MRI's
+    `valuations` feed, which is what asset management's own workbook reads. Read through
+    `valuation_service._prior_rows`, the reader the Committee Summary already uses, so
+    the two screens cannot answer "last year" differently.
+
+    Keyed to this module's field names. Pref NAV is MRI's mMezzanineValue (the PSC NAV
+    the app publishes there); net proceeds is mEquityValue.
+    """
+    from flask_app.services import valuation_service
+    rows = valuation_service._prior_rows((data or {}).get("mri_val"), prior_year)
+    return {v: {"method": p.get("method"), "cap_rate": p.get("cap_rate"),
+                "term_cap_rate": p.get("term_cap_rate"),
+                "discount_rate": p.get("discount_rate"),
+                "direct_cap_noi": p.get("noi"), "concluded_value": p.get("value"),
+                "debt": p.get("debt"), "net_proceeds": p.get("net_proceeds"),
+                "psc_nav": p.get("pe_nav"), "as_of": p.get("as_of")}
+            for v, p in rows.items()}
+
+
 def _assemble(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     cyc = _cycles(engine, cycle_id)
     cur = _records(engine, cycle_id, data, cyc["current"]["as_of"])
-    prior = (_records(engine, cyc["prior"]["id"], data, cyc["prior"]["as_of"])
-             if cyc["prior"] else {})
+    prior_year = int(cyc["current"]["year"]) - 1
+    prior = _prior_from_mri(data, prior_year)
     names = _names(data)
-    return {"cycles": cyc, "current": cur, "prior": prior, "names": names}
+    return {"cycles": cyc, "current": cur, "prior": prior, "names": names,
+            "prior_year": prior_year,
+            "prior_as_of": sorted({p["as_of"] for p in prior.values() if p.get("as_of")})}
 
 
 def _sections(rows: List[Dict[str, Any]], money_keys: List[str]) -> List[Dict[str, Any]]:
@@ -368,7 +394,7 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     the preferred position's NAV is what that walk allocates to it.
     """
     a = _assemble(engine, cycle_id, data)
-    cy, py = a["cycles"]["current"], a["cycles"]["prior"]
+    cy = a["cycles"]["current"]
 
     rows: List[Dict[str, Any]] = []
     for vcode, rec in sorted(a["current"].items()):
@@ -390,13 +416,14 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
             "var_to_prior": _delta(rec["psc_nav"], p.get("psc_nav")),
             "pref_source": rec["pref_source"], "pref_note": rec["pref_note"],
             "nav_computed": rec["nav_computed"],
-            "prior_nav_computed": bool(p.get("nav_computed")),
+            "prior_in_mri": bool(p),
         })
     return {
         "tab": "pref_summary",
-        "title": f"PSC — Property Valuation Analysis (as of {cy['as_of']})",
+        "title": f"PSC â€” Property Valuation Analysis (as of {cy['as_of']})",
         "current_year": cy["year"],
-        "prior_year": py["year"] if py else None,
+        "prior_year": a["prior_year"],
+        **_prior_meta(a),
         "rows": rows,
         "sections": _sections(rows, ["pref_balance", "pref_accrued",
                                      "pref_with_accrual", "pref_nav",
@@ -404,14 +431,25 @@ def pref_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         "group_labels": group_labels(engine, cycle_id),
         "ungrouped": [r["vcode"] for r in rows if not r.get("group_label")],
         "missing_nav": [r["vcode"] for r in rows if not r["nav_computed"]],
-        "no_prior_cycle": py is None,
+    }
+
+
+def _prior_meta(a: Dict[str, Any]) -> Dict[str, Any]:
+    """Where last year came from, said once at the top of the tab."""
+    n = sum(1 for v in a["current"] if v in a["prior"])
+    return {
+        "prior_source": f"MRI valuations, {', '.join(a['prior_as_of']) or a['prior_year']}",
+        "prior_deal_count": n,
+        "no_prior_data": not a["prior"],
+        # deals on this cycle MRI carries no prior-year valuation for: a dash, not a zero
+        "prior_missing": [v for v in sorted(a["current"]) if v not in a["prior"]],
     }
 
 
 def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
     """Tab 2: method, rates, value, debt and net proceeds against last year."""
     a = _assemble(engine, cycle_id, data)
-    cy, py = a["cycles"]["current"], a["cycles"]["prior"]
+    cy = a["cycles"]["current"]
 
     rows: List[Dict[str, Any]] = []
     for vcode, rec in sorted(a["current"].items()):
@@ -441,9 +479,10 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         })
     return {
         "tab": "valuation_summary",
-        "title": f"PSC — Property Valuation Analysis (as of {cy['as_of']})",
+        "title": f"PSC â€” Property Valuation Analysis (as of {cy['as_of']})",
         "current_year": cy["year"],
-        "prior_year": py["year"] if py else None,
+        "prior_year": a["prior_year"],
+        **_prior_meta(a),
         "rows": rows,
         "sections": _sections(rows, ["value", "prior_value", "var_to_prior_value",
                                      "debt", "prior_debt", "net_proceeds",
@@ -452,5 +491,4 @@ def valuation_summary(engine, cycle_id: int, data: dict) -> Dict[str, Any]:
         "group_labels": group_labels(engine, cycle_id),
         "ungrouped": [r["vcode"] for r in rows if not r.get("group_label")],
         "missing_nav": [r["vcode"] for r in rows if not r["nav_computed"]],
-        "no_prior_cycle": py is None,
     }

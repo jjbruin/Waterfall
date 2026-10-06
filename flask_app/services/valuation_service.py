@@ -1838,6 +1838,10 @@ def _prior_rows(mri_val: Optional[pd.DataFrame], prior_year: int) -> Dict[str, d
             "value": _num(r.get("mIncomeCapConcludedValue")),
             "debt": _num(r.get("mDebtValue")),
             "pe_nav": _num(r.get("mMezzanineValue")),
+            # MRI's "net proceeds to distribute" -- what asset management's workbook
+            # reads for the prior year (its hidden column AD).
+            "net_proceeds": _num(r.get("mEquityValue")),
+            "as_of": r["_dt"].date().isoformat() if pd.notna(r["_dt"]) else None,
         }
     return out
 
