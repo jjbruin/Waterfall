@@ -105,6 +105,10 @@ def get_draft(engine, record_id: int, source: str) -> Optional[Dict[str, Any]]:
         # A draft we cannot read is not a draft. Say so rather than half-restoring.
         logger.warning("Unreadable mapping draft for record %s/%s", record_id, source)
         return None
+    # A file stored before $0 lines were set aside gets the same treatment on the way
+    # out, so the analyst does not have to upload it again to lose them.
+    if parsed.get('lines'):
+        parsed, mapping = budget.without_zero_lines(parsed, mapping)
     return {
         'filename': row[0], 'parsed': parsed, 'mapping': mapping,
         'status': row[3] or 'draft', 'committed_at': str(row[4]) if row[4] else None,
@@ -357,7 +361,10 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
         suggested[key] = {
             "category": owning,
             "account": acct,
-            "flip": bool(line["total"]) and ((line["total"] > 0) != (default_sign > 0)),
+            # Budget only: Argus takes its sign from the account and its box (`reverse`)
+            # starts clear. See validate_mod.flip_key.
+            "flip": source == "budget" and bool(line["total"])
+                    and ((line["total"] > 0) != (default_sign > 0)),
             "from_file": True,
         }
 
@@ -379,7 +386,7 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
                 suggested[key] = {
                     "category": owning,
                     "account": prior["account"],
-                    "flip": bool(line["total"]) and (
+                    "flip": source == "budget" and bool(line["total"]) and (
                         (line["total"] > 0) != (default_sign > 0)),
                     "from_history": True,
                 }
@@ -403,10 +410,16 @@ def check(engine, record_id: int, source: str, parsed: Dict[str, Any],
     """Validation + reconciliation for the mapping as it currently stands."""
     vcode = record_vcode(engine, record_id)
     parsed, mapping = with_accepted_proposals(parsed, mapping, source)
-    out = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"))
+    out = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"), source)
     out["source"] = source
     out["mapped_count"] = sum(1 for m in (mapping or {}).values() if m.get("account"))
     out["line_count"] = len(parsed.get("lines") or [])
+    # Each mapped line's total AS THE IMPORT WRITES IT, for the "as imported" column --
+    # computed here by the import's own function rather than re-derived in the browser.
+    by_row = {str(l["row"]): l for l in parsed.get("lines") or []}
+    out["imported"] = {
+        k: round(sum(validate_mod.imported_amounts(by_row[k], m, source).values()), 2)
+        for k, m in (mapping or {}).items() if m.get("account") and k in by_row}
     return out
 
 
@@ -422,7 +435,7 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
     vcode = record_vcode(engine, record_id)
     stored_parsed, stored_mapping = parsed, mapping     # the draft keeps what the screen sent
     parsed, mapping = with_accepted_proposals(parsed, mapping, source)
-    gate = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"))
+    gate = validate_mod.validate(parsed, mapping, vcode, data.get("isbs_raw"), source)
     if not gate["can_import"]:
         raise ValueError("; ".join(b["message"] for b in gate["blocking"]))
 
@@ -462,6 +475,168 @@ def commit(engine, record_id: int, source: str, parsed: Dict[str, Any],
     return res
 
 
+def export_workbook(engine, record_id: int, source: str, data: dict) -> tuple:
+    """The stored mapping as an Excel workbook: ``(bytes, filename)``.
+
+    Jack, Oct 6 2026: "if the budget column comes in off by a few thousand against my
+    source file, I'm reconciling by eye ... With an export I can drop it next to my
+    budget file and pinpoint in a minute whether it's a sign flip or a line sitting in
+    the wrong category."
+
+    So the first sheet is the SPREADSHEET'S OWN ROWS, in its order, with the sheet row
+    number to line them up by: what each was mapped to, whether its sign was flipped,
+    the total on the sheet beside the total as imported, and every month as imported.
+    Every figure comes from `validate_mod.imported_amounts`, the function the import
+    writes with -- an export computed any other way would be a second answer to "what
+    did I import", and could disagree with the Budget column it is meant to explain.
+    Lines not imported are listed too (subtotal, not mapped, $0 for the year), so a
+    missing line shows as missing rather than as absent.
+    """
+    import io
+    from datetime import datetime
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    draft = get_draft(engine, record_id, source)
+    if not draft:
+        raise ValueError("There is no mapping saved for this record yet.")
+    vcode = record_vcode(engine, record_id)
+    parsed, mapping = with_accepted_proposals(draft["parsed"], draft["mapping"], source)
+    periods = list(parsed.get("periods") or [])
+    lines = parsed.get("lines") or []
+
+    accounts = {}
+    for c in budget.category_choices(vcode, data.get("isbs_raw")):
+        for a in c.get("accounts") or []:
+            accounts[str(a["account"])] = {"description": a.get("description") or "",
+                                            "category": c["category"]}
+    key = validate_mod.flip_key(source)
+    imported_label = "Budget column" if source == "budget" else "Valuation column"
+
+    wb = openpyxl.Workbook()
+    bold = Font(bold=True)
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF")
+    money = '#,##0.00;[Red]-#,##0.00'
+
+    def header(ws, row, titles):
+        for i, t in enumerate(titles, start=1):
+            c = ws.cell(row=row, column=i, value=t)
+            c.font, c.fill = head_font, head_fill
+            c.alignment = Alignment(wrap_text=True, vertical="center")
+
+    # ── Lines ────────────────────────────────────────────────────────────
+    ws = wb.active
+    ws.title = "Lines"
+    status_word = "Applied" if draft["status"] == "committed" else "Saved, NOT yet applied"
+    ws["A1"] = f"{'Budget' if source == 'budget' else 'Argus'} mapping — {vcode}"
+    ws["A1"].font = Font(bold=True, size=13)
+    ws["A2"] = (f"File: {draft.get('filename') or parsed.get('filename') or ''}   ·   "
+                f"{status_word}{' ' + str(draft['committed_at'])[:16] if draft.get('committed_at') else ''}"
+                f"   ·   exported {datetime.now():%Y-%m-%d %H:%M}")
+    ws["A3"] = ("Amounts as imported are in MRI's sign convention: revenue NEGATIVE, "
+                "expense POSITIVE — the way the " + imported_label + " stores them.")
+    ws["A3"].font = Font(italic=True, color="666666")
+    cols = ["Sheet row", "Line on the spreadsheet", "Status", "Account", "Account name",
+            "Category", "Flip sign", "Total on the spreadsheet", "Total as imported",
+            *periods]
+    header(ws, 5, cols)
+    r = 6
+    by_acct: Dict[str, Dict[str, Any]] = {}
+    for line in sorted(lines, key=lambda l: (l["row"] < 0, abs(l["row"]))):
+        m = (mapping or {}).get(str(line["row"])) or {}
+        acct = str(m.get("account") or "").strip()
+        written = validate_mod.imported_amounts(line, m, source) if acct else {}
+        if acct:
+            status = "Imported"
+        elif line.get("looks_like_total") and not m.get("not_subtotal"):
+            status = "Not imported — read as a subtotal"
+        else:
+            status = "Not imported — no account"
+        info = accounts.get(acct, {})
+        row = [line["row"] + 1 if line["row"] >= 0 else "added", line["label"], status,
+               int(acct) if acct.isdigit() else (acct or None),
+               info.get("description") or None, info.get("category") or m.get("category"),
+               ("Yes" if m.get(key) else "No") if acct else None,
+               line.get("total"), round(sum(written.values()), 2) if acct else None]
+        row += [written.get(p) if acct else None for p in periods]
+        for i, v in enumerate(row, start=1):
+            ws.cell(row=r, column=i, value=v)
+        if acct:
+            b = by_acct.setdefault(acct, {"lines": 0, "months": {}})
+            b["lines"] += 1
+            for p, v in written.items():
+                b["months"][p] = b["months"].get(p, 0.0) + v
+        else:
+            for i in range(1, len(row) + 1):
+                ws.cell(row=r, column=i).font = Font(color="888888")
+        r += 1
+    for z in parsed.get("zero_lines") or []:
+        ws.cell(row=r, column=1, value=z["row"] + 1)
+        ws.cell(row=r, column=2, value=z["label"])
+        ws.cell(row=r, column=3, value="Not imported — $0 in every month")
+        for i in (1, 2, 3):
+            ws.cell(row=r, column=i).font = Font(color="888888")
+        r += 1
+    for col in range(8, len(cols) + 1):
+        for rr in range(6, r):
+            ws.cell(row=rr, column=col).number_format = money
+    for i, w in enumerate([9, 42, 30, 10, 30, 26, 9, 16, 16], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    for i in range(10, len(cols) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 13
+    ws.freeze_panes = "C6"
+    ws.auto_filter.ref = f"A5:{get_column_letter(len(cols))}{max(r - 1, 5)}"
+
+    # ── By account ───────────────────────────────────────────────────────
+    wa = wb.create_sheet("By account")
+    header(wa, 1, ["Account", "Account name", "Category", "Lines", "Total as imported",
+                   *periods])
+    rr = 2
+    for acct in sorted(by_acct, key=lambda a: (not a.isdigit(), int(a) if a.isdigit() else 0, a)):
+        b = by_acct[acct]
+        info = accounts.get(acct, {})
+        vals = [int(acct) if acct.isdigit() else acct, info.get("description") or None,
+                info.get("category"), b["lines"], round(sum(b["months"].values()), 2),
+                *[round(b["months"][p], 2) if p in b["months"] else None for p in periods]]
+        for i, v in enumerate(vals, start=1):
+            wa.cell(row=rr, column=i, value=v)
+            if i >= 5:
+                wa.cell(row=rr, column=i).number_format = money
+        rr += 1
+    for i, w in enumerate([10, 32, 28, 7, 16], start=1):
+        wa.column_dimensions[get_column_letter(i)].width = w
+    wa.freeze_panes = "B2"
+
+    # ── Tie-out ──────────────────────────────────────────────────────────
+    wt = wb.create_sheet("Tie-out")
+    recon = validate_mod.reconcile(parsed, mapping, source)
+    header(wt, 1, ["", "On the spreadsheet", "As imported", "Difference"])
+    names = {"revenue": "Total revenue", "expense": "Total expenses", "noi": "NOI"}
+    for i, row in enumerate(recon["rows"], start=2):
+        wt.cell(row=i, column=1, value=names.get(row["line"], row["line"])).font = bold
+        for j, k in enumerate(("stated", "computed", "difference"), start=2):
+            c = wt.cell(row=i, column=j, value=row[k])
+            c.number_format = money
+    nxt = len(recon["rows"]) + 3
+    if recon.get("outside_noi"):
+        wt.cell(row=nxt, column=1, value="Imported, but below NOI").font = bold
+        for k, o in enumerate(recon["outside_noi"], start=nxt + 1):
+            wt.cell(row=k, column=1, value=int(o["account"]) if str(o["account"]).isdigit()
+                    else o["account"])
+            wt.cell(row=k, column=3, value=o["amount"]).number_format = money
+    wt.cell(row=1, column=6, value=("Positive magnitudes, as on the screen. A difference "
+                                     "is not an error: a skipped subtotal shows here too."))
+    for i, w in enumerate([24, 20, 20, 16], start=1):
+        wt.column_dimensions[get_column_letter(i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    stem = (draft.get("filename") or "mapping").rsplit(".", 1)[0]
+    return buf.getvalue(), f"{vcode} {source} mapping - {stem}.xlsx"
+
+
 def _argus_category(coa: int) -> str:
     """The Argus table's own category word for an account. Mirrors ARGUS_COA_MAP, which
     uses exactly three: capex for 7050, revenue for 4xxx, expense for everything else."""
@@ -481,8 +656,9 @@ def _commit_argus(engine, record_id: int, parsed: Dict[str, Any],
     translated back by label onto an import some other parser made.
 
     Signs come from the ACCOUNT, through `argus_service._normalize_amount`, the same
-    function every Argus import has always used; the flip box does not reach this path
-    and the screen does not offer it.
+    function every Argus import has always used -- and a line's "Flip sign" box
+    (`reverse`, Jack, Oct 6 2026) reverses that for the line. Both are applied in
+    `validate_mod.imported_amounts`, which the tie-out reads too.
 
     The record's linked import is REPLACED IN PLACE when this record is the only one
     linking it -- re-applying a mapping must not leave a stale projection in Deal
@@ -518,12 +694,14 @@ def _commit_argus(engine, record_id: int, parsed: Dict[str, Any],
         except ValueError:
             continue                      # a non-numeric account cannot be an Argus COA
         accounts.add(str(coa))
+        # The import's own function, shared with the tie-out and the export; it returns
+        # MRI's convention, and argus_cashflows stores the opposite (revenue positive).
+        written = validate_mod.imported_amounts(line, m, "argus")
         for period, value in (line.get("amounts") or {}).items():
-            amount = float(value)
-            if amount == 0.0:
+            if period not in written:
                 continue
-            rows.append({"pd": period, "li": line["label"], "coa": coa, "amt": amount,
-                         "norm": argus_service._normalize_amount(coa, amount),
+            rows.append({"pd": period, "li": line["label"], "coa": coa, "amt": float(value),
+                         "norm": -written[period],
                          "cat": _argus_category(coa)})
     if not rows:
         raise ValueError("Nothing to apply — no lines have an account assigned.")

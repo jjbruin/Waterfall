@@ -225,8 +225,12 @@ def main() -> int:
         sign4010 = next((a["mri_sign"] for a in rent.get("accounts", [])
                          if a["account"] == "4010"), None)
         chk("4010 behaves NEGATIVE for this deal", sign4010 == -1, f"got {sign4010}")
-        chk("so positive Argus rent is flagged to flip",
-            sug.get("Potential Base Rent", {}).get("flip") is True,
+        # Oct 6 2026: Argus takes its sign from the ACCOUNT and its own box (`reverse`)
+        # starts clear. Pre-filling the budget's `flip` here is what left 14 unseen
+        # flips on production Argus drafts, applied by the tie-out but not the import.
+        chk("positive Argus rent is NOT pre-flipped (Argus signs come from the account)",
+            sug.get("Potential Base Rent", {}).get("flip") is False
+            and not sug.get("Potential Base Rent", {}).get("reverse"),
             f"{sug.get('Potential Base Rent')}")
         vac = sug.get("Absorption & Turnover Vacancy", {})
         chk("a NEGATIVE contra-revenue line on a positive-stored account is not flipped "

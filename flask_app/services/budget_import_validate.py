@@ -29,7 +29,58 @@ logger = logging.getLogger(__name__)
 CRITICAL_WARNINGS = {"sign_opposite_prior", "magnitude", "negative_noi"}
 
 
-def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]:
+def flip_key(source: str) -> str:
+    """The mapping field that reverses a line's sign, per source.
+
+    ARGUS HAS ITS OWN KEY. Until Oct 6 2026 the Argus path had no flip box, yet the
+    screen still pre-filled `flip` on Argus lines by the budget's rule (Argus shows
+    revenue positive, MRI stores it negative, so most revenue lines came out `flip`).
+    Commit ignored it; the tie-out did not. Measured Oct 6 2026: 14 mapped Argus lines
+    across three records carry that unseen `flip`. Honouring `flip` now would invert
+    every one of them on the next apply, so the Argus box is `reverse`, which starts
+    false everywhere and is set only by someone ticking it.
+    """
+    return "reverse" if source == "argus" else "flip"
+
+
+def imported_amounts(line: Dict[str, Any], m: Dict[str, Any],
+                     source: str = "budget") -> Dict[str, float]:
+    """A mapped line's months EXACTLY AS THE IMPORT WRITES THEM, in MRI's convention
+    (revenue negative, expense positive).
+
+    ONE function for what a mapping writes: the budget commit, the Argus commit, the
+    tie-out, the "as imported" column and the Excel export all read it, so the screen
+    can never show a figure the import does not write. (The Argus tie-out used to apply
+    a flip the Argus import ignored -- see `flip_key`.)
+
+    Budget: the sheet's figure, flipped if ticked; that IS what the supplement stores.
+    Argus: the sign comes from the ACCOUNT (`argus_service._normalize_amount`, the
+    function every Argus import has always used), which stores revenue positive; the
+    box reverses it for a line the account's rule gets wrong -- a concession booked to
+    a revenue account, a credit against an expense. Returned negated, so both sources
+    read in one convention.
+    """
+    sign = -1.0 if m.get(flip_key(source)) else 1.0
+    out: Dict[str, float] = {}
+    if source == "argus":
+        from flask_app.services import argus_service
+        try:
+            coa = int(str(m.get("account")).strip())
+        except (TypeError, ValueError):
+            return out                     # a non-numeric account is not an Argus COA
+        for period, value in (line.get("amounts") or {}).items():
+            amount = float(value)
+            if amount == 0.0:
+                continue
+            out[period] = -argus_service._normalize_amount(coa, amount) * sign
+        return out
+    for period, value in (line.get("amounts") or {}).items():
+        out[period] = float(value) * sign
+    return out
+
+
+def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any],
+              source: str = "budget") -> Dict[str, Any]:
     """Spreadsheet totals against what the SELECTED lines actually produce.
 
     This replaces a rule that blocked on "an unmapped line carrying a value", which was
@@ -63,9 +114,9 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
         line = by_row.get(int(row_key))
         if not line or not m.get("account"):
             continue
-        amount = line["total"] * (-1 if m.get("flip") else 1)
+        amount = sum(imported_amounts(line, m, source).values())
         acct = str(m["account"]).strip()
-        # After flipping, our convention holds: revenue negative, expense positive.
+        # As written, in our convention: revenue negative, expense positive.
         if acct in rev_accts:
             rev += -amount
         elif acct in exp_accts:
@@ -91,7 +142,7 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any]) -> Dict[str, Any]
 
 
 def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
-             isbs_raw: pd.DataFrame) -> Dict[str, Any]:
+             isbs_raw: pd.DataFrame, source: str = "budget") -> Dict[str, Any]:
     """Blocking problems, warnings, and the reconciliation, in one payload."""
     blocking: List[Dict[str, str]] = []
     warnings: List[Dict[str, str]] = []
@@ -249,7 +300,7 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
         # everything mapped outside NOI in one place, from the comparison's own
         # sections rather than a hand-kept four-account set that missed 5130.)
 
-    recon = reconcile(parsed, mapping)
+    recon = reconcile(parsed, mapping, source)
     noi = next((r for r in recon["rows"] if r["line"] == "noi"), None)
     if noi and noi["computed"] < 0:
         warnings.append({"code": "negative_noi",
@@ -292,11 +343,10 @@ def commit(engine, vcode: str, parsed: Dict[str, Any], mapping: Dict[str, Any],
         line = by_row.get(int(row_key))
         if not line:
             continue
-        flip = -1 if m.get("flip") else 1
-        for period, value in line["amounts"].items():
+        for period, amount in imported_amounts(line, m, "budget").items():
             rows.append({"vcode": vcode, "dtEntry": period, "vSource": "Budget IS",
                          "vAccount": str(m["account"]).strip(),
-                         "mAmount": float(value) * flip,
+                         "mAmount": amount,
                          "vInput": f"{line['label']} [{username}]"})
     if not rows:
         raise ValueError("Nothing to import — no lines have an account assigned.")
