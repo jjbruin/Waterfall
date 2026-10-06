@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v584** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v585** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v584 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v585 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,40 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v585` = `949a83f` (INVESTMENT METRICS: A DEAL SOLD AFTER THE AS-OF IS CURRENT AT THAT
+    QUARTER. Charlene's decision on open_items 20.13. `classify` returns SOLD only when the
+    SOLD marker is present AND the sale date is on or before the as-of; a SOLD marker with NO
+    sale date stays Sold (nothing says it was held). A deal sold after the as-of was still held
+    at the quarter end, so it is Current with every figure as of the quarter -- values in a
+    quarter stay in that quarter. THE ONE DELIBERATE DEPARTURE FROM THE PRINTED REFERENCE: the
+    reference prints Clima Secur, 30 Bearfoot and 870 Donald Lynch in Sold at 30 Jun 26 under
+    (4) "sold after June 2026"; the report now shows them in Current. Removed because the rule
+    made it dead: the derived Sold-page footnote (4) and `cfg.SOLD_AFTER_AS_OF_MARKER`, the
+    whole-life cash-flow exemption (`cashflow_cutoff`) and `sold_after_as_of_full_life`. Added:
+    `diagnostics.sold_after_as_of_shown_current`; labels follow the deal into the other table
+    (30 Bearfoot keeps its Dev. labels in Current; a deal's own table entry wins); the stale-
+    config and reference-order diagnostics no longer flag exactly the deals the rule moved.
+    MEASURED ON LIVE after deploy: 25Q4 Current 52 / Sold 19 (7 moved: Quakertown, Berger
+    Pittsburgh, 30 Bearfoot, East Manchester, Donald Lynch, Clima Secur, Airport Plaza), 26Q1
+    52 / 21 (5), 26Q2 53 / 23 (3), 26Q3 50 / 26 (0). 26Q2 totals: Current Size $3,098.5M,
+    Pref $752.0M, First-Loss $393.4M, Proceeds $146.0M; Sold $543.2M / $172.9M / $54.5M /
+    $298.3M; Grand Size $3,641.7M UNCHANGED, Grand Proceeds $453.5M -> $444.3M (the three
+    deals' proceeds now count the Current way, through 30 Jun). The Sold page carries footnotes
+    1-3 only; Sold rows still carry Realized IRR; the three moved deals carry no marker and no
+    realized IRR. Span vs live `c3500ff`: `c5ddc2c` (docs) and this change. Built and pushed
+    from a clean worktree; build `canx`, 2m45s, Succeeded; tag locked; Healthy at 100%.
+    Guardrails: `investment_metrics_check.py` 226/226 (the checks that encoded the old rule
+    rewritten; boundary both sides, a marker with no sale date, labels, diagnostics, a later
+    quarter returning the deal to Sold -- reverting the rule fails 7 of them),
+    `committed_pref_check` 47/47, `one_engine_per_number_check` 26/26, `section_access_check`
+    274/274, `claude_md_budget_check` 3/3, `investment_metrics_print_inspect` 44/44 with 53
+    Current rows (the page still fits). Smoke (all 200, 0 tracebacks): auth/me, auth/sections,
+    dashboard/kpis (23s), portfolio-snapshot quarters, one-pager P0000044, /investment-metrics
+    at four as-ofs (6.3-6.7s cold, 0.21s warm). KNOWN, DIAGNOSTIC ONLY: at 25Q4 and 26Q1 the
+    stale-config check reports 10 and 6 entries -- config for deals NOT YET INVESTED at those
+    quarters (a v583 consequence, not v585); no value is affected. **Rollback** is FORWARD:
+    `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:c3500ff --revision-suffix v586`.)
   - `v584` = `c3500ff` (A DEVELOPMENT DEAL WITH POSITIVE NOI PRINTS ITS P.E. YIELD ON EXPOSURE --
     Oct 6 2026, branch `fix/onepager-pe-yield-dev-positive`, merge `c3500ff`. v582 blanked every
     development deal, which also blanked Jefferson Waters Creek: in lease-up, positive NOI

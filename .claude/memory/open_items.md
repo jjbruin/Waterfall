@@ -137,23 +137,23 @@ was already wrong from nine dashed deals. The reference's own rows add to 100.0%
 - **Owner:** Charlene / Jim.
 
 
-### 20.13 Investment Metrics: a deal sold AFTER the as-of still sits in the Sold table, with whole-life figures (Oct 6 2026) — decision needed, Charlene / Jim
+### 20.13 Investment Metrics: a deal sold AFTER the as-of — CLOSED at `v585` (Oct 6 2026); one diagnostic follow-up
 
-`classify` goes by the SOLD marker, not the sale date, so a deal sold after the quarter being
-viewed is in Sold with a footnote (4), and `cashflow_cutoff` deliberately leaves its proceeds and
-realized IRR whole-life. That is the reference's own convention at 26Q2 (Clima Secur, 30 Bearfoot,
-870 Donald Lynch, "sold after June 2026"), but at earlier quarters it breaks "values in a quarter
-stay in that quarter": 7 deals at 25Q4, 5 at 26Q1, 3 at 26Q2, 0 at 26Q3
-(`diagnostics.sold_after_as_of_full_life`).
+Decided by Charlene: a deal is Sold at a quarter only once its sale date is on or before the
+as-of; otherwise it is Current with its figures as of that quarter. Shipped at `v585`
+(`classify` in `investment_metrics.py`). At 26Q2 this moves Clima Secur, 30 Bearfoot and
+870 Donald Lynch from Sold to Current, the one deliberate departure from the printed reference
+page; the Sold page no longer has a footnote (4). Named per build in
+`diagnostics.sold_after_as_of_shown_current`.
 
-- **The alternative:** a deal is Current until its sale quarter, with its figures as of that
-  quarter. It would move those three deals into Current at 26Q2 and stop the Sold table
-  matching the reference's printed page, and `investment_metrics_check.py` section 22 (marker
-  regression against the reference at 2026-06-30) would have to change with it.
-- **Not quarter-aware by design, for the record:** First Lien (MRI has an origination date on
-  only 4 loans, so the loans cannot be cut by quarter), and the deal terms and underwriting
-  figures (coupon, split, lookback, UW IRR, Proj Yr-1).
-- **Owner:** Charlene / Jim.
+- **Still true, by design:** First Lien (MRI has an origination date on only 4 loans) and the
+  deal terms and underwriting figures (coupon, split, lookback, UW IRR, Proj Yr-1) are static
+  attributes of the deal and are not cut by quarter.
+- **Follow-up, diagnostic only, unassigned:** at an early quarter (25Q4: 10, 26Q1: 6) the
+  stale-config check lists config entries for deals NOT YET INVESTED at that quarter. The entries
+  are correct and no value is affected; `_check_config_population` should treat a vcode in
+  `diagnostics.not_yet_invested` as present. Check: `diagnostics.config_entries_without_a_deal`
+  at `as_of=2025-12-31` is empty when this is done.
 
 ### 20.3 Freezing is switched off, and 26Q2 has never been frozen — Charlene
 
