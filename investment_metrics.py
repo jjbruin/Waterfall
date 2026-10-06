@@ -751,7 +751,9 @@ def first_lien(
     only 27 of the other 66.
 
     So: the summed committed facility first, then the earliest loan record,
-    then the earliest balance-sheet row, then nothing. The order is worth
+    then nothing. The earliest balance-sheet row used to be a third fallback;
+    ``cfg.FIRST_LIEN_ISBS_FALLBACK`` (False) switches it off because it tied the
+    reference on none of the seven deals that reached it. The order is worth
     stating, because the fallbacks are about COVERAGE and not accuracy — a
     later basis is tried only when the one before it yields no figure at all.
 
@@ -792,12 +794,25 @@ def first_lien(
                 "fell_back_to": cfg.FIRST_LIEN_BASIS,
             })
 
+    withheld = None
     for basis in (cfg.FIRST_LIEN_BASIS,) + tuple(cfg.FIRST_LIEN_FALLBACKS):
+        if basis == "earliest_isbs" and not cfg.FIRST_LIEN_ISBS_FALLBACK:
+            # Computed so the withheld figure can be REPORTED, never printed.
+            withheld = _lien_basis(basis, ident, loans, isbs_interim_bs,
+                                   child_vcodes)
+            continue
         value, note = _lien_basis(basis, ident, loans, isbs_interim_bs,
                                   child_vcodes)
         if value is not None:
             return value, note
-    return None, "no loan and no balance-sheet debt on record"
+    if diag is not None and withheld is not None and withheld[0] is not None:
+        diag.setdefault("first_lien_isbs_withheld", []).append({
+            "vcode": ident.vcode, "name": ident.name,
+            "isbs_value_usd": withheld[0], "how": withheld[1],
+            "reason": "no usable loan record; cfg.FIRST_LIEN_ISBS_FALLBACK is "
+                      "False, so the balance-sheet figure is not printed",
+        })
+    return None, "none"
 
 
 #: The three candidate bases, each returning (value, how it was reached).

@@ -491,15 +491,46 @@ def main():
     # only when the one before it produced nothing at all.
     no_loans = build(loans=pd.DataFrame())
     _, a_nl = row_of(no_loans, "P0000001")
-    chk("with no loans at all it falls back to the balance sheet",
-        a_nl and abs(a_nl["first_lien"] - 12.0) < 1e-9
-        and "ISBS" in a_nl["basis"]["first_lien"],
-        f"got {(a_nl or {}).get('first_lien')}")
+    chk("with no loans the ISBS fallback is OFF: an em dash, basis 'none'",
+        cfg.FIRST_LIEN_ISBS_FALLBACK is False
+        and a_nl and a_nl["first_lien"] is None
+        and a_nl["basis"]["first_lien"] == "none",
+        f"got {(a_nl or {}).get('first_lien')} / {(a_nl or {}).get('basis', {}).get('first_lien')}")
+    chk("...Total Size and every % of Cap cascade to dashes with it",
+        a_nl and a_nl["total_size"] is None and a_nl["first_lien_pct"] is None
+        and a_nl["pref_pct"] is None and a_nl["first_loss_pct"] is None)
+    chk("...the withheld ISBS figure is kept in alternates, for diagnostics only",
+        abs((alt_of(a_nl, "earliest_isbs").get("value") or 0) - 12.0) < 1e-9,
+        f"got {alt_of(a_nl, 'earliest_isbs').get('value')}")
+    held = no_loans["diagnostics"].get("first_lien_isbs_withheld", [])
+    chk("...and the deal is LISTED as withheld, with the figure (flag, never drop)",
+        any(h["vcode"] == "P0000001" and abs(h["isbs_value_usd"] - 12_000_000.0) < 1
+            for h in held), f"got {held}")
+    # The other direction: a rule tested only in the refusing direction is
+    # satisfied by refusing everything, so the switch is thrown the other way too.
+    saved_fb = cfg.FIRST_LIEN_ISBS_FALLBACK
+    try:
+        cfg.FIRST_LIEN_ISBS_FALLBACK = True
+        on = build(loans=pd.DataFrame())
+        _, a_on = row_of(on, "P0000001")
+        chk("with the flag ON the balance-sheet fallback is restored, unchanged",
+            a_on and abs(a_on["first_lien"] - 12.0) < 1e-9
+            and "ISBS" in a_on["basis"]["first_lien"]
+            and not on["diagnostics"].get("first_lien_isbs_withheld"),
+            f"got {(a_on or {}).get('first_lien')}")
+    finally:
+        cfg.FIRST_LIEN_ISBS_FALLBACK = saved_fb
+    _, a_has = row_of(out, "P0000001")
+    chk("a deal WITH a loan record is untouched by the flag",
+        a_has and abs(a_has["first_lien"] - 13.0) < 1e-9
+        and not out["diagnostics"].get("first_lien_isbs_withheld"))
     none_at_all = build(loans=pd.DataFrame(), isbs_interim_bs=pd.DataFrame())
     _, a_no = row_of(none_at_all, "P0000001")
-    chk("with neither, it is an em dash and says so",
+    chk("with neither loan nor balance-sheet debt: a dash, basis 'none', "
+        "and nothing listed as withheld",
         a_no and a_no["first_lien"] is None
-        and "no loan and no balance-sheet debt" in a_no["basis"]["first_lien"])
+        and a_no["basis"]["first_lien"] == "none"
+        and not none_at_all["diagnostics"].get("first_lien_isbs_withheld"))
     chk("the rule is GLOBAL — dev and non-dev take the same basis",
         cfg.FIRST_LIEN_BASIS == "summed_facility"
         and cfg.FIRST_LIEN_FALLBACKS == ("earliest_loan", "earliest_isbs"))
