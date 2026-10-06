@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v581** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v582** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v581 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v582 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,30 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v582` = `90aadc9` (A DEVELOPMENT DEAL PRINTS N/A FOR P.E. YIELD ON EXPOSURE -- Oct 6 2026,
+    branch `fix/onepager-pe-yield-dev-na`, merge `90aadc9`. Since bcf19f2 (Sep 30) a negative NOI
+    published a negative yield, which reached two development deals in lease-up: Jefferson Addison
+    Heights -0.38% and Jefferson Eastchase -0.98% at 26Q2, against "Dev" on the Snapshot and N/A on
+    the sent report. The yield now comes from `compute_pe_yield_on_exposure`, which returns None for
+    a development deal (`one_pager._is_dev_deal`, the app's one test) and is otherwise unchanged: a
+    NON-development deal with negative NOI still prints its negative yield, and no NOI or no
+    exposure still prints N/A. BLAST RADIUS, measured at 26Q2: 3 of 9 development deals printed a
+    yield. Addison Heights and Eastchase return to the sent report's N/A. JEFFERSON WATERS CREEK
+    printed +2.5% on the sent report and now prints N/A: the rule applied consistently, but a
+    change from what was sent. Left as built; an exemption would be a second per-deal exception.
+    SYMPTOM-REPAIR REVIEW: a classification rule on the shared DEV_STRATEGIES test, returns None
+    not 0, no vcode in a constant, rationale holds for every deal it touches -- judged NOT a
+    symptom repair; the Waters Creek change was flagged to Charlene before the build. Jim was not
+    told before the build. Span vs live `770acee`: docs `5f2f96d`, `e23f36e` (this), merge `90aadc9`.
+    Built from a CLEAN WORKTREE (`waterfall-xirr-deploy`, nothing else using it), run `canu`,
+    3m01s, Succeeded; tag locked (writeEnabled false); P1 re-run before update (v581 = 770acee).
+    After cutover v582 at 100%, root 200 in 0.42s. Served, read-only, 26Q2: Addison Heights,
+    Eastchase and Waters Creek `pe_yield_on_exposure` None; Merle Hay 0.0067, Presidential Arms
+    0.0086, Evergreen Plaza 0.1030 unchanged. Guardrails on the merged tree: pe_yield_dev 21
+    (fails 5 under --inject=nogate, 2 under --inject=blankneg), debt_free 41, quarter_hardcode 24,
+    one_engine_per_number 26, section_access --static 193, claude_md_budget 3;
+    onepager_missing_vs_zero 31/32, the one failure (fmtOccVariance) already on main. NOT run
+    inside the container: the new check's data section reads a SQLite file and skips there.)
   - `v581` = `770acee` (SHAREPOINT PICKER ON VALUATIONS > BUDGET REVIEW -- Jim, testing v580:
     "the uploads in this section do not have the sharepoint load buttons." The v580
     pass put the Argus picker on ArgusImport (Deal Analysis / Pipeline), but Valuations
