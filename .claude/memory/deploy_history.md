@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v573** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v574** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v573 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v574 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,29 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v574` = `d5fda63` (BUDGET / ARGUS MAPPING, ASSET MANAGEMENT'S OCT 6 2026 CHANGES --
+    Jack Day: $0 lines set aside (every month $0, not "nets to $0"; reported as
+    `zero_lines`, applied to stored drafts too; one production budget was 221 of 309
+    lines $0); "Export mapping to Excel" (`/mapping/export`: Lines in sheet order with
+    sheet row, account, flip, sheet total vs imported total and the months; By account;
+    Tie-out); the warnings OFF the screen (still computed, still in the API), the tie-out
+    and blocking items kept; a Flip sign box for ARGUS, stored as `reverse` because 14
+    production Argus lines carry an unseen budget-rule `flip`. ONE FUNCTION FOR WHAT A
+    MAPPING WRITES, `budget_import_validate.imported_amounts`: both commits, the tie-out,
+    "as imported" and the export. Before it the Argus tie-out applied the unseen flip
+    the import ignored -- NOI shown off by $2,839,732 (P0000069) and $8,684,788 (P0000075)
+    where what was imported ties to $10 and -$60; the Valuation column itself never was
+    wrong. Written data unchanged: budget amounts identical, Argus identical unless the
+    new box is ticked. Span vs live `d5bd2c4`: `d3315b8` (this), Charlene's docs-only
+    `7d756d2`, merge `d5fda63`. Build `cank`, 2m57s, Succeeded; tag locked; P1 re-run
+    before update (still `d5bd2c4`); rolled out Healthy, `/health` 200. Served bundle
+    verified from the ENTRY `index-DHnKGUeA.js` -> `ValuationsView-CGy0GXR2.js`: export
+    button and route, `zero_lines`, `reverse`, the tie-out present; "you can import
+    anyway" and "note(s) for reference" absent. `/mapping/export` 401 unauthenticated
+    (exists). Guardrails on the merged tree: mapping_feedback 33/33, budget_import_mapping
+    33, mapping_draft 58, argus_single_load 42, budget_review_inputs 50,
+    isbs_supplement_precedence 33, section_access 274; line_mapping 2 PRE-EXISTING
+    failures, separate task. Not run inside the container.)
   - `v573` = `d5bd2c4` (INVESTMENT METRICS: UW PROJ. IRR AND PROJ YR-1 COC READ FROM
     `deal_terms`. `Prop_Info_DealTerms.sql` pivots MRI's `'U/W IRR'` and
     `'Projected Yr 1 CoC Returns'` (NOT the look-alikes `'UW IRR'` / `'Projected Yr 1
