@@ -762,24 +762,89 @@ def main():
     section("14. cfg.UNLOADED_FIGURES — one switch, all three modes")
     chk("all three columns are declared in one place",
         set(cfg.UNLOADED_FIGURES) == {"uw_irr", "proj_yr1_coc", "act_yr1_coc"})
-    chk("the two IRR / projected columns are STILL pending — they print a dash",
-        all(cfg.UNLOADED_FIGURES[k]["mode"] == "none"
-            for k in ("uw_irr", "proj_yr1_coc")))
+    chk("UW IRR and Proj Yr-1 CoC read MRI's deal_terms, by their pivoted names",
+        all(cfg.UNLOADED_FIGURES[k]["mode"] == "mri"
+            and cfg.UNLOADED_FIGURES[k]["table"] == "deal_terms"
+            for k in ("uw_irr", "proj_yr1_coc"))
+        and cfg.UNLOADED_FIGURES["uw_irr"]["field"] == "uw_irr"
+        and cfg.UNLOADED_FIGURES["proj_yr1_coc"]["field"] == "proj_yr1_coc")
     chk("Act. Yr-1 CoC is the one that is switched on, and to the ROE window",
         cfg.UNLOADED_FIGURES["act_yr1_coc"]["mode"] == "computed"
-        and cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] == "roe_window")
-    chk("no MRI field name is filled in yet — the TODO is still open",
-        all(s["field"] is None for s in cfg.UNLOADED_FIGURES.values()))
-    chk("each pending one says WHY it is pending, on the row's basis",
-        alpha and "pending Alay" in alpha["basis"]["uw_irr"]
-        and "pending Alay" in alpha["basis"]["proj_yr1_coc"])
-    # Indexed defensively. A missing key here is a real failure, and it must
-    # FAIL rather than raise: a KeyError kills the run and takes every later
-    # check with it, so the one defect it detects hides a dozen others.
-    pending = out["diagnostics"].get("unloaded_figures_pending", {})
-    chk("...and the count of affected deals is reported, not just per row",
-        pending.get("uw_irr", {}).get("deals") == 4,
-        f"got {pending.get('uw_irr')}")
+        and cfg.UNLOADED_FIGURES["act_yr1_coc"]["variant"] == "roe_window"
+        and cfg.UNLOADED_FIGURES["act_yr1_coc"]["field"] is None)
+    chk("the pivoted columns are named in the query the refresh runs",
+        all(f in _read_repo("queries", "Prop_Info_DealTerms.sql")
+            for f in ("AS uw_irr", "AS proj_yr1_coc", "'U/W IRR'",
+                      "'Projected Yr 1 CoC Returns'")))
+    _sql = "\n".join(l for l in _read_repo("queries", "Prop_Info_DealTerms.sql")
+                     .splitlines() if not l.lstrip().startswith("--"))
+    chk("...and the older look-alike types are NOT read",
+        "'UW IRR'" not in _sql
+        and "'Projected Yr 1 CoC'" not in _sql
+        and "'Projected Yr 1 CoC Returns'" in _sql)
+    # Before the refresh lands the columns the table does not HAVE them.
+    chk("a column the table lacks prints a dash and is reported ABSENT, per deal",
+        alpha and alpha["uw_irr"] is None and alpha["proj_yr1_coc"] is None
+        and "is not present" in alpha["basis"]["uw_irr"]
+        and "is not present" in alpha["basis"]["proj_yr1_coc"]
+        and out["diagnostics"].get("unloaded_figure_field_absent")
+        and not out["diagnostics"].get("unloaded_figure_value_null"),
+        "absent and NULL must not be reported as the same thing")
+
+    # ── the two new fields: present, NULL, absent ─────────────────────────
+    present_terms = pd.DataFrame([
+        dict(vcode="P0000001", pe_coupon=0.085, irr_lookback=9.0,
+             pe_split_capital=0.30, pe_split_cf=None,
+             uw_irr=0.12, proj_yr1_coc=0.11),
+        dict(vcode="P0000002", pe_coupon=0.085, irr_lookback=9.0,
+             pe_split_capital=0.30, pe_split_cf=None,
+             uw_irr=None, proj_yr1_coc=None),
+    ])
+    pres = build(deal_terms=present_terms)
+    _, p1 = row_of(pres, "P0000001")
+    _, p2 = row_of(pres, "P0000002")
+    chk("PRESENT: the fraction is carried through unaltered (0.12 -> 12%)",
+        p1 and abs(p1["uw_irr"] - 0.12) < 1e-12
+        and abs(p1["proj_yr1_coc"] - 0.11) < 1e-12
+        and p1["basis"]["uw_irr"] == "deal_terms.uw_irr"
+        and p1["basis"]["proj_yr1_coc"] == "deal_terms.proj_yr1_coc",
+        f"got {(p1 or {}).get('uw_irr')}, {(p1 or {}).get('proj_yr1_coc')}")
+    chk("NULL: a deal MRI holds no figure for prints a dash, never 0.0",
+        p2 and p2["uw_irr"] is None and p2["proj_yr1_coc"] is None
+        and "is NULL" in p2["basis"]["uw_irr"])
+    nulls = pres["diagnostics"].get("unloaded_figure_value_null", {})
+    chk("NULL is reported as NULL, with the deals, and NOT as absent",
+        "P0000002" in nulls.get("uw_irr", {}).get("vcodes", [])
+        and "P0000002" in nulls.get("proj_yr1_coc", {}).get("vcodes", [])
+        and "P0000001" not in nulls.get("uw_irr", {}).get("vcodes", [])
+        and not pres["diagnostics"].get("unloaded_figure_field_absent"),
+        f"got {nulls}")
+    pct_terms = present_terms.assign(uw_irr=[12.0, None])
+    _, p3 = row_of(build(deal_terms=pct_terms), "P0000001")
+    chk("units follow pe_coupon: a whole-percent 12.0 reads as 12%, not 1200%",
+        p3 and abs(p3["uw_irr"] - 0.12) < 1e-12, f"got {(p3 or {}).get('uw_irr')}")
+    yres = build(inv=young_deals_fixture(), acct=young_acct_fixture(),
+                 deal_terms=young_terms_fixture().assign(
+                     uw_irr=0.13, proj_yr1_coc=0.10))
+    _, y1 = row_of(yres, "P0000900")
+    _, y2 = row_of(yres, "P0000901")
+    chk("YOUNG DEAL, real config: footnote (5) substitutes the loaded 10.0%",
+        y1 and all(abs(y1[f] - 0.10) < 1e-12 for f in THREE)
+        and all("footnote (5)" in y1["basis"][f] for f in THREE)
+        and not yres["diagnostics"].get("young_deal_substitution_unavailable"),
+        f"got {[y1[f] for f in THREE] if y1 else None}")
+    chk("...and a deal past its first year is left alone",
+        y2 and not y2["young_deal"]
+        and all(abs((y2[f] or 0) - 0.10) > 1e-9 for f in THREE))
+    _, yn = row_of(build(inv=young_deals_fixture(), acct=young_acct_fixture(),
+                         deal_terms=young_terms_fixture().assign(
+                             uw_irr=None, proj_yr1_coc=None)), "P0000900")
+    chk("YOUNG DEAL with the column NULL still blanks (a stub is not a year)",
+        yn and all(yn[f] is None for f in THREE))
+    _, ya = row_of(build(inv=young_deals_fixture(), acct=young_acct_fixture(),
+                         deal_terms=young_terms_fixture()), "P0000900")
+    chk("YOUNG DEAL with the column ABSENT still blanks, without a crash",
+        ya and all(ya[f] is None for f in THREE))
 
     saved = {k: dict(v) for k, v in cfg.UNLOADED_FIGURES.items()}
     try:

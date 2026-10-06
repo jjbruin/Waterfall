@@ -89,6 +89,18 @@
           This deal has no recent actuals, so the list is not ranked and there are no defaults from history.
         </span>
       </p>
+      <!-- Set aside, not hidden: the count is said and the lines can be listed
+           (Jack, Oct 6 2026: "If a line has a $0 twelve month total, don't import it"). -->
+      <p v-if="parsed.zero_lines?.length" class="lm-note">
+        {{ parsed.zero_lines.length }} line(s) are $0 in every month and were left out —
+        there is nothing to import from them.
+        <button class="lm-more" @click="showZero = !showZero">
+          {{ showZero ? 'hide' : 'list them' }}
+        </button>
+        <span v-if="showZero" class="lm-zero-list">
+          {{ parsed.zero_lines.map(z => z.label).join(' · ') }}
+        </span>
+      </p>
 
       <!-- ── Step 2: the mapping ───────────────────────────────────────── -->
       <div class="lm-coa-toggle no-print">
@@ -161,7 +173,7 @@
               <th class="num">Total</th>
               <th>Category</th>
               <th>Account</th>
-              <th v-if="source !== 'argus'" class="ctr">Flip sign</th>
+              <th class="ctr">Flip sign</th>
               <th class="num">As imported</th>
             </tr>
           </thead>
@@ -227,11 +239,11 @@
                   </optgroup>
                 </select>
               </td>
-              <!-- Not for Argus: the Valuation cash flow takes each line's sign from its
-                   ACCOUNT (argus_service._normalize_amount), so a flip box there would be
-                   a control that changes nothing. -->
-              <td v-if="source !== 'argus'" class="ctr">
-                <input type="checkbox" :checked="!!m(line.row).flip" :disabled="!editable || !m(line.row).account"
+              <!-- Both sources (Jack, Oct 6 2026). For Argus the sign comes from the
+                   ACCOUNT and this reverses it for the line; it is stored as `reverse`,
+                   not `flip` -- see budget_import_validate.flip_key for why. -->
+              <td class="ctr">
+                <input type="checkbox" :checked="!!m(line.row)[flipKey]" :disabled="!editable || !m(line.row).account"
                        @change="setFlip(line.row, $event.target.checked)" />
               </td>
               <td class="num" :class="{ neg: imported(line) < 0 }">
@@ -284,47 +296,32 @@
           </p>
         </div>
 
-        <!-- ── Step 4: what to look at ─────────────────────────────────── -->
+        <!-- ── Step 4: only what stops the import ────────────────────────
+             The warnings are gone from the screen (Jack, Oct 6 2026: "a couple hundred
+             lines of things like 'payroll taxes account 516 is 0.19x the last 12
+             months', and I'm not sure what that's telling me to do. Take those out
+             entirely. Keep the does-it-tie-to-the-spreadsheet check"). What remains
+             here is what BLOCKS -- an account we do not carry would land on no row --
+             and it appears only when there is one. -->
         <div class="lm-checks">
           <h5>
-            Checks
-            <span class="lm-count">{{ check ? check.mapped_count : 0 }} of
-              {{ parsed.lines.length }} lines mapped</span>
+            <span>{{ check ? check.mapped_count : 0 }} of {{ parsed.lines.length }} lines mapped</span>
+            <span v-if="checking" class="lm-count">checking…</span>
           </h5>
-          <div v-if="checking" class="loading-text">Checking...</div>
-          <template v-else-if="check">
+          <template v-if="check">
             <div v-for="(b, i) in check.blocking" :key="'b' + i" class="lm-block">
               {{ b.message }}
             </div>
-            <!-- CRITICAL ONLY up front: a sign opposite to the deal's history, a figure
-                 off by an order of magnitude, a negative NOI. Asset management, Sep 25
-                 2026, asked for critical checks only; the rest are kept and folded. -->
-            <div v-for="(w, i) in criticalWarnings" :key="'w' + i" class="lm-warn">
-              {{ w.message }}
-            </div>
-            <p v-if="!check.blocking.length && !criticalWarnings.length" class="lm-clean">
-              No critical issues.
-            </p>
-            <div v-if="infoWarnings.length" class="lm-info">
-              <button class="lm-more" @click="showInfo = !showInfo">
-                {{ showInfo ? 'Hide' : 'Show' }} {{ infoWarnings.length }} note(s) for reference
-              </button>
-              <template v-if="showInfo">
-                <div v-for="(w, i) in infoWarnings" :key="'n' + i" class="lm-note-item">
-                  {{ w.message }}
-                  <button v-if="w.accounts?.length" class="lm-more" @click="toggle(i)">
-                    {{ open[i] ? 'hide' : 'show all' }}
-                  </button>
-                  <ul v-if="open[i] && w.accounts" class="lm-acct-list">
-                    <li v-for="a in w.accounts" :key="a.account">
-                      {{ a.account }} {{ a.description }} — {{ a.months }} mo,
-                      {{ fmtCurrency(a.prior_total) }}
-                    </li>
-                  </ul>
-                </div>
-              </template>
-            </div>
           </template>
+          <button class="btn-secondary lm-export no-print" :disabled="!canExport"
+                  :title="exportTitle" @click="doExport">
+            {{ exporting ? 'Exporting…' : 'Export mapping to Excel' }}
+          </button>
+          <p class="lm-note">
+            Every line in the spreadsheet's order with its sheet row, the account, the
+            flip, and the total on the sheet beside the total as imported — to lay next
+            to your file.
+          </p>
         </div>
       </div>
 
@@ -345,9 +342,6 @@
         </span>
         <span v-if="check && !check.can_import" class="lm-blocked-note">
           Resolve the {{ check.blocking.length }} blocking item(s) above first.
-        </span>
-        <span v-else-if="criticalWarnings.length" class="lm-warn-note">
-          {{ criticalWarnings.length }} warning(s) — you can import anyway.
         </span>
       </div>
 
@@ -405,7 +399,6 @@ const error = ref('')
 const parsing = ref(false)
 const checking = ref(false)
 const committing = ref(false)
-const open = ref({})
 
 // Draft state. The mapping used to live only here, so a refresh threw away twenty
 // minutes of judgement and re-opening after a successful import showed a blank page.
@@ -435,6 +428,7 @@ const commitLabel = computed(() => props.source === 'argus'
   : 'Save and import into the Budget column')
 
 const onlyNumbered = ref(false)
+const showZero = ref(false)
 const acceptedProposals = ref({})
 
 function toggleProposal(pl, on) {
@@ -517,9 +511,6 @@ const occQuarters = computed(() => {
   return Object.keys(b).sort().map(q => ({ q, v: b[q].reduce((a, x) => a + x, 0) / b[q].length }))
 })
 const outsideNoi = computed(() => check.value?.reconciliation?.outside_noi || [])
-const criticalWarnings = computed(() => (check.value?.warnings || []).filter(w => w.critical))
-const infoWarnings = computed(() => (check.value?.warnings || []).filter(w => !w.critical))
-const showInfo = ref(false)
 const canCommit = computed(() =>
   props.editable && !committing.value && !!check.value?.can_import)
 
@@ -578,9 +569,12 @@ function setAccount(row, acct) {
   runCheck()
 }
 
+// The field the box writes: `flip` for a budget, `reverse` for Argus.
+const flipKey = computed(() => props.source === 'argus' ? 'reverse' : 'flip')
+
 function setFlip(row, on) {
   const key = String(row)
-  mapping.value = { ...mapping.value, [key]: { ...m(row), flip: on } }
+  mapping.value = { ...mapping.value, [key]: { ...m(row), [flipKey.value]: on } }
   runCheck()
 }
 
@@ -591,17 +585,58 @@ function setFlip(row, on) {
  * rule gets all three backwards and silently inverts NOI.
  */
 function defaultFlip(row, category, account) {
+  // Argus takes its sign from the account; its box starts clear.
+  if (props.source === 'argus') return false
   const line = (parsed.value?.lines || []).find(l => String(l.row) === String(row))
   const a = allAccounts.value.find(x => String(x.account) === String(account))
   if (!line || !a || !line.total) return false
   return (line.total > 0) !== (a.mri_sign > 0)
 }
 
+// What the import WRITES for the line, as the server computes it with the import's own
+// function -- never re-derived here, so the column cannot disagree with the import.
+// Null until the check returns.
 function imported(line) {
-  return (line.total || 0) * (m(line.row).flip ? -1 : 1)
+  const v = check.value?.imported?.[String(line.row)]
+  return v === undefined ? null : v
 }
 
-function toggle(i) { open.value = { ...open.value, [i]: !open.value[i] } }
+// The export is built from the STORED mapping, so it waits for the save to land --
+// otherwise the file could lag the screen by the last edit.
+const exporting = ref(false)
+const canExport = computed(() =>
+  !!parsed.value && !exporting.value && draftState.value !== 'saving' && draftState.value !== 'error')
+const exportTitle = computed(() => draftState.value === 'saving'
+  ? 'Waiting for your latest change to save'
+  : 'Download this mapping as an Excel workbook')
+
+async function doExport() {
+  exporting.value = true
+  error.value = ''
+  try {
+    clearTimeout(draftTimer)
+    if (draftState.value !== 'saved') await saveDraft()
+    const res = await api.get(`/api/valuations/records/${props.recordId}/mapping/export`,
+      { params: { source: props.source }, responseType: 'blob' })
+    const cd = res.headers['content-disposition'] || ''
+    const name = decodeURIComponent((cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i) || [])[1]
+      || `${props.source} mapping.xlsx`)
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 10000)
+  } catch (err) {
+    let msg = 'Export failed.'
+    try { msg = JSON.parse(await err.response?.data?.text())?.error || msg } catch { /* not JSON */ }
+    error.value = msg
+  } finally {
+    exporting.value = false
+  }
+}
 
 async function onFile(e) {
   const file = e.target.files?.[0]
@@ -722,7 +757,7 @@ async function runCheck() {
       { source: props.source, parsed: parsed.value, mapping: mapping.value })
     // Only the newest reply wins — the analyst edits faster than the round trip and a
     // late response would otherwise overwrite the current state with a stale verdict.
-    if (seq === checkSeq) { check.value = res.data; open.value = {} }
+    if (seq === checkSeq) check.value = res.data
   } catch (err) {
     if (seq === checkSeq) error.value = err.response?.data?.error || 'Check failed.'
   } finally {
@@ -870,6 +905,8 @@ onMounted(() => { if (props.recordId) loadDraft() })
 .lm-acct-list li { margin: 2px 0; }
 
 .lm-blocked-note { font-size: 12px; color: #c0392b; margin-left: 10px; }
+.lm-export { margin-top: 4px; }
+.lm-zero-list { display: block; margin-top: 4px; color: #888; font-size: 11px; }
 .lm-warn-note { font-size: 12px; color: #8a6100; margin-left: 10px; }
 .lm-result { background: #f0f7f1; border-left: 3px solid #2e7d32; padding: 9px 12px;
   font-size: 13px; }

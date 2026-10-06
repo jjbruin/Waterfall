@@ -1354,7 +1354,8 @@ def build_investment_metrics(
 
 
 def resolve_unloaded(key: str, terms: dict, computed: Dict[str, Optional[float]],
-                     diag: dict, vcode: str) -> Tuple[Optional[float], str]:
+                     diag: dict, vcode: str,
+                     columns: Optional[frozenset] = None) -> Tuple[Optional[float], str]:
     """What to PRINT for a column whose source Alay has not loaded yet.
 
     One switch, in one place (``cfg.UNLOADED_FIGURES``). Three columns go
@@ -1384,12 +1385,23 @@ def resolve_unloaded(key: str, terms: dict, computed: Dict[str, Optional[float]]
             diag.setdefault("unloaded_figure_misconfigured", []).append(
                 {"column": key, "reason": "mode is 'mri' but no field is named"})
             return None, "no MRI field named"
-        if field not in terms:
+        # `columns` is the table's column set. A deal with no row at all in a
+        # table that HAS the column is NULL for that deal, not an absent column.
+        if field not in terms and field not in (columns or ()):
             diag.setdefault("unloaded_figure_field_absent", []).append(
                 {"column": key, "table": spec.get("table"), "field": field,
                  "vcode": vcode})
             return None, f"{spec.get('table')}.{field} is not present"
-        return _as_rate(terms.get(field)), f"{spec.get('table')}.{field}"
+        value = _as_rate(terms.get(field))
+        if value is None:
+            # Present but empty: MRI holds no figure for THIS deal. Distinct
+            # from "absent" above, which means the table has not been
+            # refreshed with the column at all.
+            nulls = diag.setdefault("unloaded_figure_value_null", {}).setdefault(
+                key, {"table": spec.get("table"), "field": field, "vcodes": []})
+            nulls["vcodes"].append(vcode)
+            return None, f"{spec.get('table')}.{field} is NULL for this deal"
+        return value, f"{spec.get('table')}.{field}"
 
     # mode == "none" — pending, and deliberately not rendered.
     diag.setdefault("unloaded_figures_pending", {}).setdefault(
@@ -1419,8 +1431,9 @@ def _apply_young_deal_substitution(row: dict, diag: dict) -> None:
     year old, and the reference prints ``Dev.`` for them, not a CoC.
 
     WITH NOTHING TO SUBSTITUTE, THE CELL IS BLANKED. This is the one judgement
-    here and it reverses what this function used to do. ``proj_yr1_coc`` is
-    still in ``"none"`` mode, so there is no projected figure to put in — and
+    here and it reverses what this function used to do. Where ``proj_yr1_coc``
+    is absent or NULL (MRI holds no figure for the deal, or the column has not
+    been refreshed in yet) there is no projected figure to put in — and
     the alternative is to leave a stub-period actual sitting under a heading the
     footnote has just told the reader means something else. Presidential Arms
     funded in May and its first twelve months close in May 2027; its ROE over
@@ -1532,10 +1545,17 @@ def _display_as_of(d: _dt.date) -> str:
     return f"{d.day:02d}-{d.strftime('%b')}-{d.strftime('%y')}"
 
 
+class _TermsIndex(dict):
+    """``{vcode: row}`` that remembers which COLUMNS the table has, so a deal
+    with no row can be told apart from a column that was never loaded."""
+    columns: frozenset = frozenset()
+
+
 def _deal_terms_index(deal_terms: Optional[pd.DataFrame]) -> Dict[str, dict]:
     if deal_terms is None or deal_terms.empty:
         return {}
-    out = {}
+    out = _TermsIndex()
+    out.columns = frozenset(deal_terms.columns)
     for _, r in deal_terms.iterrows():
         out[norm_id(r.get("vcode"))] = r.to_dict()
     return out
@@ -1607,10 +1627,11 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     # The three columns with no source in the app go through ONE switch. The
     # derived Year-1 figures are computed either way and kept below in
     # `alternates`, so turning the column on later needs no new arithmetic.
+    dt_columns = getattr(dt_index, "columns", None)
     uw_irr_v, uw_irr_basis = resolve_unloaded(
-        "uw_irr", terms, {}, diag, ident.vcode)
+        "uw_irr", terms, {}, diag, ident.vcode, dt_columns)
     proj_yr1_v, proj_yr1_basis = resolve_unloaded(
-        "proj_yr1_coc", terms, {}, diag, ident.vcode)
+        "proj_yr1_coc", terms, {}, diag, ident.vcode, dt_columns)
     act_yr1_v, act_yr1_mode = resolve_unloaded(
         "act_yr1_coc", terms,
         {"roe_window": act_yr1_roe, "funded": act_yr1,

@@ -91,7 +91,25 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   Valuation cash flow from the panel's own reading: creates the import if the record has
   none, replaces it in place if only this record links it, and makes a NEW one if another
   record (another cycle) shares it. Signs come from the account via
-  `argus_service._normalize_amount`, so the flip box is not offered for Argus.
+  `argus_service._normalize_amount` -- and since Oct 6 2026 a per-line **Flip sign box
+  for Argus too** (Jack), stored as `reverse`, never `flip`: the screen had been
+  pre-filling the budget's `flip` on Argus lines, unseen, and 14 production lines carry
+  one. Honouring `flip` would have inverted them on the next apply.
+- **ONE FUNCTION FOR WHAT A MAPPING WRITES** -- `budget_import_validate.imported_amounts`
+  (Oct 6 2026). Both commits, the tie-out, the "as imported" column (`check()` returns
+  `imported`) and the Excel export read it. Before, the Argus tie-out applied the unseen
+  `flip` the Argus import ignored, and showed NOI off by $2,839,732 (P0000069) and
+  $8,684,788 (P0000075) when what was imported tied to $10 and $60. The Valuation column
+  itself was never wrong.
+- **$0 lines are set aside** (`without_zero_lines`, Oct 6 2026): every month $0, NOT
+  "nets to $0" (a +500/-500 line moves months). Reported as `zero_lines`, applied to
+  stored drafts too. One production budget was 221 of 309 lines $0.
+- **The warnings are off the screen** (Jack, Oct 6 2026: "a couple hundred lines ...
+  Take those out entirely. Keep the does-it-tie check"). `validate()` still computes
+  them and the API still returns them; only BLOCKING items render. "Export mapping to
+  Excel" (`/mapping/export`) gives sheet row, account, flip, sheet total vs imported total
+  and the months, plus By account and Tie-out sheets.
+  Guardrail: `scripts/mapping_feedback_check.py`.
 - **Argus is mapped like the budget** -- the file's account, then "as mapped before",
   never keywords. The keyword pre-fill ran FIRST and outranked the file's own account.
 - **An account column to the RIGHT of the description is read** (`_account_column_beside`),

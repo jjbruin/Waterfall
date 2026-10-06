@@ -117,11 +117,37 @@ with eng.begin() as c:
                   '{"investment_balance": 802308.0, "accrued_pref": 14243.7}}}',
              'np': val - 5247905.97, 'pn': 2347830.79, 'on': 500000.0})
 
-_pref = S.pref_summary(eng, cur, {})
-_row = _pref['rows'][0]
+# LAST YEAR IS MRI'S VALUATION (Jim, Oct 6 2026). The 2025 cycle record above carries
+# figures too -- deliberately DIFFERENT from MRI's below on value and cap -- so a tab
+# still reading the prior cycle fails, and one reading MRI passes.
+import pandas as _pd  # noqa: E402
+with eng.begin() as c:
+    c.execute(text("UPDATE valuation_records SET concluded_value = 1.0, cap_rate = 0.5 "
+                   "WHERE cycle_id = :c"), {'c': old})
+    c.execute(text("INSERT INTO valuation_records (cycle_id, vcode, method, concluded_value) "
+                   "VALUES (:c, 'P0000999', 'Direct Cap', 1000000.0)"), {'c': cur})
+MRI = {'mri_val': _pd.DataFrame([
+    # the prior year-end: what the tab must read
+    {'vCode': 'P0000004', 'dtValuation': '12/31/2025', 'vMethod': 'DCF', 'fCapRate': 0.075,
+     'nTermCapRate': 0.08, 'nDiscountRateForEquityInterest': 0.09, 'mAnnualNOI': 650000.0,
+     'mIncomeCapConcludedValue': 8900000.0, 'mDebtValue': 5247905.97,
+     'mEquityValue': 3652094.03, 'mMezzanineValue': 2347830.79},
+    # an older year: must not be read for 2025
+    {'vCode': 'P0000004', 'dtValuation': '2024-12-31', 'vMethod': 'Direct Cap',
+     'fCapRate': 0.07, 'mIncomeCapConcludedValue': 7000000.0, 'mMezzanineValue': 1.0},
+])}
+
+_pref = S.pref_summary(eng, cur, MRI)
+_row = next(r for r in _pref['rows'] if r['vcode'] == 'P0000004')
 check('the tab compares this cycle with the prior year',
       (_pref['current_year'], _pref['prior_year']) == (2026, 2025),
       f"{_pref['current_year']} vs {_pref['prior_year']}")
+check('...and says the prior year is MRI\'s, at its date',
+      _pref['prior_source'] == 'MRI valuations, 2025-12-31', _pref['prior_source'])
+check('a deal MRI has no prior valuation for is named, not zeroed',
+      _pref['prior_missing'] == ['P0000999']
+      and next(r for r in _pref['rows'] if r['vcode'] == 'P0000999')['prior_pref_nav'] is None,
+      str(_pref['prior_missing']))
 check('the stored pref figure is the PSC side only',
       _row['pref_balance'] == 1490000.0, str(_row['pref_balance']))
 check('balance and accrual are added for the combined column',
@@ -129,26 +155,141 @@ check('balance and accrual are added for the combined column',
       str(_row['pref_with_accrual']))
 check('the stored figure says it came from the NAV run',
       'NAV run' in (_row['pref_source'] or ''), str(_row['pref_source']))
-check('the prior year NAV is carried across',
-      _row['prior_pref_nav'] == 2347830.79)
+check('the prior year pref NAV is MRI\'s mMezzanineValue at 12/31/2025',
+      _row['prior_pref_nav'] == 2347830.79, str(_row['prior_pref_nav']))
 check('the variance is the move, not a restatement',
       _row['var_to_prior'] == 0.0)
 
-_val = S.valuation_summary(eng, cur, {})
-_vrow = _val['rows'][0]
-check('the valuation tab carries both years of method and rates',
+_val = S.valuation_summary(eng, cur, MRI)
+_vrow = next(r for r in _val['rows'] if r['vcode'] == 'P0000004')
+check('the valuation tab carries both years of method and rates, last year MRI\'s',
       (_vrow['method'], _vrow['prior_method']) == ('DCF', 'DCF')
-      and _vrow['cap_rate'] == 0.0725 and _vrow['prior_cap_rate'] == 0.075)
-check('value variance is computed from the two cycles',
+      and _vrow['cap_rate'] == 0.0725 and _vrow['prior_cap_rate'] == 0.075
+      and _vrow['prior_exit_cap'] == 0.08 and _vrow['prior_discount'] == 0.09,
+      str((_vrow['prior_method'], _vrow['prior_cap_rate'])))
+check('NOT the prior cycle\'s own record (value 1.0, cap 50%)',
+      _vrow['prior_value'] == 8900000.0 and _vrow['prior_cap_rate'] != 0.5,
+      str(_vrow['prior_value']))
+check('NOT an older MRI year (2024: 7.0M, Direct Cap)',
+      _vrow['prior_value'] != 7000000.0 and _vrow['prior_method'] != 'Direct Cap')
+check('value variance is this cycle against MRI\'s prior year',
       _vrow['var_to_prior_value'] == 500000.0, str(_vrow['var_to_prior_value']))
+check('prior NOI, debt and net proceeds are MRI\'s (mAnnualNOI, mDebtValue, mEquityValue)',
+      _vrow['prior_direct_cap_noi'] == 650000.0 and _vrow['prior_debt'] == 5247905.97
+      and _vrow['prior_net_proceeds'] == 3652094.03,
+      str((_vrow['prior_direct_cap_noi'], _vrow['prior_debt'], _vrow['prior_net_proceeds'])))
 check('debt is read from the NAV inputs, not recomputed',
       _vrow['debt'] == 5247905.97)
+check('the same reader as the Committee Summary (valuation_service._prior_rows)',
+      'valuation_service._prior_rows(' in open(S.__file__, encoding='utf-8').read())
 
-_alone = S.pref_summary(eng, old, {})
-check('a cycle with no prior year says so, rather than showing zeros',
-      _alone['no_prior_cycle'] and _alone['rows'][0]['prior_pref_nav'] is None)
+_alone = S.pref_summary(eng, cur, {'mri_val': MRI['mri_val'].iloc[1:]})
+check('no MRI valuations for the prior year says so, rather than showing zeros',
+      _alone['no_prior_data'] and all(r['prior_pref_nav'] is None for r in _alone['rows']))
 check('...and its variance is blank, not 0',
-      _alone['rows'][0]['var_to_prior'] is None)
+      all(r['var_to_prior'] is None for r in _alone['rows']))
+# The deal with no MRI valuation was only for the checks above; the grouping
+# section below counts the cycle's deals.
+with eng.begin() as c:
+    c.execute(text("DELETE FROM valuation_records WHERE vcode = 'P0000999'"))
+
+
+section('A deal with two pref investors is split, from the walk -- never by formula')
+
+# Pegasus: TGA22 (workbook "Pref B") and PPILFS ("Pref A") plus the OP. The workbook
+# splits the deal NAV by hand (MIN to B, remainder to A); here the NAV waterfall's own
+# allocation per recipient is read back, and the walks give each balance.
+with eng.begin() as c:
+    _pg = c.execute(text("INSERT INTO valuation_records (cycle_id, vcode, method) "
+                         "VALUES (:c, 'P0000066', 'DCF') RETURNING id"), {'c': cur}).scalar()
+    c.execute(text(
+        "INSERT INTO valuation_nav_results (record_id, inputs_json, walk_json, net_proceeds, "
+        "psc_nav, op_nav, computed_at) VALUES (:r, :j, :w, 32000000, 31654791.84, 345208.16, 'x')"),
+        {'r': _pg,
+         'j': '{"debt": 0, "pref": {'
+              '"TGA22": {"investment_balance": 24150000.0, "accrued_pref": 2857750.0}, '
+              '"PPILFS": {"investment_balance": 8184654.75, "accrued_pref": 2937675.99}, '
+              '"OPPEGA": {"investment_balance": 1000.0, "accrued_pref": 0.0}}}',
+         'w': '[{"iorder": 1, "recipient": "TGA22", "allocated": 24150000.0}, '
+              '{"iorder": 2, "recipient": "TGA22", "allocated": 2857750.0}, '
+              '{"iorder": 3, "recipient": "PPILFS", "allocated": 4647041.84}, '
+              '{"iorder": 4, "recipient": "OPPEGA", "allocated": 345208.16}]'})
+_pp = S.pref_summary(eng, cur, MRI)
+_peg = next(r for r in _pp['rows'] if r['vcode'] == 'P0000066')
+_tr = {t['investor']: t for t in (_peg['tranches'] or [])}
+check('Pegasus gets one line per PSC-side pref investor, the OP excluded',
+      sorted(_tr) == ['PPILFS', 'TGA22'], str(sorted(_tr)))
+check('...in waterfall order (the senior recipient first)',
+      [t['investor'] for t in _peg['tranches']] == ['TGA22', 'PPILFS'])
+check('each line\'s balance and accrual are that investor\'s walk',
+      _tr['TGA22']['pref_balance'] == 24150000.0 and _tr['PPILFS']['pref_accrued'] == 2937675.99)
+check('each line\'s NAV is what the waterfall ALLOCATED to it (27,007,750 / 4,647,041.84 '
+      '-- the workbook\'s own figures)',
+      _tr['TGA22']['pref_nav'] == 27007750.0 and _tr['PPILFS']['pref_nav'] == 4647041.84,
+      str((_tr['TGA22']['pref_nav'], _tr['PPILFS']['pref_nav'])))
+check('the lines sum to the deal row -- they are the deal taken apart',
+      abs(sum(t['pref_nav'] for t in _peg['tranches']) - _peg['pref_nav']) < 0.01
+      and abs(sum(t['pref_balance'] for t in _peg['tranches']) - _peg['pref_balance']) < 0.01)
+_sec = next(s for s in _pp['sections'] if any(r['vcode'] == 'P0000066' for r in s['rows']))
+check('a subtotal counts the deal ONCE, not the deal plus its lines',
+      abs(_sec['totals']['pref_balance']
+          - sum(r['pref_balance'] for r in _sec['rows'] if r['pref_balance'] is not None)) < 0.01)
+check('a deal with one pref investor is not split',
+      next(r for r in _pp['rows'] if r['vcode'] == 'P0000004')['tranches'] is None)
+check('no NAV run -> the line\'s NAV is blank, not 0',
+      S._tranches({'A1': {'investment_balance': 1.0}, 'B1': {'investment_balance': 2.0}},
+                  None)[0]['pref_nav'] is None)
+check('split BY RULE, not by vcode', "P0000066" not in open(S.__file__, encoding='utf-8').read())
+
+
+section('Total capitalization is the cap-stack engine, at the valuation date')
+
+import one_pager as _op  # noqa: E402
+_calls = []
+_real_stack = _op.get_capitalization_stack
+
+
+def _fake_stack(vcode, *a, **kw):
+    _calls.append((vcode, kw.get('quarter_str')))
+    base = {'debt': 99.0, 'debt_isbs': 20900000.0, 'pref_equity': 5746667.0,
+            'partner_equity': 3723333.3, 'sold_suppressed': False}
+    base['total_cap'] = 1.0          # the Snapshot's committed re-foot: must NOT be used
+    base['total_cap_isbs'] = 20900000.0 + 5746667.0 + 3723333.3
+    if vcode == 'P0000066':          # nothing on file at all
+        base.update(debt_isbs=0.0, pref_equity=0.0, partner_equity=0.0, total_cap_isbs=0.0)
+    return base
+
+
+_op.get_capitalization_stack = _fake_stack
+try:
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO valuation_records (cycle_id, vcode, parent_vcode, method) "
+                       "VALUES (:c, 'P0000004C', 'P0000004', 'DCF')"), {'c': cur})
+    _vs = S.valuation_summary(eng, cur, MRI)
+finally:
+    _op.get_capitalization_stack = _real_stack
+_v4 = next(r for r in _vs['rows'] if r['vcode'] == 'P0000004')
+check('called at the quarter holding the valuation date (12/31/2026 -> 2026-Q4)',
+      ('P0000004', '2026-Q4') in _calls and _vs['total_cap_as_of'] == '2026-Q4', str(_calls))
+check('debt balance + pref balance + partner balance (total_cap_isbs)',
+      abs(_v4['total_cap'] - 30370000.3) < 0.01, str(_v4['total_cap']))
+check('NOT the Snapshot\'s committed re-foot (total_cap)', _v4['total_cap'] != 1.0)
+check('the three legs are carried for the screen to show',
+      (_v4['total_cap_debt'], _v4['total_cap_pref'], _v4['total_cap_partner'])
+      == (20900000.0, 5746667.0, 3723333.3))
+_v66 = next(r for r in _vs['rows'] if r['vcode'] == 'P0000066')
+check('nothing on file -> None with a reason, never 0',
+      _v66['total_cap'] is None and 'nothing' not in (_v66['total_cap_note'] or 'x')
+      and 'no debt' in (_v66['total_cap_note'] or ''), str(_v66.get('total_cap_note')))
+_vc = next(r for r in _vs['rows'] if r['vcode'] == 'P0000004C')
+check('a child property carries none, and points at its parent',
+      _vc['total_cap'] is None and 'P0000004' in (_vc['total_cap_note'] or '')
+      and ('P0000004C', '2026-Q4') not in _calls)
+_s = _vs['sections'][0]
+check('the subtotal is the parents\' figures, the child not added on top',
+      abs(_s['totals']['total_cap'] - 30370000.3) < 0.01, str(_s['totals']['total_cap']))
+with eng.begin() as c:
+    c.execute(text("DELETE FROM valuation_records WHERE vcode IN ('P0000066', 'P0000004C')"))
 
 section('The NAV collects the accrual the One Pager suppresses')
 
@@ -323,9 +464,11 @@ else:
                      'prior_exit_cap', 'exit_cap', 'prior_discount', 'discount',
                      'direct_cap_noi', 'prior_value', 'value', 'var_to_prior_value',
                      'prior_debt', 'debt', 'prior_net_proceeds', 'net_proceeds',
-                     'var_to_prior_proceeds']
+                     'var_to_prior_proceeds', 'total_cap', 'total_cap_note',
+                     'total_cap_debt', 'total_cap_pref', 'total_cap_partner', 'tranches']
     _TOP_KEYS = ['title', 'current_year', 'prior_year', 'rows', 'sections',
-                 'group_labels', 'ungrouped', 'missing_nav', 'no_prior_cycle']
+                 'group_labels', 'ungrouped', 'missing_nav', 'no_prior_data',
+                 'prior_source', 'prior_deal_count', 'prior_missing', 'total_cap_as_of']
     _SEC_KEYS = ['label', 'labelled', 'rows', 'count', 'totals', 'missing_counts']
 
     for k in _ROW_KEYS_PREF + _ROW_KEYS_VAL:

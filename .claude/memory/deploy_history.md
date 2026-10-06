@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v572** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v578** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v572 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v578 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,155 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v578` = `c46c11b` (INVESTMENT METRICS EXCEL EXPORT: PRINT AREA. The workbook's print
+    area now starts at the as-of line and title (A3:V<last>), so the orange "Orangewood
+    Portfolio One-Pager" banner and the column-label strip -- scaffolding the reference
+    WORKBOOK carries above its table, absent from the reference DOCUMENT -- stay on screen
+    but do not print or export to PDF. Left unset while the report is a draft, so a DRAFT
+    banner still prints. One file, `investmentMetricsXlsx.ts`, +18/-1. Span vs live `b2e2a0d`:
+    `55e2d81` (docs) and this change. Built and pushed from a clean worktree again; build
+    `canq`, 2m41s, Succeeded; tag locked; Healthy at 100%. Guardrail
+    `investment_metrics_check.py` 186/186; served bundle contains `printArea` and "Export
+    Excel", not "Export CSV"; smoke all 200, 0 tracebacks. **LESSON: a worktree path given to
+    `git worktree add` while `MSYS2_ARG_CONV_EXCL=*` is set is NOT converted from `/c/...`, so
+    git created the directory at `C:/c/Users/...`, the following `cd` failed, and the next
+    commands ran in the MAIN checkout. Nothing was lost (the push was rejected as a
+    non-fast-forward and the working tree was untouched), but guard every `cd` with
+    `|| exit 1` and use a Windows-style path.** **Rollback** is FORWARD: `az containerapp
+    update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:b2e2a0d --revision-suffix v579`.)
+  - `v577` = `b2e2a0d` (INVESTMENT METRICS: EXPORT EXCEL BUTTON. A button on the tab builds
+    a styled .xlsx in the browser (ExcelJS, a lazy 940 kB chunk loaded only on click) from
+    the payload already on screen -- no new request, no new calculation, no route, no
+    section, no engine change, so the file cannot disagree with the page. Cells hold real
+    numbers with the reference workbook's number formats (a pref amount plain `$0.0` on a
+    deal row, red-parenthesis only on the Total row); Garamond 11; three stacked heading
+    rows with the grouped headings merged; "PSC" over Residual CF Split as in the reference
+    (the screen and print sheet keep it over Pref Coupon -- moved in the export only); the
+    boxed title block; the thin vertical rules from the payload's `vertical_rules`; the
+    grey `#D9D9D9` band on every second deal row; the orange "Orangewood Portfolio One-Pager"
+    banner and column-label strip; italic 14pt footnotes; the merged disclaimer. NOT copied:
+    the reference's hidden helper columns, input cells, formulas (totals are the engine's
+    values), and five hand-italicised Proj/Act Yr-1 cells (editorial, not derivable); the
+    Sold pref column is 1 dp to match the screen, the reference's is 2. The cell formatter
+    moved out of `InvestmentMetricsTable.vue` into `utils/investmentMetricsFormat.ts`, so the
+    screen, the print sheet and the export share one formatter. A first version exported CSV;
+    it was replaced before shipping because a CSV cannot carry fonts, fills, borders or merges.
+    Span vs live `495b7b9`: `b2e2a0d` (this change) plus Jim's docs-only `205dafd`, `840783c`.
+    **BUILT AND PUSHED FROM A SEPARATE CLEAN WORKTREE** of the target commit, because the
+    working checkout held two modified tracked files and two untracked files that were not
+    this change and that Charlene did not want touched; ACR uploads the working tree, so the
+    build came from `git worktree add --detach` of origin/main plus the squashed change.
+    Build `canp`, 2m47s, Succeeded; tag locked; rolled out Healthy at 100% traffic after
+    `v576`. Guardrails: `investment_metrics_check.py` 186/186,
+    `investment_metrics_print_inspect.py` 44/44 (the table component was edited), `vue-tsc`
+    no errors in the touched files (30 pre-existing elsewhere, unchanged). Verified the SERVED
+    bundle: the Investment Metrics view chunk, resolved from the entry bundle, contains
+    "Export Excel" and no "Export CSV", the exceljs chunk serves 940,366 B, and the banner text
+    is present. Smoke (all 200, 0 tracebacks): auth/me, auth/sections, dashboard/kpis (20s
+    cold), portfolio-snapshot quarters + investors, one-pager P0000044 (2.6s),
+    /investment-metrics?as_of=2026-06-30 cold 6.1s then warm 0.21s. **NOT TESTED: an actual
+    click of the button in a browser** -- the workbook was generated and inspected in Node
+    against the live payload; the Blob download path is the standard one. **Rollback if
+    needed** is FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2
+    --image acrwaterfalldev.azurecr.io/waterfall-xirr:495b7b9 --revision-suffix v578`.)
+  - `v576` = `495b7b9` (VALUATION SUMMARY: TOTAL CAPITALIZATION AND THE PEGASUS SPLIT --
+    Jim, Oct 6 2026. Total Cap = `one_pager.get_capitalization_stack`'s
+    `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called as the
+    Portfolio Snapshot calls it at the quarter holding the cycle date; NOT the
+    Snapshot's printed `total_cap` (committed re-foot for dev deals). Parent/standalone
+    rows only, a child names its parent; None with a reason when nothing is on file.
+    Pegasus split BY RULE (2+ PSC-side pref investors; only P0000066 today): per-investor
+    pref walk and the NAV waterfall's allocation, detail under the deal row, never in a
+    subtotal. Local 2026 cycle: Total Cap on 52 of 82 rows (28 children, 2 nothing on
+    file), Pegasus 34,908,128 vs workbook 34,910,000 (hand-rounded); tranche balances
+    tie (TGA22 24,150,000; PPILFS 8,184,654.75). The valuation tab now runs the cap
+    stack per parent deal: 3.9s locally. Span vs live `ad390a8`: `b82e47a` (this), docs
+    `f1ea271`, merge `495b7b9`. Build `cann`, 2m59s, Succeeded; tag locked; P1 re-run
+    before update; rolled out Healthy, `/health` 200. Served bundle from the ENTRY
+    `index-B18ipERl.js` -> `ValuationsView-EOkoMfMg.js`: `total_cap_as_of`,
+    `total_cap_note`, `tranche-row` present. Guardrails on the merged tree:
+    valuation_summary 132 (fails on 4 injected defects), valuation_committee_scope 13,
+    capitalization_valuation_fields 9, onepager_valuation_selection 10,
+    one_engine_per_number 26, section_access 274, mapping_feedback 33. NOT measured on
+    production data -- doing so means starting the app against production, whose
+    startup creates tables.)
+  - `v575` = `ad390a8` (VALUATION SUMMARY TABS: LAST YEAR IS MRI'S PUBLISHED VALUATION --
+    Jim, Oct 6 2026, settling open_items 8.3. Pref Summary and Valuation Summary read the
+    prior year through `valuation_service._prior_rows` (the Committee Summary's own
+    reader) at the prior year-end, not the prior cycle's records: pref NAV =
+    mMezzanineValue, net proceeds = mEquityValue (added to `_prior_rows` with the date;
+    the committee path ignores both keys). The tab states the source and names, WITH
+    vcode, every deal MRI has no prior valuation for (two deals are "Donald Lynch").
+    Production measured read-only after deploy: 2026 cycle 54 of 82 records have a 2025
+    MRI row, 48 a 2025 value (from ~1 read off the near-empty 2025 cycle); the 2025
+    cycle now compares against 2024 MRI, 50 with a value. Span vs live `d5fda63`:
+    `b37dd76` (this), docs `ea5fb95`, merge `ad390a8`. Build `canm`, 3m00s, Succeeded;
+    tag locked; P1 re-run before update; rolled out Healthy, `/health` 200. Served
+    bundle from the ENTRY `index-C01SXyjs.js` -> `ValuationsView-CW6F3djt.js`:
+    `prior_source`, `prior_missing`, `no_prior_data` present, `no_prior_cycle` and the
+    old "cycle in the app" notice absent; summary route 401 unauthenticated. Guardrails
+    on the merged tree: valuation_summary 109 (reading the prior cycle instead fails 7),
+    valuation_committee_scope 13, capitalization_valuation_fields 9,
+    onepager_valuation_selection 10, valuation_admin_override 22,
+    valuation_debt_service 34, one_engine_per_number 26, section_access 274. Still open
+    (8.3): the Committee Summary's PRIOR net proceeds is value - debt, not mEquityValue.)
+  - `v574` = `d5fda63` (BUDGET / ARGUS MAPPING, ASSET MANAGEMENT'S OCT 6 2026 CHANGES --
+    Jack Day: $0 lines set aside (every month $0, not "nets to $0"; reported as
+    `zero_lines`, applied to stored drafts too; one production budget was 221 of 309
+    lines $0); "Export mapping to Excel" (`/mapping/export`: Lines in sheet order with
+    sheet row, account, flip, sheet total vs imported total and the months; By account;
+    Tie-out); the warnings OFF the screen (still computed, still in the API), the tie-out
+    and blocking items kept; a Flip sign box for ARGUS, stored as `reverse` because 14
+    production Argus lines carry an unseen budget-rule `flip`. ONE FUNCTION FOR WHAT A
+    MAPPING WRITES, `budget_import_validate.imported_amounts`: both commits, the tie-out,
+    "as imported" and the export. Before it the Argus tie-out applied the unseen flip
+    the import ignored -- NOI shown off by $2,839,732 (P0000069) and $8,684,788 (P0000075)
+    where what was imported ties to $10 and -$60; the Valuation column itself never was
+    wrong. Written data unchanged: budget amounts identical, Argus identical unless the
+    new box is ticked. Span vs live `d5bd2c4`: `d3315b8` (this), Charlene's docs-only
+    `7d756d2`, merge `d5fda63`. Build `cank`, 2m57s, Succeeded; tag locked; P1 re-run
+    before update (still `d5bd2c4`); rolled out Healthy, `/health` 200. Served bundle
+    verified from the ENTRY `index-DHnKGUeA.js` -> `ValuationsView-CGy0GXR2.js`: export
+    button and route, `zero_lines`, `reverse`, the tie-out present; "you can import
+    anyway" and "note(s) for reference" absent. `/mapping/export` 401 unauthenticated
+    (exists). Guardrails on the merged tree: mapping_feedback 33/33, budget_import_mapping
+    33, mapping_draft 58, argus_single_load 42, budget_review_inputs 50,
+    isbs_supplement_precedence 33, section_access 274; line_mapping 2 PRE-EXISTING
+    failures, separate task. Not run inside the container.)
+  - `v573` = `d5bd2c4` (INVESTMENT METRICS: UW PROJ. IRR AND PROJ YR-1 COC READ FROM
+    `deal_terms`. `Prop_Info_DealTerms.sql` pivots MRI's `'U/W IRR'` and
+    `'Projected Yr 1 CoC Returns'` (NOT the look-alikes `'UW IRR'` / `'Projected Yr 1
+    CoC'`) into `uw_irr` and `proj_yr1_coc`: latest `dtEffective` per deal, `UID` as the
+    tiebreak (P0000044 has two U/W IRR rows, both 0.12), undated underwriting figures,
+    stored as fractions and read through `_as_rate` like `pe_coupon`. `UNLOADED_FIGURES`
+    `uw_irr` / `proj_yr1_coc` are mode `mri`; `act_yr1_coc` untouched. A column the table
+    lacks is reported `unloaded_figure_field_absent`; a deal with no value is reported
+    `unloaded_figure_value_null`. **NOTHING CHANGES ON SCREEN UNTIL `deal_terms` IS
+    REFRESHED** -- every UW IRR / Proj Yr-1 cell stays an em dash, and the live
+    `deal_terms` has no new columns. **The refresh was deliberately NOT run and NOT
+    triggered**: Jim/Charlene are holding it until the precision question with Alay is
+    answered (MRI holds whole percents, e.g. 0.11, where the PDF shows 10.7%).
+    Span vs live `1d97985`: `d5bd2c4` (this change), plus Jim's docs-only `1e3138d`,
+    `98a8b9e`, `d5b236c`, `1a049b0` (`.claude/memory/` only). Build `canj`, 3m04s,
+    Succeeded; tag locked; rolled out Healthy at 100% traffic. SQL proved by Charlene in
+    SSMS: 89 rows (= the old table), the five original columns identical on all 89, 76
+    `uw_irr` and 55 `proj_yr1_coc` populated. Preview on those values (as of 2026-06-30):
+    50 Current + 26 Sold deals gain a UW IRR / Proj Yr-1; seven of the nine footnote-(5)
+    deals switch from a dash to the projected value; Trolley Square and Jefferson
+    Stephens have no Proj Yr-1 in MRI and are unchanged; Current Total Proj Yr-1
+    8.0%, UW IRR 15.4%; Sold Total 10.4% / 15.7%. **TWO DATA QUESTIONS FOR MRI, not code:**
+    Plaza Del Mar (P0000116, a young deal) has `proj_yr1_coc` = 0.0 -- the only zero of
+    55, and footnote (5) would print it in three cells; and 30 Bearfoot (P0000001) has
+    `uw_irr` = 0.33 against a next-highest of 0.24 and a median of 0.15. Smoke (all 200,
+    0 tracebacks, working set 1.15 GB of 2 GB): auth/me, auth/sections, dashboard/kpis,
+    portfolio-snapshot quarters + investors, one-pager P0000044, /investment-metrics
+    cold 22.5s then warm 0.26s. Guardrail: `investment_metrics_check.py` 186/186
+    (present / NULL / absent, units, the young-deal substitution turning on),
+    `investment_metrics_print_inspect.py` 44/44. Preview script for the full refresh:
+    `scripts/investment_metrics_preview_new_fields.py`. **Rollback if needed** is
+    FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2 --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:1d97985 --revision-suffix v574`.)
   - `v572` = `1d97985` (BOARD SECTION, PHASE 0 -- an OPT-IN section granted only by the
     admin USERNAME (optionally with an end date), permissions by username (editor,
     package builder, salary view/edit) that need the section, the append-only access

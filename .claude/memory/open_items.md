@@ -83,21 +83,28 @@ for coupon and participation**, so the item is closed and removed; the resolutio
 recorded against `v547` in `deploy_history.md`. Numbers are never reused here — a gap
 means an item closed, and renumbering would break every reference written before it.
 
-### 20.1 Investment Metrics: two columns are still unloaded — Alay
+### 20.1 Investment Metrics: UW Proj. IRR and Proj Yr-1 CoC — SHIPPED `v573`, WAITING ON A deal_terms REFRESH (updated Oct 6 2026)
 
-`investment_metrics_config.UNLOADED_FIGURES` holds `uw_irr` ("UW Proj. IRR") and
-`proj_yr1_coc` ("Proj Yr-1 CoC Returns") in `mode: "none"` with `field: None` and a
-`TODO(alay)` against each. The note on both: *"not held anywhere in MRI"*. Open since
-`v545`; the draft gate coming off at `v546` did not close it, and `v551` deliberately
-left them — it computed **Act.** Yr-1 CoC from the ROE engine and wired the footnote
-(5) substitution so that it **activates by itself the moment `proj_yr1_coc` is switched
-on**.
+MRI now holds both fields (`'U/W IRR'`, `'Projected Yr 1 CoC Returns'`; NOT the older
+look-alikes `'UW IRR'` / `'Projected Yr 1 CoC'`). `queries/Prop_Info_DealTerms.sql` pivots them
+into `deal_terms.uw_irr` / `deal_terms.proj_yr1_coc` (latest `dtEffective` per deal, undated
+figures, fractions) and `UNLOADED_FIGURES` reads them in mode `mri`. Charlene proved the SQL
+in SSMS: 89 rows, the five original columns unchanged, 76 `uw_irr` and 55 `proj_yr1_coc`.
+**Until `deal_terms` is refreshed on production the columns do not exist there, so every
+UW IRR / Proj Yr-1 cell is still an em dash** (`unloaded_figure_field_absent`: 152).
 
-- **The check:** `grep -n "TODO(alay)" investment_metrics_config.py` — two hits is the
-  open state, zero is done.
-- **What it blocks:** three cells on nine footnote-(5) deals currently BLANK rather
-  than showing a stub period.
-- **Owner:** Alay, for the MRI field. Wiring is already written and waiting.
+- **Waiting on:** Charlene/Jim holding the refresh until the PRECISION question with Alay is
+  answered — MRI holds whole percents (0.11) where the reference PDF shows 10.7%. Nothing
+  is rounded or altered. Run only `POST /api/data/mri/refresh/Prop_Info_DealTerms`.
+- **After the refresh, verify:** `unloaded_figure_field_absent` is gone and
+  `unloaded_figure_value_null` shows ~21 `proj_yr1_coc` deals; seven of the nine footnote-(5)
+  deals take the projected figure in three cells; Current Total Proj Yr-1 ~8.0%, UW IRR
+  ~15.4%. Preview without refreshing: `scripts/investment_metrics_preview_new_fields.py`.
+- **Two data questions for MRI (not code):** Plaza Del Mar (P0000116, a young deal) has
+  `proj_yr1_coc` = 0.0, the only zero of 55, and footnote (5) would print it in three cells;
+  30 Bearfoot (P0000001) has `uw_irr` = 0.33 against a next-highest of 0.24.
+- **Owner:** Charlene (refresh), Alay (precision), whoever maintains the Investment Checklist
+  (the two values).
 
 ### 20.2 Investment Metrics: first lien reproduces the reference on 42 of 76 — unassigned
 
@@ -1825,7 +1832,54 @@ locally, so a local comparison proves nothing. This needs
 `scripts/` run against production (the image ships `scripts/` since `v474`). Until then,
 treat the two Debt columns as potentially different numbers.
 
-### 8.3 Prior-year figures: two SOURCES (not two engines)
+### 8.4 Two capitalization engines, measured — OPEN (Oct 6 2026)
+`compute.get_deal_capitalization` (Dashboard KPIs, Deal Analysis header, the assistant's
+`get_capitalization`) vs `one_pager.get_capitalization_stack` (One Pager, both Snapshot
+pages, Valuation Summary). Measured on local data (recent production copy) over the
+Dashboard's own 62 deals, the cap stack at 2026-Q4 (after every transaction):
+**pref and partner equity agree on all 62; debt on 60.** The two that differ, both deals
+with no ISBS debt, so both fall back to MRI origination amounts:
+
+| Deal | compute | cap stack | Cause |
+|---|---|---|---|
+| Burton (P0000109) | 0 | 75,302,500 | compute's child lookup finds no children |
+| OREI (P0000033) | 69,047,000 | 34,851,000 | compute adds the parent loan AND both child loans |
+
+- **Burton is a CHILD-LOOKUP defect, and it reaches past capitalization.**
+  `consolidation.get_property_vcodes_for_deal` / `build_property_map` match children on
+  the parent's `Investment_Name` only; `one_pager._child_vcodes_for_parent` also matches
+  the parent's own `Portfolio_Name` ("Burton Retail Portfolio" in "Burton Portfolio").
+  The narrow one feeds the Dashboard's child exclusion (`get_child_vcodes`) -- so
+  Burton's 3 buildings are listed as Dashboard deals of their own, carrying its 75.3M
+  of debt; the portfolio total is right only by accident -- plus occupancy roll-ups,
+  `valuation_debt_service`, ownership, financials and the assistant. Across all 134
+  deals the two lookups disagree on 2: Burton, and P0000073 (consolidation calls the
+  OTHER "Donald Lynch", P0000049, its child; no debt moves). Fix: ONE child lookup.
+  Measure every consumer before and after -- the Dashboard deal count drops by 3.
+- **OREI is a DATA question (Jim/Charlene):** loan 313 on the parent (34,851,000) and
+  loans 285 + 286 on Whitney Manor / Westchase (10,901,000 + 23,295,000 = 34,196,000),
+  all active. Same debt recorded at two levels, or two layers? compute says 69.0M,
+  the cap stack 34.9M.
+- The Dashboard's `/init-stream` calls compute WITHOUT `isbs_raw` while
+  `dashboard_service` passes it, into the same cache key; identical figures on this
+  data, but whichever runs first after a restart decides.
+- Otherwise the two differ only in code paths no current data exercises (abs() vs
+  sign-netted reversals, no sold-deal debt suppression, no date). After the lookup fix
+  and the OREI answer, retire one; nothing measured argues for keeping two.
+
+### 8.3 Prior-year figures: two SOURCES (not two engines) — DECIDED Oct 6 2026
+**Jim, Oct 6 2026: "use MRI valuations as the prior-year source."** The two summary tabs
+now read last year through `valuation_service._prior_rows` -- the Committee Summary's own
+reader -- at the prior year-end (`valuation_summary_service._prior_from_mri`), with net
+proceeds = mEquityValue and pref NAV = mMezzanineValue. On local data the 2026 cycle's
+prior value fills on 48 of 82 deals (from ~1, read off the near-empty 2025 cycle); the
+28 with no 2025 MRI valuation are named on the tab with their vcode. Built on branch
+`feat/valuation-summary-mri-prior`, not deployed as of Oct 6 2026.
+**Still open:** the Committee Summary's PRIOR net proceeds is `value - debt`, while
+MRI carries mEquityValue -- the same class as the Sep 18 fix to its current-year column.
+Measure both across every deal before changing either.
+
+Original note:
 The Committee Summary reads last year from MRI's `valuations` feed (`_prior_rows`, using
 `mIncomeCapConcludedValue`, `mDebtValue`, `mMezzanineValue`). The valuation summary tabs
 read last year from **the prior cycle's own `valuation_records`**. These should be the
@@ -2180,6 +2234,37 @@ The last step of Jim's original budget request: once a budget is final in the ap
 the whole table to MRI to load. Nothing built. Note this is the reason the table is in
 `PROTECTED_TABLES` while the other four supplements are not — the app is its writer and,
 until this export exists, its only copy.
+
+### 5.11 Valuation Summary tabs vs Jack's 2025 workbook — OPEN (Oct 6 2026)
+Jack re-sent `2025 Valuation Summary Report - LIVE.xlsx` (Jim's OneDrive) asking for
+tabs `2025_Val_Summary_1/2`. **Both already exist** (§5.10, `v503`); measured against his
+workbook Oct 6 2026, the gaps are:
+
+- **Total Capitalization: BUILT Oct 6 2026** (LIVE at v576).
+  Jim: debt balance + preferred equity balance + the operating partner's equity balance,
+  as of the valuation date. It is `one_pager.get_capitalization_stack`'s
+  `total_cap_isbs` (ISBS debt + funded pref + funded OP equity), called exactly as the
+  Portfolio Snapshot calls it, at the quarter holding the cycle date -- NOT the
+  Snapshot's printed `total_cap`, which re-foots dev deals to committed figures.
+  Parent/standalone rows only; a child row points at its parent. Pegasus 34,908,128 vs
+  the workbook's hand-rounded 34,910,000. `compute.get_deal_capitalization` is a
+  SECOND, dateless implementation of the same three legs (abs()-based, no sale
+  suppression) -- not used here; measure it against the cap stack before touching it.
+- **Pegasus split: BUILT Oct 6 2026**, by rule (any deal with 2+ PSC-side pref
+  investors -- today only Pegasus): each investor's line is its own pref walk and the
+  NAV waterfall's ALLOCATION to it, detail under the deal row, never in a subtotal.
+  Balances tie to the workbook (TGA22 24,150,000; PPILFS 8,184,654.75). The tranche
+  NAV needs Pegasus's NAV to be run on the cycle; MRI holds no prior-year split.
+- **Grand totals must not count a row twice** (Jim, Oct 6 2026). His sheet's formulas
+  overlap; the app's `_sections()` straight sum is the rule. Child property rows
+  (Giant 7's, Berger's, OREI's, PMAT's) must not be added on top of their parent.
+- **Prior year is blank for 2026 vs 2025**: the 2025 cycle's records are nearly empty;
+  the real 2025 figures are in MRI `valuations`. Source of record is §8.3 -- Jim's call.
+- No group labels are set on any record; Up/Down, rate deltas, % change, prior-year NOI
+  and an Excel export are not on the tabs. Questions sent to Jack Oct 6 2026 (Jim).
+- Pref spot check, 70 deals at 12/31/2025: 37 within $1, 13 differ (mostly accrual,
+  app lower -- likely later payments; unproven), 20 have no app figure (no Cap_WF or no
+  PSC pref steps). Pegasus TGA22: workbook 2,857,750.00 vs app 1,909,023.05.
 
 ### 5.10 Jack Day's valuation list (Sep 17 2026) — DONE, live at `v503`
 Nine asks from asset management, shipped in `v500`–`v502`.
