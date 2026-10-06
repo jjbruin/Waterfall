@@ -126,7 +126,7 @@ waterfall-xirr/
 - **15 queries** committed in `queries/` folder (copied from SharePoint). `_get_queries_folder()` checks `QUERIES_DIR` env var first (SharePoint/OneDrive), falls back to repo `queries/` folder. Dockerfile copies `queries/` into container.
 - **Works from Azure** via S2S VPN tunnel (Jun 24, 2026) — both PMX (.9) and IM (.10) fully operational
 - **Server IPs (tunnel)**: PMX=10.219.226.9, IM=10.219.226.10 (old FortiClient IPs .17/.18 no longer used)
-- **Credentials**: UID=PSCVPN, PWD=NVc8MkB^PlRuv*
+- **Credentials**: UID=PSCVPN, PWD=<removed Oct 6 2026 -- held outside git; ask Jim>
 - **COA query** (Jun 2026): `COA` table on IM is permission-denied; uses `vCOA` view instead. Server=im. View columns differ from table (`vaccount` not `vcode`). Query: `select vaccount as vcode, vAccountType from vCOA where ISNUMERIC(vaccount)=1`. 176 rows.
 - **UI**: "Refresh All Data from MRI" button in sidebar (admin only) refreshes all tables via VPN
 - See [mri_databases.md](mri_databases.md) and [vpn_tunnel_handoff.md](vpn_tunnel_handoff.md) for full details
@@ -135,7 +135,7 @@ waterfall-xirr/
 - **VNet**: vnet-waterfall-dev (10.0.0.0/16) with NAT Gateway (static IP 20.127.96.240)
 - **VPN Gateway**: vpngw-waterfall-dev (VpnGw1AZ, IP 48.194.101.189) — S2S tunnel to MRI FULLY OPERATIONAL
 - **Old app** (app-waterfall-dev + cae-waterfall-dev) deleted Jul 1, 2026
-- **PG credentials**: `wfadmin` / `Wf3d9097e0365c445456dcc52e!` on `waterfall_xirr` database
+- **PG credentials**: `wfadmin` / <removed Oct 6 2026 -- in the Container App secret db-url> on `waterfall_xirr` database
 - **PG firewall**: Must add current public IP (`az postgres flexible-server firewall-rule create`). IPs added: local-dev (50.251.58.254), local-dev-2 (73.112.240.56), local-dev-3 (71.59.67.132), local-dev-4 (73.112.240.56)
 - **Auth login endpoint**: `/auth/login` (not `/api/auth/login`), returns `token` key (not `access_token`)
 - **Current revision**: v235 (deployed Aug 12, 2026) — New Business Pipeline (Kanban + table + deal workspace), Lease Review Vue frontend, prospect property/entity data model
