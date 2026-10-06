@@ -5,8 +5,9 @@ Disabled by default. Enable by setting SSO_CLIENT_ID in environment.
 Flow:
 1. GET /auth/sso/login → redirects to identity provider
 2. Provider authenticates user → redirects to /auth/sso/callback
-3. Callback validates token, creates/finds user, issues JWT
-4. Redirects to Vue app with token in URL fragment
+3. Callback validates token, matches the EXISTING account by email, issues JWT
+   (no account is created -- see ``_match_user``)
+4. Redirects to Vue app with token in URL fragment, or ``#sso_error=<reason>``
 
 Configuration (environment / .env):
     SSO_PROVIDER=azure     # "azure" or "okta"
@@ -14,15 +15,14 @@ Configuration (environment / .env):
     SSO_CLIENT_SECRET=...
     SSO_TENANT_ID=...      # Azure AD tenant ID
     SSO_ISSUER=...         # Okta issuer URL (e.g. https://yourorg.okta.com)
-    SSO_DEFAULT_ROLE=viewer  # Role assigned to new SSO users
+    SSO_REDIRECT_URL=/     # Where the callback sends the browser
 """
 
 import os
 from flask import Blueprint, redirect, request, current_app, url_for
 from authlib.integrations.flask_client import OAuth
 
-from flask_app.auth.models import get_user_by_id, create_user
-from flask_app.auth.routes import _create_token
+from flask_app.auth.routes import _create_token, login_required
 
 sso_bp = Blueprint("sso", __name__)
 oauth = OAuth()
@@ -66,49 +66,45 @@ def init_sso(app):
         raise ValueError(f"Unknown SSO_PROVIDER: {provider}. Use 'azure' or 'okta'.")
 
 
-def _find_or_create_user(email: str, name: str) -> dict:
-    """Find existing user by email/username or create a new one.
+# The username that holds every section and alone manages access. A Microsoft
+# sign-in never opens it: its email is Jim's, so matching on email alone would
+# hand the superuser to anyone signing in as him.
+SUPERUSER = "admin"
 
-    SSO users are matched by username = email (lowercase).
-    New users get the default role from SSO_DEFAULT_ROLE.
+
+def _match_user(email: str) -> tuple[dict | None, str | None]:
+    """The existing account whose EMAIL is this Microsoft sign-in's.
+
+    Returns ``(user, None)`` on exactly one match, else ``(None, reason)``.
+
+    Matched on the ``email`` column, case- and space-insensitive -- usernames
+    are short names (``jbruin``), never the email, so matching on username
+    would miss every existing account. No account is CREATED: one made here
+    would be a second, sectionless account for a person who already has one,
+    and who may sign in is decided in User Management, not by Entra. Two
+    accounts sharing an email is refused rather than guessed between.
     """
     from sqlalchemy import text
     from flask_app.db import get_engine
 
-    username = email.lower()
-    engine = get_engine()
-
-    # Look up by username
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT id, username, role FROM users WHERE username = :u"),
-            {"u": username},
-        ).mappings().fetchone()
-
-    if row:
-        return {"id": row["id"], "username": row["username"], "role": row["role"]}
-
-    # Create new SSO user (no password — SSO-only)
-    default_role = os.environ.get("SSO_DEFAULT_ROLE", "viewer")
-    # Use a random non-guessable password since SSO users don't use password auth
-    import secrets
-    result = create_user(username, secrets.token_hex(32), role=default_role)
-    if result is None:
-        # Race condition — another request created the user
-        with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT id, username, role FROM users WHERE username = :u"),
-                {"u": username},
-            ).mappings().fetchone()
-        return {"id": row["id"], "username": row["username"], "role": row["role"]}
-
-    # Get the created user's ID
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT id, username, role FROM users WHERE username = :u"),
-            {"u": username},
-        ).mappings().fetchone()
-    return {"id": row["id"], "username": row["username"], "role": row["role"]}
+    key = (email or "").strip().lower()
+    if not key:
+        return None, "no_email"
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text("SELECT id, username, role FROM users "
+                 "WHERE lower(trim(email)) = :e AND username <> :su ORDER BY id"),
+            {"e": key, "su": SUPERUSER},
+        ).mappings().fetchall()
+    if not rows:
+        return None, "no_account"
+    if len(rows) > 1:
+        current_app.logger.warning(
+            "SSO: %d accounts share email %s (%s) -- refused",
+            len(rows), key, ", ".join(r["username"] for r in rows))
+        return None, "ambiguous"
+    r = rows[0]
+    return {"id": r["id"], "username": r["username"], "role": r["role"]}, None
 
 
 # ── SSO Routes ──────────────────────────────────────────────────────
@@ -134,25 +130,41 @@ def sso_callback():
         userinfo = token.get("userinfo") or oauth.sso.userinfo()
 
         email = userinfo.get("email") or userinfo.get("preferred_username", "")
-        name = userinfo.get("name", email)
 
-        if not email:
-            return {"error": "No email in SSO response"}, 400
-
-        # Find or create local user
-        user = _find_or_create_user(email, name)
+        frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
+        user, reason = _match_user(email)
+        if user is None:
+            current_app.logger.info("SSO: sign-in for %r refused (%s)", email, reason)
+            return redirect(f"{frontend_url}#sso_error={reason}")
 
         # Issue our JWT
         jwt_token = _create_token(user)
 
         # Redirect to Vue app with token
-        frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
         return redirect(f"{frontend_url}#token={jwt_token}")
 
     except Exception as e:
         current_app.logger.error(f"SSO callback error: {e}")
         frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
         return redirect(f"{frontend_url}#sso_error=authentication_failed")
+
+
+@sso_bp.route("/sharepoint", methods=["GET"])
+@login_required
+def sharepoint_config():
+    """The Entra app the browser's SharePoint picker signs in with.
+
+    The picker runs entirely in the browser (MSAL, delegated Graph read
+    scopes): no Microsoft token reaches this server and no secret is needed,
+    so it can be on while password sign-in is still the only sign-in.
+    ``SHAREPOINT_CLIENT_ID``/``SHAREPOINT_TENANT_ID`` switch it on, falling back
+    to the SSO pair -- it is the same app registration. Signed-in users only.
+    """
+    client_id = os.environ.get("SHAREPOINT_CLIENT_ID") or os.environ.get("SSO_CLIENT_ID")
+    tenant_id = os.environ.get("SHAREPOINT_TENANT_ID") or os.environ.get("SSO_TENANT_ID")
+    if not (client_id and tenant_id):
+        return {"enabled": False}
+    return {"enabled": True, "client_id": client_id, "tenant_id": tenant_id}
 
 
 @sso_bp.route("/config", methods=["GET"])

@@ -46,7 +46,12 @@ onMounted(async () => {
     }
   }
   if (hash.includes('sso_error=')) {
-    error.value = 'SSO authentication failed. Please try again or use username/password.'
+    const reason = hash.split('sso_error=')[1]?.split('&')[0]
+    error.value = reason === 'no_account'
+      ? 'No Waterfall XIRR account has your Microsoft email address. Ask an administrator to add it to your account.'
+      : reason === 'ambiguous'
+        ? 'More than one Waterfall XIRR account has your email address. Ask an administrator to correct it.'
+        : 'SSO authentication failed. Please try again or use username/password.'
   }
 })
 

@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [vue()],
@@ -32,6 +33,13 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 650,
     rollupOptions: {
+      // A second page: the Microsoft sign-in popup returns to it (see
+      // src/msalRedirect.ts). Without it in the build, production 404s there
+      // and the SharePoint picker can never get a token.
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        msalRedirect: fileURLToPath(new URL('./msal-redirect.html', import.meta.url)),
+      },
       output: {
         manualChunks: {
           echarts: ['echarts', 'vue-echarts'],

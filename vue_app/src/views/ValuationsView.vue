@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import LineMappingPanel from '../components/common/LineMappingPanel.vue'
+import SharePointPicker from '../components/common/SharePointPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -862,11 +863,21 @@ async function recordAction(action: string) {
 
 async function onDocumentUpload(event: Event) {
   const input = event.target as HTMLInputElement
-  if (!input.files?.length || !selectedRecordId.value) return
+  if (!input.files?.length) return
+  try {
+    await uploadDocumentFiles(Array.from(input.files))
+  } finally {
+    input.value = ''
+  }
+}
+
+// The one path a valuation document takes, from disk or from SharePoint alike.
+async function uploadDocumentFiles(files: File[]) {
+  if (!files.length || !selectedRecordId.value) return
   uploadingDocs.value = true
   try {
     // One file per request — matches the app-wide pattern (avoids server OOM)
-    for (const file of Array.from(input.files)) {
+    for (const file of files) {
       const formData = new FormData()
       formData.append('files', file)
       formData.append('doc_type', uploadDocType.value)
@@ -877,7 +888,6 @@ async function onDocumentUpload(event: Event) {
     error.value = e.response?.data?.error || e.message
   } finally {
     uploadingDocs.value = false
-    input.value = ''
   }
 }
 
@@ -1708,6 +1718,8 @@ watch(selectedCycleId, () => {
                   {{ uploadingDocs ? 'Uploading...' : 'Upload Files' }}
                   <input type="file" multiple @change="onDocumentUpload" :disabled="uploadingDocs" hidden />
                 </label>
+                <SharePointPicker multiple remember-as="valuation-documents" button-class="btn-primary"
+                                  :disabled="uploadingDocs" @picked="uploadDocumentFiles" />
               </div>
               <table class="doc-table" v-if="record.documents?.length">
                 <thead><tr><th>Type</th><th>File</th><th>By</th><th></th></tr></thead>

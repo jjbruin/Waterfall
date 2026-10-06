@@ -3,6 +3,7 @@ import { ref, reactive, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useDataStore } from '../../stores/data'
+import SharePointPicker from '../common/SharePointPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -121,7 +122,13 @@ async function handleReload() {
 async function handleFileSelect(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files || input.files.length === 0) return
-  uploadFiles.value = Array.from(input.files)
+  await matchUploadFiles(Array.from(input.files))
+}
+
+// The one path a CSV takes, from disk or from SharePoint alike.
+async function matchUploadFiles(files: File[]) {
+  if (!files.length) return
+  uploadFiles.value = files
 
   // Load table defs if not yet loaded, then match files
   await data.loadTableDefs()
@@ -783,6 +790,8 @@ function toggleCollapsed() {
                 class="db-file-input"
                 @change="handleFileSelect"
               />
+              <SharePointPicker accept=".csv" multiple remember-as="data-csv"
+                                @picked="matchUploadFiles" />
 
               <!-- Matched file list -->
               <div v-if="uploadMatches.length" class="csv-list" style="margin-top: 4px">

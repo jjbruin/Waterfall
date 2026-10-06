@@ -18,6 +18,14 @@ def create_app(config_name: str = None) -> Flask:
     """
     app = Flask(__name__)
 
+    # Azure Container Apps ends TLS at its ingress and reaches Gunicorn over
+    # plain HTTP, so without this every URL Flask builds says http://. The
+    # Microsoft sign-in callback is one: Entra matches the redirect URI
+    # exactly and refuses an http:// one. One proxy hop is trusted -- the
+    # ingress is the only thing that can reach the container.
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
     # Load config
     from flask_app.config import config_by_name
     config_name = config_name or os.environ.get("FLASK_ENV", "development")

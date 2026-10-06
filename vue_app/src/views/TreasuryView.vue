@@ -22,6 +22,7 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import SharePointPicker from '../components/common/SharePointPicker.vue'
 
 const auth = useAuthStore()
 // Editing anywhere in accounting is the accounting roles' (Jim, Sep 17 2026),
@@ -771,6 +772,9 @@ onMounted(() => { loadAccounts(); loadPending(); loadStatements() })
           </p>
           <input type="file" accept=".csv"
                  @change="activityFile = ($event.target as HTMLInputElement).files?.[0] || null" />
+          <SharePointPicker accept=".csv" remember-as="treasury-activity"
+                            @picked="(f: File[]) => activityFile = f[0] || null" />
+          <span v-if="activityFile" class="hint">{{ activityFile.name }}</span>
           <button class="btn primary" :disabled="!activityFile || busy"
                   @click="uploadActivity">Import activity</button>
 
@@ -801,6 +805,9 @@ onMounted(() => { loadAccounts(); loadPending(); loadStatements() })
           </p>
           <input type="file" accept=".pdf"
                  @change="statementFile = ($event.target as HTMLInputElement).files?.[0] || null" />
+          <SharePointPicker accept=".pdf" remember-as="treasury-statement"
+                            @picked="(f: File[]) => statementFile = f[0] || null" />
+          <span v-if="statementFile" class="hint">{{ statementFile.name }}</span>
           <button class="btn primary" :disabled="!statementFile || !selected || busy"
                   @click="uploadStatement">Import statement</button>
 
@@ -830,6 +837,8 @@ onMounted(() => { loadAccounts(); loadPending(); loadStatements() })
           </p>
           <input type="file" accept=".pdf" multiple
                  @change="stmtFiles = Array.from(($event.target as HTMLInputElement).files || [])" />
+          <SharePointPicker accept=".pdf" multiple folders remember-as="treasury-bulk"
+                            @picked="(f: File[]) => stmtFiles = f" />
           <button class="btn primary" :disabled="!stmtFiles.length || busy"
                   @click="uploadStatements">
             Import {{ stmtFiles.length || '' }} statements
