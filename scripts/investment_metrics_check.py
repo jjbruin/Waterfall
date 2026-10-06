@@ -263,8 +263,10 @@ def acct_fixture():
 def commitments_fixture():
     return pd.DataFrame([
         # trailing space, as the live table has
-        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=5_000_000.0),
-        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0),
+        dict(EntityID="ALPHA ", InvestorID="PPI1", Amount=5_000_000.0,
+             StartDate="2019-03-01", EndDate=None, CommitmentUID=1),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0,
+             StartDate="2019-03-01", EndDate=None, CommitmentUID=2),
     ])
 
 
@@ -1346,6 +1348,122 @@ def main():
             for vcode, tbl, *_ in POPULATION_26Q2
             for n in derived.get(vcode, [])
             for p in [{"table": "current" if tbl == "c" else "sold"}]))
+
+    # ── 23. quarter integrity ─────────────────────────────────────────────
+    section("23. Quarter integrity (both ways: later data is CUT from an earlier "
+            "quarter, and nothing dated inside the quarter is lost)")
+    Q2, Q3 = dt.date(2026, 6, 30), dt.date(2026, 9, 30)
+
+    # THE BURTON SHAPE: a pledge revised on 2026-07-30, so the figure in force on
+    # 30 Jun is the OLD one and the figure in force on 30 Sep is the new one.
+    revised = pd.DataFrame([
+        dict(EntityID="ALPHA", InvestorID="PPI1", Amount=26_597_500.0,
+             StartDate="2020-01-01", EndDate="2026-07-29", CommitmentUID=1),
+        dict(EntityID="ALPHA", InvestorID="PPI1", Amount=54_227_000.0,
+             StartDate="2026-07-30", EndDate=None, CommitmentUID=2),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=2_000_000.0,
+             StartDate="2019-03-01", EndDate="2026-07-29", CommitmentUID=3),
+        dict(EntityID="ALPHA", InvestorID="OPACME", Amount=9_000_000.0,
+             StartDate="2026-07-30", EndDate=None, CommitmentUID=4),
+    ])
+    _, a_q2 = row_of(build(commitments=revised, as_of=Q2), "P0000001")
+    _, a_q3 = row_of(build(commitments=revised, as_of=Q3), "P0000001")
+    chk("26Q2 reads the PSC pref commitment in force on 30 Jun, not today's",
+        a_q2 and abs(a_q2["pref"] - 26.5975) < 1e-9,
+        f"got {(a_q2 or {}).get('pref')} -- 54.227 is the 26Q3 pledge")
+    chk("...and 26Q3 reads the revised one (nothing in effect is lost)",
+        a_q3 and abs(a_q3["pref"] - 54.227) < 1e-9, f"got {(a_q3 or {}).get('pref')}")
+    chk("First-Loss Equity (the operating partner's side) is read as of the quarter",
+        a_q2 and abs(a_q2["first_loss"] - 2.0) < 1e-9
+        and a_q3 and abs(a_q3["first_loss"] - 9.0) < 1e-9,
+        f"got {(a_q2 or {}).get('first_loss')} / {(a_q3 or {}).get('first_loss')}")
+    chk("Total Size and the % of Cap cascade from the as-of figures",
+        a_q2 and abs(a_q2["total_size"] - (13.0 + 26.5975 + 2.0)) < 1e-9
+        and abs(a_q2["pref_pct"] - 26.5975 / (13.0 + 26.5975 + 2.0)) < 1e-9,
+        f"got {(a_q2 or {}).get('total_size')}")
+    chk("the basis says the quarter-aware commitment answered",
+        a_q2 and "commitments" in a_q2["basis"]["capitalization"])
+
+    # accounting commitment rows and funded-to-date are cut too, so the fallbacks
+    # cannot carry a later row into an earlier quarter
+    only_acct = build(commitments=pd.DataFrame(), as_of=dt.date(2019, 6, 30))
+    _, a_acc = row_of(only_acct, "P0000001")
+    chk("the accounting Commitment fallback is cut at the as-of too",
+        a_acc and abs(a_acc["pref"] - 5.0) < 1e-9
+        and "accounting Commitment" in a_acc["basis"]["capitalization"],
+        f"got {(a_acc or {}).get('pref')} / "
+        f"{(a_acc or {}).get('basis', {}).get('capitalization')}")
+    chk("a figure with nothing dated on or before the as-of is None, never 0",
+        row_of(build(commitments=pd.DataFrame(), as_of=dt.date(2019, 1, 31)),
+               "P0000001")[1] is None
+        or row_of(build(commitments=pd.DataFrame(), as_of=dt.date(2019, 1, 31)),
+                  "P0000001")[1]["pref"] is None)
+
+    # POPULATION: nothing invested after the as-of is in that quarter's report
+    ykw = dict(inv=young_deals_fixture(), acct=young_acct_fixture(),
+               deal_terms=young_terms_fixture(), loans=pd.DataFrame())
+    early = build(as_of=dt.date(2026, 2, 28), **ykw)
+    late = build(as_of=dt.date(2026, 6, 30), **ykw)
+    chk("a deal invested 2026-03-01 is NOT in the report as of 2026-02-28",
+        row_of(early, "P0000900")[1] is None
+        and any(x["vcode"] == "P0000900"
+                for x in early["diagnostics"].get("not_yet_invested", [])),
+        "it must be absent AND named, not silently dropped")
+    chk("...and IS in it as of 2026-06-30",
+        row_of(late, "P0000900")[1] is not None
+        and not any(x["vcode"] == "P0000900"
+                    for x in late["diagnostics"].get("not_yet_invested", [])))
+    chk("deals already invested stay in the earlier quarter",
+        row_of(early, "P0000901")[1] is not None
+        and row_of(early, "P0000902")[1] is not None)
+    chk("an invest date ON the as-of counts as invested (the boundary)",
+        row_of(build(as_of=dt.date(2026, 3, 1), **ykw), "P0000900")[1] is not None)
+    all_rows = early["current"]["rows"] + early["sold"]["rows"]
+    chk("no row in any table is dated after the as-of",
+        all(r["invest_date"] is None or r["invest_date"] <= "2026-02-28"
+            for r in all_rows))
+    chk("the absent deal is not also reported as a missing reference row",
+        not any(x.get("vcode") == "P0000900"
+                for x in early["diagnostics"].get("reference_rows_absent", [])))
+
+    # PROCEEDS TO-DATE: through the quarter, not through today
+    p_early = build(as_of=dt.date(2020, 3, 1))
+    p_mid = build(as_of=dt.date(2020, 4, 4))
+    _, pe = row_of(p_early, "P0000001")
+    _, pm = row_of(p_mid, "P0000001")
+    _, pl = row_of(out, "P0000001")
+    chk("proceeds as of 2020-03-01 exclude the 2020-04-04 distribution",
+        pe and pl and pe["proceeds"] < pl["proceeds"],
+        f"got {(pe or {}).get('proceeds')} vs {(pl or {}).get('proceeds')}")
+    chk("...and a distribution dated ON the as-of is included, to the dollar",
+        pe and pm and abs((pm["proceeds"] - pe["proceeds"]) - 0.999) < 1e-9,
+        f"got {(pm or {}).get('proceeds')} - {(pe or {}).get('proceeds')}")
+    chk("a quarter after the last distribution loses nothing",
+        pl and abs(pl["proceeds"] - build(as_of=dt.date(2030, 12, 31))
+                   ["current"]["rows"][0]["proceeds"]) < 1e-9
+        if build(as_of=dt.date(2030, 12, 31))["current"]["rows"] else False)
+
+    # THE ONE EXEMPTION: a deal in Sold whose sale is AFTER the as-of keeps its
+    # whole-life figures, and is NAMED. BETA sold 2024-06-01.
+    s_pre = build(as_of=dt.date(2023, 12, 31))
+    s_post = build(as_of=dt.date(2026, 6, 30))
+    _, bpre = row_of(s_pre, "P0000002")
+    _, bpost = row_of(s_post, "P0000002")
+    chk("a deal sold AFTER the as-of keeps its whole-life proceeds (footnote 4)",
+        bpre and bpost and abs(bpre["proceeds"] - bpost["proceeds"]) < 1e-9,
+        f"got {(bpre or {}).get('proceeds')} vs {(bpost or {}).get('proceeds')}")
+    chk("...and is listed as full-life, not hidden",
+        any(x["vcode"] == "P0000002"
+            for x in s_pre["diagnostics"].get("sold_after_as_of_full_life", [])))
+    chk("...but a deal sold BEFORE the as-of is not listed",
+        not any(x["vcode"] == "P0000002"
+                for x in s_post["diagnostics"].get("sold_after_as_of_full_life", [])))
+    chk("a CURRENT deal is never exempt: the cutoff applies",
+        im.cashflow_cutoff(im.DealIdentity(sale_date=None), im.CURRENT, Q2) == Q2
+        and im.cashflow_cutoff(im.DealIdentity(sale_date=dt.date(2026, 9, 4)),
+                               im.SOLD, Q2) is None
+        and im.cashflow_cutoff(im.DealIdentity(sale_date=dt.date(2026, 5, 1)),
+                               im.SOLD, Q2) == Q2)
 
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:

@@ -571,6 +571,15 @@ def capitalization_sources(
     iid = ident.investment_id
     rows = _deal_accounting(acct, iid)
     out: List[Tuple[str, Optional[float], Optional[float]]] = []
+    q = _to_date(as_of) if as_of is not None else None
+
+    def upto(df):
+        """Accounting rows dated on or before the as-of. QUARTER INTEGRITY: a
+        figure read at 26Q2 must not contain a July row. No as-of, no cut."""
+        if q is None or df is None or df.empty or "EffectiveDate" not in df.columns:
+            return df
+        when = pd.to_datetime(df["EffectiveDate"], errors="coerce")
+        return df[when <= pd.Timestamp(q)]
 
     def split(df, col, id_col="InvestorID"):
         if df is None or df.empty:
@@ -605,21 +614,55 @@ def capitalization_sources(
             m_cur = m
         if as_of is not None:
             psc, _basis = resolve_committed_pref(m, iid, as_of)
+            # THE OPERATING PARTNER'S SIDE IS READ AS OF THE QUARTER TOO. It was
+            # summed over the current rows whatever quarter was asked for, so
+            # First-Loss Equity (and with it Total Size and every % of Cap.)
+            # quietly carried today's pledge into every earlier quarter.
+            op_side = _op_side_in_effect(m, q)
         else:
             psc = split(m_cur, "Amount")[0]
-        _, op_side = split(m_cur, "Amount")
+            _, op_side = split(m_cur, "Amount")
         out.append(("commitments (IA_Commitment)", psc, op_side))
     else:
         out.append(("commitments (IA_Commitment)", None, None))
 
     cm = (rows[rows["is_commitment"].fillna(False)]
           if (not rows.empty and "is_commitment" in rows.columns) else None)
-    out.append(("accounting Commitment rows (SubtypeUID 1026)",) + split(cm, "Amt"))
+    out.append(("accounting Commitment rows (SubtypeUID 1026)",) + split(upto(cm), "Amt"))
 
     cb = (rows[rows["is_contribution"].fillna(False)]
           if (not rows.empty and "is_contribution" in rows.columns) else None)
-    out.append(("funded to date",) + split(cb, "Amt"))
+    out.append(("funded to date",) + split(upto(cb), "Amt"))
     return out
+
+
+def _op_side_in_effect(m: Optional[pd.DataFrame], q: Optional[_dt.date]) -> Optional[float]:
+    """The operating partner's commitment in force on ``q``, or None.
+
+    The same range rule ``committed_pref.row_in_effect`` applies to the PSC side
+    -- ``StartDate <= q AND (EndDate IS NULL OR EndDate >= q)``, one row per
+    (entity, investor) chain, the latest start winning where revisions overlap --
+    applied to the investors that are NOT the PSC side. None when no chain has a
+    row in effect, so the caller falls through to the next source instead of
+    printing a zero.
+    """
+    if m is None or getattr(m, "empty", True) or q is None:
+        return None
+    if "InvestorID" not in m.columns or "EntityID" not in m.columns:
+        return None
+    ops = m[~m["InvestorID"].map(is_psc_side)]
+    if ops.empty:
+        return None
+    chains: Dict[Tuple[str, str], list] = {}
+    for _, r in ops.iterrows():
+        sd, ed = _to_date(r.get("StartDate")), _to_date(r.get("EndDate"))
+        if sd is None or sd > q or (ed is not None and ed < q):
+            continue
+        amt = abs(_to_float(r.get("Amount")) or 0.0)
+        chains.setdefault((norm_id(r.get("EntityID")), norm_id(r.get("InvestorID"))),
+                          []).append((sd, str(r.get("CommitmentUID")), amt))
+    total = sum(sorted(rows)[-1][2] for rows in chains.values())
+    return total or None
 
 
 #: ``vDateType`` spellings. MRI carries exactly three on the live table:
@@ -956,18 +999,48 @@ def _earliest_isbs_debt(isbs: Optional[pd.DataFrame], want: set) -> Tuple[Option
 # ══════════════════════════════════════════════════════════════════════════
 # proceeds and Year-1 CoC
 # ══════════════════════════════════════════════════════════════════════════
-def proceeds_to_date(ident: DealIdentity, acct: pd.DataFrame, table: str) -> Optional[float]:
-    """Cash returned to PSC, in dollars. NO as-of cutoff — deliberately.
+def cashflow_cutoff(ident: DealIdentity, table: str,
+                    as_of: Optional[_dt.date]) -> Optional[_dt.date]:
+    """The date after which a cash flow does not belong in this quarter's figure.
 
-    The column is headed *To-Date*, and the reference workbook's own formula
-    carries no date bound either. On a CURRENT deal it is the four
-    distribution subtypes footnote (1) names; on a SOLD deal it is every
-    distribution, because the deal is finished and the question is the total.
+    QUARTER INTEGRITY: Proceeds To-Date and Realized IRR are cumulative figures,
+    and a cumulative figure at 26Q2 is the total THROUGH 30 Jun, not through
+    today. The cutoff is the as-of date.
+
+    ONE EXEMPTION, NAMED RATHER THAN HIDDEN: a deal in the SOLD table whose sale
+    falls AFTER the as-of (the reference's footnote (4): "sold after June 2026")
+    keeps its whole-life figures. The reference prints those deals in Sold with
+    their final distributions, and cutting them at the as-of would take the sale
+    proceeds out of a deal the table calls sold. They are listed in
+    ``diagnostics["sold_after_as_of_full_life"]``; whether they belong in the
+    Sold table at this quarter at all is a decision for the owner of the report.
+    """
+    if as_of is None:
+        return None
+    if table == SOLD and ident.sale_date and ident.sale_date > as_of:
+        return None
+    return as_of
+
+
+def proceeds_to_date(ident: DealIdentity, acct: pd.DataFrame, table: str,
+                     as_of: Optional[_dt.date] = None) -> Optional[float]:
+    """Cash returned to PSC, in dollars, through the as-of date.
+
+    The column is headed *To-Date*, and "to date" means to the quarter being
+    reported -- see ``cashflow_cutoff``, which also names the one exemption. It
+    used to carry NO cutoff, so a 26Q2 report counted July and August. On a
+    CURRENT deal it is the four distribution subtypes footnote (1) names; on a
+    SOLD deal it is every distribution, because the deal is finished and the
+    question is the total.
     """
     rows = _deal_accounting(acct, ident.investment_id)
     if rows.empty:
         return None
     rows = rows[rows["InvestorID"].map(is_psc_side)]
+    cut = cashflow_cutoff(ident, table, as_of)
+    if cut is not None and not rows.empty and "EffectiveDate" in rows.columns:
+        when = pd.to_datetime(rows["EffectiveDate"], errors="coerce")
+        rows = rows[when <= pd.Timestamp(cut)]
     if rows.empty:
         return None
     if table == SOLD:
@@ -1186,8 +1259,12 @@ def act_year_one_coc_roe(
     )
 
 
-def realized_irr(ident: DealIdentity, acct: pd.DataFrame) -> Optional[float]:
+def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
+                 cutoff: Optional[_dt.date] = None) -> Optional[float]:
     """XIRR over PSC's contributions and distributions. ONE ENGINE: ``metrics.xirr``.
+
+    ``cutoff`` is ``cashflow_cutoff`` for the quarter: flows dated after it are
+    not in this quarter's figure.
 
     Commitment rows are pledges and are excluded — including them dates the
     first cash flow at the signing rather than the funding and shifts the IRR.
@@ -1203,6 +1280,8 @@ def realized_irr(ident: DealIdentity, acct: pd.DataFrame) -> Optional[float]:
         d = _to_date(r.get("EffectiveDate"))
         a = _to_float(r.get("Amt"))
         if d is None or a is None:
+            continue
+        if cutoff is not None and d > cutoff:
             continue
         flows.append((d, a))
     if len(flows) < 2:
@@ -1299,6 +1378,14 @@ def build_investment_metrics(
             diag.setdefault("excluded_deals", []).append(
                 {"vcode": ident.vcode, "name": ident.name,
                  "reason": cfg.EXCLUDED_DEALS[ident.vcode]})
+            continue
+        # QUARTER INTEGRITY: a deal not yet invested at the as-of is not in that
+        # quarter's report. Reported, not dropped silently.
+        if ident.invest_date is not None and ident.invest_date > as_of:
+            diag.setdefault("not_yet_invested", []).append(
+                {"vcode": ident.vcode, "name": ident.name,
+                 "invest_date": ident.invest_date.isoformat(),
+                 "as_of": as_of.isoformat()})
             continue
         table = classify(ident, as_of)
         ident_by_vcode[ident.vcode] = ident
@@ -1596,7 +1683,7 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     # Computed ONCE and shared: `pref_and_first_loss` consumes this list and
     # the row publishes it, and building it twice per deal was measurably the
     # third-largest cost in the profile.
-    cap_alts = capitalization_sources(ident, acct, commitments)
+    cap_alts = capitalization_sources(ident, acct, commitments, as_of=as_of)
     pref_usd, floss_usd, cap_basis = pref_and_first_loss(
         ident, acct, commitments, sources=cap_alts)
     lien_usd, lien_basis = first_lien(ident, loans, isbs_interim_bs, children,
@@ -1627,7 +1714,7 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
     pct = lambda v: (None if (v is None or not total_size) else v / total_size)  # noqa: E731
 
     funded = _funded_to_date(ident, acct, as_of)
-    proceeds = to_m(proceeds_to_date(ident, acct, table))
+    proceeds = to_m(proceeds_to_date(ident, acct, table, as_of))
     act_yr1_roe, yr1_roe_basis = act_year_one_coc_roe(ident, acct, as_of)
     act_yr1, yr1_basis = act_year_one_coc(ident, acct, funded)
     act_yr1_on_commit = (None if (pref_usd in (None, 0) or funded in (None, 0))
@@ -1747,8 +1834,15 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
             row["realized_irr"] = None
             row["basis"]["realized_irr"] = cfg.REALIZED_IRR_SUPPRESSED[ident.vcode]
         else:
-            row["realized_irr"] = realized_irr(ident, acct)
+            row["realized_irr"] = realized_irr(
+                ident, acct, cashflow_cutoff(ident, table, as_of))
             row["basis"]["realized_irr"] = "XIRR over PSC contributions and distributions"
+            if ident.sale_date and ident.sale_date > as_of:
+                diag.setdefault("sold_after_as_of_full_life", []).append(
+                    {"vcode": ident.vcode, "name": ident.name,
+                     "sale_date": ident.sale_date.isoformat(),
+                     "reason": "sold after the as-of; proceeds and realized IRR "
+                               "are whole-life, as the reference's footnote (4)"})
     return row
 
 
@@ -1855,7 +1949,9 @@ def _ordered(rows: List[dict], order: List[str], diag: dict, table: str) -> List
     if extra:
         diag.setdefault("not_in_reference_order", []).extend(
             {"table": table, "vcode": r["vcode"], "name": r["name"]} for r in extra)
-    missing = [v for v in order if v not in {r["vcode"] for r in rows}]
+    not_yet = {x["vcode"] for x in diag.get("not_yet_invested", [])}
+    missing = [v for v in order
+               if v not in {r["vcode"] for r in rows} and v not in not_yet]
     if missing:
         diag.setdefault("reference_rows_absent", []).extend(
             {"table": table, "vcode": v} for v in missing)
