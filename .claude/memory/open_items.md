@@ -1825,6 +1825,41 @@ locally, so a local comparison proves nothing. This needs
 `scripts/` run against production (the image ships `scripts/` since `v474`). Until then,
 treat the two Debt columns as potentially different numbers.
 
+### 8.4 Two capitalization engines, measured — OPEN (Oct 6 2026)
+`compute.get_deal_capitalization` (Dashboard KPIs, Deal Analysis header, the assistant's
+`get_capitalization`) vs `one_pager.get_capitalization_stack` (One Pager, both Snapshot
+pages, Valuation Summary). Measured on local data (recent production copy) over the
+Dashboard's own 62 deals, the cap stack at 2026-Q4 (after every transaction):
+**pref and partner equity agree on all 62; debt on 60.** The two that differ, both deals
+with no ISBS debt, so both fall back to MRI origination amounts:
+
+| Deal | compute | cap stack | Cause |
+|---|---|---|---|
+| Burton (P0000109) | 0 | 75,302,500 | compute's child lookup finds no children |
+| OREI (P0000033) | 69,047,000 | 34,851,000 | compute adds the parent loan AND both child loans |
+
+- **Burton is a CHILD-LOOKUP defect, and it reaches past capitalization.**
+  `consolidation.get_property_vcodes_for_deal` / `build_property_map` match children on
+  the parent's `Investment_Name` only; `one_pager._child_vcodes_for_parent` also matches
+  the parent's own `Portfolio_Name` ("Burton Retail Portfolio" in "Burton Portfolio").
+  The narrow one feeds the Dashboard's child exclusion (`get_child_vcodes`) -- so
+  Burton's 3 buildings are listed as Dashboard deals of their own, carrying its 75.3M
+  of debt; the portfolio total is right only by accident -- plus occupancy roll-ups,
+  `valuation_debt_service`, ownership, financials and the assistant. Across all 134
+  deals the two lookups disagree on 2: Burton, and P0000073 (consolidation calls the
+  OTHER "Donald Lynch", P0000049, its child; no debt moves). Fix: ONE child lookup.
+  Measure every consumer before and after -- the Dashboard deal count drops by 3.
+- **OREI is a DATA question (Jim/Charlene):** loan 313 on the parent (34,851,000) and
+  loans 285 + 286 on Whitney Manor / Westchase (10,901,000 + 23,295,000 = 34,196,000),
+  all active. Same debt recorded at two levels, or two layers? compute says 69.0M,
+  the cap stack 34.9M.
+- The Dashboard's `/init-stream` calls compute WITHOUT `isbs_raw` while
+  `dashboard_service` passes it, into the same cache key; identical figures on this
+  data, but whichever runs first after a restart decides.
+- Otherwise the two differ only in code paths no current data exercises (abs() vs
+  sign-netted reversals, no sold-deal debt suppression, no date). After the lookup fix
+  and the OREI answer, retire one; nothing measured argues for keeping two.
+
 ### 8.3 Prior-year figures: two SOURCES (not two engines) — DECIDED Oct 6 2026
 **Jim, Oct 6 2026: "use MRI valuations as the prior-year source."** The two summary tabs
 now read last year through `valuation_service._prior_rows` -- the Committee Summary's own
