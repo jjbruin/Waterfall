@@ -338,6 +338,27 @@ ROW_ORDER_SOLD = [
 FIRST_LIEN_BASIS = "summed_facility"
 FIRST_LIEN_FALLBACKS = ("earliest_loan", "earliest_isbs")
 
+#: MAY THE EARLIEST BALANCE-SHEET ROW STAND IN FOR A MISSING LOAN RECORD?
+#:
+#: NO. Measured at as-of 2026-06-30 against the reference: of the seven deals
+#: that reach this fallback (Life Storage / Pegasus, Jefferson Oakhurst,
+#: Jefferson Centura, Shoppers World, Camarillo, Willowdale, Village Square)
+#: NONE ties the reference at +/-$0.05M. The differences run from -$35.1M to
+#: +$22.2M, and four of the seven are sold deals whose balance sheet stops years
+#: before the sale -- the first row on file is whatever was outstanding when the
+#: books begin, not what the deal was capitalised with. A number that is wrong on
+#: every deal it touches, and looks like any other, is worse than a dash.
+#:
+#: With this False a deal with no usable loan record prints an em dash for First
+#: Lien; Total Size and the three "% of Cap." cells cascade to dashes exactly as
+#: they do for any other unknown first lien, and the basis reads "none". The ISBS
+#: figure is still computed and published under ``alternates.first_lien``, and
+#: every deal it was withheld from is listed in
+#: ``diagnostics["first_lien_isbs_withheld"]`` -- the engine flags, it never
+#: drops. Set True to restore the fallback (``earliest_isbs`` then follows the
+#: loan bases in ``FIRST_LIEN_FALLBACKS``).
+FIRST_LIEN_ISBS_FALLBACK = False
+
 #: THE FIRST LIEN IS THE LOAN THAT WAS ORIGINATED FIRST, when the data can say so.
 #:
 #: "First lien" means the senior mortgage, and seniority is settled at
