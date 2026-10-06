@@ -36,6 +36,9 @@ A "From SharePoint" button beside each importer's own file input
   signed-in only); `--inject=scope|token|entry|fork|open` each fail it.
 
 ### What must be registered in Entra (SPA platform) before it works
+Jim sent IT the corrected list (both platforms, all four URIs below) on Oct 6 2026;
+awaiting IT's confirmation, along with the secret (by Mimecast), the user
+assignments and the exact Graph permissions granted.
 - `https://app-waterfall-dev-v2.icyplant-026fb2db.eastus.azurecontainerapps.io/msal-redirect.html`
 - `http://localhost:5173/msal-redirect.html`
 
