@@ -24,8 +24,8 @@ fixed, plus `MANUAL_RATIO_SEEDS` and its expiry), `onepager_audit_q1_2026.md`.
 
 ## 21. Sold deals still carry stale debt / loans — HELD, off the 26Q3 critical path (Oct 6 2026)
 
-**Held by Charlene's call, Oct 6 2026:** none of this changes Investment Metrics, the One
-Pager's PRINTED figures or the Portfolio Snapshot, so it waits — but it has to be solved,
+**Held by Charlene's call, Oct 6 2026:** none of this changes Investment Metrics or the One
+Pager's PRINTED figures, and (except 21.6) not the Portfolio Snapshot, so it waits — but it has to be solved,
 because the leaks below sit in Deal Analysis, the assistant, the One Pager's loan-terms text
 and the valuation cycles. Source: `payoffs_to_book.csv` (Downloads): 10 sold / paid-off deals
 plus the Berger parent roll-up, whose ISBS 2150/2152 balances and MRI loan rows are still
@@ -41,7 +41,7 @@ Paid Off date is present).
 
 **Already correct, verified, no action:** Dashboard (KPIs, Capitalization, Maturity buckets —
 KPI debt outstanding $2,042.4M, none of the 11 in any list), Surveillance, both Dashboard Excel
-exports, Portfolio Snapshot (nothing for any of the 11 across all 147 investors at 26Q3), the
+exports, Portfolio Snapshot (for 10 of the 11 — EXCEPT Donald Lynch's parent, see 21.6, which it still lists), the
 One Pager's Debt cell (`debt_display` None once sold as of the quarter), Reports / PE exposure
 and Sold Portfolio (read no debt), Ownership, Review Tracking (lists the deals, no debt fields),
 Investment Metrics (First Lien is the loan at ORIGINATION, not a balance — Berger $197.8M,
@@ -103,6 +103,31 @@ sold 2026-09-04**, and Bearfoot's stored NAV carries **$11,973,158.81 of debt**
 all 11 were — because they were marked sold by the time it was seeded (production holds only
 Donald Lynch of the 11). **Fix:** seed by the cycle's own as-of (sold on or before it, not sold
 today) — the Snapshot's `is_sold_as_of` is the test to reuse — then reseed.
+
+### 21.6 Donald Lynch's PARENT (P0000049) is not marked SOLD — the Snapshot still lists it — DO NOT HOLD
+Donald Lynch is two vcodes under InvestmentID MCCORD: **P0000073** (the child, Property_Count 0)
+is `Sale_Status = SOLD`, Sale_Date 9/4/2026; **P0000049** (the parent, Property_Count 1) carries
+the same Sale_Date but a BLANK `Sale_Status` (local copy pulled Oct 5; **production NOT checked —
+the admin token had expired**, so confirm in Data Explorer: `deals`, vcode P0000049).
+`payoffs_to_book.csv` lists only the child, so the audit above followed P0000073 and missed this.
+What the blank marker does at 26Q3:
+* **Portfolio Snapshot lists Donald Lynch as a live deal** on all four subtabs (summary,
+  financial, operating, loan) — for at least BCA, BRECO, DCXVIA, DCXVIB, FNKI and INVF9 (the list
+  was truncated at six) — with `debt` / `debt_display` **$0.0**, a **7/1/2028 maturity**
+  inherited from the child's loan, 63 months owned and a look-through %. `is_sold_as_of` returns
+  False for P0000049 at 26Q3 and True for P0000073. Verified by the same rule at 26Q2 (correctly
+  still listed).
+* **One Pager, P0000049:** 26Q3 `debt_display` = 0.0, `sold_suppressed` False, loan terms
+  "3.95% | Fixed | 7/1/2028" (the child's). P0000073's own page is right (blank at 26Q3, $9,684,943
+  at 26Q2).
+* **Dashboard** hides it only because `get_child_vcodes` classes BOTH vcodes as children — not
+  because of the sold rule; fragile.
+* **Investment Metrics is right** (it pairs the two rows and takes SOLD from the child).
+**Cause:** `Sale_Status` is not in any MRI feed — it lives in the `deals` table (from
+`investment_map.csv`) and an MRI refresh PRESERVES it, so it has to be set by hand on BOTH rows.
+**Fix (data, one field):** set `Sale_Status = SOLD` on P0000049. **Closed when:** the Snapshot at
+26Q3 no longer lists Donald Lynch for any investor while 26Q2 still does. Unlike the rest of this
+item it changes what the Snapshot prints, so it should not wait with the others.
 
 **Owner:** Charlene / Jim for the MRI payoffs; code fixes unassigned.
 
