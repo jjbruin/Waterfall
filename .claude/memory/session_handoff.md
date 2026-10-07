@@ -1,4 +1,85 @@
-# Session Handoff — through Oct 5 2026 (v566 live)
+# Session Handoff — through Oct 7 2026 (v600 live)
+
+## Oct 7 2026 — v589-v600: EXPENSES, VALUATION IMPORT RULES, BOARD PHASE 1 AND THE DECK VIEWER
+
+**Live: `v600` = `c04bfe4`. `main` = `f82e002` (v600 + its docs), level with live.** Every
+revision today has an entry in `deploy_history.md`; this is the map, not the detail.
+
+### What shipped
+
+| Rev | What | Detail in |
+|---|---|---|
+| v589 | Expenses: "Add an expense" as three equal options; invoice extraction inside the add pop-up | `expense_reporting.md` |
+| v590, v591 | iPhone/iPad home-screen icon "PSC Expenses"; missing static files now 404 instead of the SPA (that is what made iOS offer it) | deploy_history |
+| v592 | Jack's import rules: only 4-digit accounts import; the 2027 Budget column's debt service is the budget's; loss to lease (4042) nets into 4010 | `valuation_budget.md` |
+| v593 | Receipts list shows only receipts needing attention, deletable; the CFO's asks -- emails on submit/decide/approve/coding, a coding REVIEW step (CFO approves), account names, a real dropdown, payroll totals | `expense_reporting.md` |
+| v594 | PE exposure future funding: variant D (split by what is still owed only at an override); Brainerd overrides entered on production | `board.md`, `pe_exposure.md` |
+| v595 | (Charlene) U/W ROE un-gated; no-capital deal a dash | deploy_history |
+| v596 | Cell phone reimbursement: $50/month, CFO-set rate, paid in the payroll batch automatically from Oct 2026, cell bills declined at entry | `expense_reporting.md` |
+| v597 | (Charlene) Portfolio Snapshot Loan: typed LTV / DSCR / Debt Yield seeds removed | deploy_history |
+| v598 | Board Phase 1: pp. 26, 27, 29-31 views; Investment Metrics' Apple exclusion dated from its 28 Jan 2026 realization | `board.md` |
+| v599 | (Charlene) Investment Metrics reads a two-vcode investment's deal terms across both (Donald Lynch) | deploy_history |
+| v600 | Board: an open meeting shows as the DECK -- pages on the January deck's canvas, loaded once, flipped without recalculating | `board.md` |
+
+### Decisions Jim made today (recorded where they live)
+- Board p.27 keeps ONE as-of per schedule -- no "cash through" date (`board.md`).
+- Brainerd I and II are ONE deal on the Board pages (`board.md`).
+- Future funding: variant D (`board.md`).
+- Cell phone: everyone by default, CFO can exclude; from October 2026; cell bills only.
+- The coding review step: the CFO approves.
+
+### Waiting on someone else
+- **MRI data owner -- `Property_Count`**: Apple Self Storage P0000003 1 -> 16, PMAT Midwest
+  P0000036 1 -> 3, Prestige P0000080 1 -> 12. Then p.26 gives 98 properties / 23 wholly
+  owned, the deck's figures.
+- **MRI -- asset types and deal types**: workbook `docs/board/MRI classification changes -
+  Jan 2026 board deck.xlsx` (git-excluded, local only). Three `Asset_Type` changes (Burton,
+  Merle Hay, 5-15 Broad); `Investment_Strategy` is blank on all 199 deals. When it is
+  populated, check the Portfolio Snapshot's `DEAL_TYPE_MAP` -- it has no "Opportunistic".
+- **Accounting -- five questions** (email drafted in session for Jim to send): may
+  remaining-to-fund go negative (Apple Bales, Middle Island); do Bearfoot / Lynch commitments
+  count at 12/31/25; why Pontchartrain shows $2.25M unfunded in their tracker and none in
+  the app; plus the rest of the draft. JB Fair / Nottingham need their own DATED override
+  sets for accounting's later corrections.
+- **AM -- a canonical operating-partner list**: needed for p.24, and it would also make
+  pp. 29-30 readable -- Investment Metrics carries full legal names ("Evergreen DevCo,
+  Inc.") so the deck table sets at ~9.4px on the canvas.
+- **Charlene -- her `v597` docs** (`31b0a97`, on `fix/snapshot-loan-remove-typed-ratios`,
+  NOT on main). When merged it should REPLACE my "as observed" `v597` line in
+  deploy_history; expect a conflict there.
+- Drafts handed to Jim this session (not sent by me): the email to Jack on the import
+  rules, the reply to the CFO, the accounting questions, the expense rollout email with
+  new screenshots (`docs/expense_rollout/`).
+
+### Next, in the Board plan
+Phase 1 still open: **p.23 exposure by asset class** (status "Ready now" -- PE exposure x
+`Asset_Type`; reconciled in `board.md`, differs only by MRI classification), **p.24** (needs
+the partner list), **p.25 map**, **p.28 debt / occupancy / DSCR**. Each new view: compose
+engines in `board_views_service`, add a slide component under `components/board/`, set
+`"view": True` in `SCHEDULES`, extend `board_views_check`. The deck picks it up by itself.
+Phase 2 (track record) can start any time; plan doc linked at the top of `board.md`.
+
+### Lessons today
+1. **Two people deployed tonight, twice in the gap.** Charlene's v597 went live unmerged
+   between my P1 and my build; her v599 between my P1 and my update. Re-running P1 caught
+   both (v597 was merged so v598 kept it; v599 made my build redundant, so I did not
+   deploy it). Say "deploying" to each other first.
+2. **`git push origin main` is refused by the permission classifier in this setup.** Commit
+   locally, ask Jim to push, then deploy from the pushed SHA -- never from an unpushed one.
+3. **Windows Python cannot read Git Bash's `/tmp`** -- one split commit went wrong that way
+   (redone before push). Use the scratchpad path for anything Python reads.
+4. **A full `data_service.get_data()` in the container is OOM-killed** -- check imports,
+   routes and config there; reconcile figures locally against production read-only.
+5. **The Browser pane**: zoom is unsupported and an emulated viewport fires no `resize`;
+   verify layout by measuring the DOM (clipping, overflow, fit) rather than by eye.
+
+### Local state
+- A local-only Board meeting "Jan 2026 Board (local test)" exists in `waterfall.db`.
+- The flask-api and vue-dev preview servers may still be running (stopping them was refused).
+- `feat/board-phase1-views` and `feat/board-deck-viewer` are merged; delete when convenient.
+
+---
+
 
 **Later Oct 5: `v566` = `96534b3`** added U.S. Treasury par yields (`UST_1M`..`UST_30Y`;
 the 10-year is `UST_10Y`, 4.44% at 6/30/26) to the rates table and batched its inserts
