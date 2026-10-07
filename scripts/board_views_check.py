@@ -181,6 +181,66 @@ from flask_app.services import board_service  # noqa: E402
 flagged = {s["key"] for s in board_service.SCHEDULES if s.get("view")}
 chk("the catalog marks exactly the schedules that have a view", flagged == set(bv.VIEW_KEYS), flagged)
 
+print("\n6. The deck layout (pp. 29-31) is the server's, and loses nothing")
+import investment_metrics_config as imcfg  # noqa: E402
+cfg_keys = {"current": [c[0] for c in imcfg.COLUMNS_CURRENT], "sold": [c[0] for c in imcfg.COLUMNS_SOLD]}
+for t in ("current", "sold"):
+    gone = [k for k in bv.DECK_COLUMNS[t] if k not in cfg_keys[t]]
+    chk(f"every {t} deck column is an Investment Metrics column", not gone, gone)
+    chk(f"...in Investment Metrics' own order ({t})",
+        [k for k in cfg_keys[t] if k in bv.DECK_COLUMNS[t]] == list(bv.DECK_COLUMNS[t]))
+chk("the deck drops DMA/Location and the Year-1 CoC columns, as the January deck does",
+    not {"dma", "proj_yr1_coc", "act_yr1_coc"} & set(bv.DECK_COLUMNS["current"] + bv.DECK_COLUMNS["sold"]))
+
+
+def im_payload(n_cur, n_sold, keys=None):
+    def cols(t):
+        return [{"key": k, "row1": "", "row2": "", "row3": k, "width": 20, "align": "center"}
+                for k in (keys or cfg_keys)[t]]
+    return {"as_of": "2025-12-31",
+            "current": {"rows": [{"vcode": f"C{i}"} for i in range(n_cur)], "columns": cols("current")},
+            "sold": {"rows": [{"vcode": f"S{i}"} for i in range(n_sold)], "columns": cols("sold")}}
+
+
+lay = bv.deck_layout(im_payload(53, 19))
+cur = [x for x in lay["slides"] if x["table"] == "current"]
+sold = [x for x in lay["slides"] if x["table"] == "sold"]
+chk("53 current deals -> two pages (30 + 23), as the deck's pp. 29-30",
+    [(x["first"], x["last"]) for x in cur] == [(0, 30), (30, 53)], cur)
+chk("19 exited deals -> one page", [(x["first"], x["last"]) for x in sold] == [(0, 19)])
+chk("every row is on exactly one page, in the engine's order",
+    sum(x["last"] - x["first"] for x in lay["slides"]) == 72
+    and all(a["last"] == b["first"] for a, b in zip(cur, cur[1:])))
+chk("the Total goes on each table's LAST page only",
+    [x["is_last"] for x in cur] == [False, True] and [x["is_last"] for x in sold] == [True])
+chk("titles: the first page, then Cont'd.",
+    cur[0]["title"] == "Current Portfolio*" and cur[1]["title"].startswith("Current Portfolio, Cont")
+    and sold[0]["title"] == "Exited Investments*")
+chk("the footnote carries the schedule's ONE as-of date, written as the deck writes it",
+    "closed through 12/31/25. Cash received through 12/31/25." in cur[0]["footnote"])
+chk("exactly 30 rows -> one page, not an empty second one",
+    len([x for x in bv.deck_layout(im_payload(30, 1))["slides"] if x["table"] == "current"]) == 1)
+chk("no rows -> still one page, so the table and its Total are shown",
+    len([x for x in bv.deck_layout(im_payload(0, 0))["slides"] if x["table"] == "sold"]) == 1)
+renamed = {"current": [k if k != "uw_irr" else "uw_irr_v2" for k in cfg_keys["current"]], "sold": cfg_keys["sold"]}
+lay2 = bv.deck_layout(im_payload(5, 5, renamed))
+chk("a column the payload no longer carries is REPORTED, not silently dropped",
+    lay2["missing_columns"] == ["current.uw_irr"], lay2["missing_columns"])
+
+print("\n7. The screen turns pages without asking the server again")
+deck_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "BoardDeck.vue"), encoding="utf-8").read()
+gets = [ln.strip() for ln in deck_src.splitlines() if "api.get(" in ln]
+chk("the deck asks the server for one thing only: a schedule's view",
+    len(gets) == 1 and "/schedules/${s.key}/view" in gets[0], gets)
+chk("...and keeps it, keyed by meeting, schedule AND as-of date (a new date refetches)",
+    "`${props.meeting.id}|${s.key}|${s.as_of}`" in deck_src and "CACHE.has(k)" in deck_src)
+slide_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "InvestmentSummarySlide.vue"),
+                 encoding="utf-8").read()
+chk("investment-summary cells are written by Investment Metrics' own formatter",
+    "from '@/utils/investmentMetricsFormat'" in slide_src and "cellText(r, c)" in slide_src)
+chk("...and its columns and pages come from the server's layout, not the screen",
+    "view.deck.columns" in slide_src and "props.slide.first" in slide_src)
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)
