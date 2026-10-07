@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v588** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v589** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v588 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v589 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,24 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v589` = `75bb1d4` (EXPENSES ON A PHONE, AND THREE EQUAL WAYS TO ADD. Merge of
+    `feat/expenses-mobile`: `b0cf454` -- iPhone/iPad receipts from Photos or the camera
+    (`accept` carries `image/*`; touch gets "Take a photo" instead of "Upload a folder"; iOS's
+    `image.jpg` renamed "Photo <date time>"; the form stacks above the receipt below 900px, a
+    cascade bug; the sidebar folds on a phone) -- and `8f5f2b7` -- three equal cards above the
+    lines (Add an expense / Upload receipts / Upload a folder; Photos or files / Take a photo on
+    touch), and the expense pop-up uploads and READS the receipt through the same `/receipts` +
+    `/extract` calls; typing wins, the receipt fills blanks, a differing amount is said; Cancel
+    asks and removes what the pop-up added. Server change: a duplicate upload returns its
+    `receipt_id`. Feature, not a symptom repair. Span vs live `dbdb1ab`: `f2cb71f` (Charlene's
+    v588 docs) and these. Build `cap2`, 2m53s, Succeeded; tag locked; Healthy at 100%.
+    Guardrails: `expense_add_options_check` 37/0 (12 injections each fail),
+    `expense_mobile_check` 23/0, expense coding 53, distance 26, phase4 23, receipt 53, report
+    98, `section_access_check` 274/0. SERVED: entry `main-BCIdc2pK.js` -> `ExpensesView-DuqHrIX7.js`
+    carries "Add to this report", "Have the receipt or invoice", "is not the receipt"; `/` 200,
+    `/auth/me` 401 unauthenticated; 0 errors in the last 200 log lines. Authenticated click-through
+    was done locally (desktop + 375px), not on production. **Rollback** is FORWARD:
+    `--image acrwaterfalldev.azurecr.io/waterfall-xirr:dbdb1ab --revision-suffix v590`.)
   - `v588` = `dbdb1ab` (REVERT OF `e9c63a3`: THE ONE PAGER'S PE-BLOCK COUPON IS WATERFALL-FIRST
     AGAIN. Charlene's call, Oct 7 2026: "these inconsistencies are expected". `e9c63a3`
     (Sep 30, in `v547`) had made the PE Performance block's Coupon read MRI `deal_terms.pe_coupon`
