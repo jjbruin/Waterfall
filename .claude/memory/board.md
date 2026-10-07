@@ -103,6 +103,12 @@ Open, before the Phase 1 views are built (decisions, not code):
    Vastgood / Vastgood Properties LLC, Apple / Apple Self Storage, Bertram and DiMarco).
 
 ## Phase 1 views: pages 26, 27, 29-31 (Oct 7 2026; live `v598`)
+**Shown as a deck since `v600`** (`components/board/BoardDeck.vue` and the slide components):
+each schedule is a page on the deck's 1100 x 825 canvas, scaled to the window; figures load
+once per meeting + schedule + as-of and page turns never call the server. Layout decisions
+(titles, the deck's narrower column set, 30 rows a page, footnotes) live in
+`board_views_service`, not the screen. Pages 29-30 set at ~9.4px on the canvas because
+Investment Metrics carries full legal partner names; the page-24 canonical partner list fixes it.
 `GET /api/board/meetings/<id>/schedules/<key>/view`, at the meeting's as-of for that
 schedule; `services/board_views_service.py` composes, computes nothing. pp.29-31 ARE the
 Investment Metrics payload (through `investment_metrics_service.get_report`, the route's

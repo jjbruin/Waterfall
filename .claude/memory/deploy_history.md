@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v599** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v600** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v599 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v600 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,24 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v600` = `c04bfe4` (BOARD: THE MEETING AS A DECK. Merge of `feat/board-deck-viewer`
+    (`3407f2d`): an open meeting shows its schedules as deck pages on the January deck's 4:3
+    canvas (green rule, title, banded tables, INTERNAL USE ONLY, page number), scaled to the
+    window, with a page rail, arrow keys and full screen; narratives with text are pages too;
+    set-up and narrative on their own tabs. Every schedule's figures load once in the background
+    and are kept by meeting + schedule + as-of -- a page turn never calls the server (local: 15
+    turns, 0 calls). The layout is the server's (`board_views_service`: SLIDE_TITLES,
+    DECK_COLUMNS -- no DMA, no Year-1 CoC -- ROWS_PER_SLIDE 30, footnotes on the one as-of). No
+    figure moves; not a symptom repair. Span vs live `53138f8` (v599): this, `82f4885`
+    (Charlene's v599 docs, reviewed), `842907f` / `69bc1ae` (decision docs). Jim pushed main.
+    Build `cape`, 2m58s, Succeeded; tag locked; P1 re-run (still v599); Healthy at 100%.
+    Guardrails: board_views 53 (3 new injections), board_access 167, section_access 274,
+    investment_metrics 240, one_engine_per_number 26; vue-tsc 30 = the pre-existing count.
+    SERVED: `BoardView-BNAUp8Om.js` from `main-eZT1xNnX.js` (INTERNAL USE ONLY, the load-once
+    line, reviewer notes, imports `investmentMetricsFormat`); the view route 401 without a token.
+    IN THE CONTAINER (no data load): titles, 30 rows a page, no deck column missing, 53 + 19 ->
+    pp. 29/30/31. **Rollback** is FORWARD: `--image acrwaterfalldev.azurecr.io/waterfall-xirr:53138f8
+    --revision-suffix v601`.)
   - `v599` = `53138f8` (INVESTMENT METRICS READS A TWO-VCODE INVESTMENT'S DEAL TERMS ACROSS
     BOTH VCODES. Charlene Oct 7 2026. Donald Lynch is two vcodes sharing InvestmentID MCCORD and
     each holds some of the terms: `P0000049` has `uw_irr` and `proj_yr1_coc`; its sold twin
@@ -390,7 +408,7 @@ entry pointing at it. Nothing here was summarised.
     `/api/board/.../view` 401 without a token. IN THE CONTAINER (no data load -- a full load is
     OOM-killed): the view route and both IM routes registered, Apple `from` 2026-01-28, three views
     flagged. Reconciliation to the deck: `board.md`. **Rollback** is FORWARD: `--image
-    acrwaterfalldev.azurecr.io/waterfall-xirr:965d3a1 --revision-suffix v599`.)
+    acrwaterfalldev.azurecr.io/waterfall-xirr:965d3a1 --revision-suffix <next unused>`.)
   - `v597` = `965d3a1` (PORTFOLIO SNAPSHOT LOAN: TYPED RATIO SEEDS REMOVED -- Charlene's
     `fix/snapshot-loan-remove-typed-ratios`, live 2026-10-07 20:56 UTC, build `capa`. Recorded from
     what P1 showed at `v598`, not by its deployer: it was deployed unmerged and merged to main at
