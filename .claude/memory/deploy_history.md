@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v598** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v599** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v598 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v599 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,35 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v599` = `53138f8` (INVESTMENT METRICS READS A TWO-VCODE INVESTMENT'S DEAL TERMS ACROSS
+    BOTH VCODES. Charlene Oct 7 2026. Donald Lynch is two vcodes sharing InvestmentID MCCORD and
+    each holds some of the terms: `P0000049` has `uw_irr` and `proj_yr1_coc`; its sold twin
+    `P0000073` has `pe_coupon` (9%), `irr_lookback` (16%), `pe_split_capital` (30%) and
+    `econ_occ_at_close`, plus the only loan, every ISBS row and an identical copy of the waterfall.
+    The report read `dt_index.get(ident.vcode)` only, so Pref Coupon, Residual CF Split and IRR
+    Lookback printed dashes for terms MRI holds, and the MRI gaps file listed them as missing.
+    `investment_metrics._identity_terms` makes the terms follow the identity merge: the PRIMARY
+    vcode wins, a twin only fills a field the primary leaves blank, every fill is named in
+    diagnostics (`terms_from_twin`) and every disagreement too (`terms_twin_conflict`). Not a
+    symptom repair: one general rule, measured on production over all 20 investments with more
+    than one vcode; one fills anything (Donald Lynch, four fields) and none conflicts. MEASURED
+    (local copy, whole-report before/after at 26Q2 and 26Q1): exactly one row changes, in exactly
+    three fields, each tying the 6/30/26 reference; the other 75 rows are identical field for
+    field. The Current Total row moves with them (local: split 34.563% -> 34.532%, lookback
+    9.677% -> 9.721%, coupon 8.8468% -> 8.8479%). VERIFIED ON v599 WITH LIVE DATA: Donald Lynch
+    coupon 9%, split 30%, lookback 16%; uw_irr 22%, proj_yr1 10%, act_yr1 12.74%, act_since 13.64%,
+    first lien 8.651, pref 4.935, first loss 2.115 unchanged; `terms_from_twin` names the four
+    fills, `terms_twin_conflict` empty; 53 current + 23 sold rows. Live Current Total: coupon
+    8.8479% and lookback 9.7206% equal the local prediction exactly; split is 35.48% live (the
+    local copy's split differs on some other deal), and the live BEFORE value was not measured.
+    Span vs live `850e9e9`: `e369612` (docs) and this. Build `capc`, 2m53s, Succeeded; tag locked;
+    Healthy at 100% traffic. Guardrail `scripts/investment_metrics_check.py` section 24 (11 checks,
+    both directions); re-injecting the primary-only read fails 6, making the twin override the
+    primary fails 2. 240 checks pass; one_engine 26, board_views 35, board_access 167. **NOT IN
+    THIS CHANGE, on purpose:** Donald Lynch's Proj CoC Since Close stays a dash. Its ISBS rows are
+    all under `P0000073` and would give 24.2% against the reference's 9.2%; that gap needs
+    explaining first. **Rollback** is FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:850e9e9 --revision-suffix v600`.)
   - `v598` = `850e9e9` (BOARD PHASE 1: PAGES 26, 27 AND 29-31, AND APPLE'S EXCLUSION DATED. Merge
     of `feat/board-phase1-views`: `769b3ee` Investment Metrics' cache moves into
     `investment_metrics_service.get_report` (no figure moves); `066f747` Apple's EXCLUDED_DEALS
