@@ -1990,16 +1990,20 @@ to the deal level"); a sub-portfolio's FORECASTS come from the properties only. 
 propose a new child rule or a "properties-else-parent" loan rule** -- both were proposed
 below and Jim declined. `fix/one-child-lookup` is DROPPED (left unmerged). Under the
 February logic the findings below are DATA problems:
-- **OREI:** LoanID 313 on the parent duplicates the two property loans (Jim: each
-  property has its own loan). Remove/close 313 in MRI -> 34,196,000. Owner: Charlene.
-- **Burton:** its buildings' Portfolio_Name is "Burton Portfolio", not the parent's
-  Investment_Name "Burton Retail Portfolio", so the February logic never sees Burton as
-  a portfolio (Dashboard lists the buildings; Deal Analysis models no loans, §8.5).
-  Portfolio_Name is app-managed. CAUTION: once recognised, the forecast comes from the
-  buildings only, and Burton's is on the parent -- decide where it lives first.
-- Still worth its own one-line fix: `ownership_service` calls
-  `get_property_vcodes_for_deal(inv, entity_id)` REVERSED; the error is swallowed, so
-  every portfolio is seeded without its children.
+- **OREI:** LoanID 313 on the parent duplicated the two property loans. **Jim DELETED it
+  in MRI, Oct 7 2026.** Production's `loans` table still held 285, 286, 313 that day --
+  it drops out at the next Refresh All Data from MRI -> 34,196,000 in both engines.
+- **Burton (Jim, Oct 7 2026): "The Burton Properties will each have their own forecasts
+  and budgets which will have to be rolled up to the portfolio level to calculate the
+  waterfall and NAV calculation."** That IS the February rule; it applies once the
+  buildings' Portfolio_Name reads "Burton Retail Portfolio" (today "Burton Portfolio";
+  app-managed). ORDER: load the three buildings' forecasts FIRST (production Oct 7: 60
+  rows, all on the parent P0000109, none on P0000111-113), then rename -- renaming
+  first blanks Burton's projection. No code change needed.
+- `ownership_service`'s reversed call: fixed on `fix/ownership-child-call` (`c5111fe`).
+- **P0000049 IS marked SOLD on production** (9/4/2026). The "blocker" recorded above
+  came from the LOCAL copy pulled Oct 5, where Sale_Status was still blank -- stated as
+  fact without checking production. Not a blocker.
 - The One Pager's Aug 6-7 helper (`_child_vcodes_for_parent`, the "Burton exception")
   and `valuation_service._child_parent_map` are workarounds for the Burton naming; with
   Burton's data aligned they become redundant, not wrong.
