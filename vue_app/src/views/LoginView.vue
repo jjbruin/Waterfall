@@ -40,8 +40,10 @@ onMounted(async () => {
       localStorage.setItem('token', token)
       auth.token = token
       await auth.fetchMe()
-      const redirect = (route.query.redirect as string) || '/dashboard'
-      router.push(redirect)
+      // The page asked for before the Microsoft round trip (see handleSsoLogin).
+      let saved: string | null = null
+      try { saved = sessionStorage.getItem(SSO_REDIRECT_KEY); sessionStorage.removeItem(SSO_REDIRECT_KEY) } catch { /* storage off */ }
+      router.push(safeRedirect(route.query.redirect) || safeRedirect(saved) || '/dashboard')
       return
     }
   }
@@ -110,7 +112,24 @@ function cancelForceChange() {
   changeError.value = ''
 }
 
+// A link straight to a screen (e.g. /expenses, in the expense roll-out email) lands
+// here as /login?redirect=/expenses. The Microsoft round trip drops that query -- the
+// callback returns to /login#token=... -- so it is kept in this tab's storage across
+// the trip. Without it, Microsoft sign-in always landed on the Dashboard.
+const SSO_REDIRECT_KEY = 'sso_redirect'
+
+/** An in-app path only: never an absolute or protocol-relative URL (open redirect). */
+function safeRedirect(v: unknown): string | null {
+  const s = typeof v === 'string' ? v : ''
+  return s.startsWith('/') && !s.startsWith('//') && !s.startsWith('/\\') ? s : null
+}
+
 function handleSsoLogin() {
+  const want = safeRedirect(route.query.redirect)
+  try {
+    if (want) sessionStorage.setItem(SSO_REDIRECT_KEY, want)
+    else sessionStorage.removeItem(SSO_REDIRECT_KEY)
+  } catch { /* storage off: sign-in still works, it just lands on the Dashboard */ }
   window.location.href = '/auth/sso/login'
 }
 
