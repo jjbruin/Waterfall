@@ -1990,9 +1990,9 @@ to the deal level"); a sub-portfolio's FORECASTS come from the properties only. 
 propose a new child rule or a "properties-else-parent" loan rule** -- both were proposed
 below and Jim declined. `fix/one-child-lookup` is DROPPED (left unmerged). Under the
 February logic the findings below are DATA problems:
-- **OREI:** LoanID 313 on the parent duplicated the two property loans. **Jim DELETED it
-  in MRI, Oct 7 2026.** Production's `loans` table still held 285, 286, 313 that day --
-  it drops out at the next Refresh All Data from MRI -> 34,196,000 in both engines.
+- **OREI: DONE Oct 7 2026.** LoanID 313 on the parent duplicated the two property loans;
+  Jim deleted it in MRI and ran Refresh All Data from MRI. Production's `loans` table now
+  holds 285 + 286 only -> 34,196,000 in both engines.
 - **Burton (Jim, Oct 7 2026): "The Burton Properties will each have their own forecasts
   and budgets which will have to be rolled up to the portfolio level to calculate the
   waterfall and NAV calculation."** That IS the February rule; it applies once the
