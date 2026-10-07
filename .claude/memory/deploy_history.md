@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v592** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v593** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v592 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v593 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,25 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v593` = `292a1c3` (EXPENSES: RECEIPTS LIST, CODING SCREEN, WORKFLOW EMAILS, CODING REVIEW.
+    Merge of `feat/receipts-attention`: `8d679aa` the receipts list shows only receipts no line
+    uses (or on another report), Delete asks first; `a9ce77d` the CFO's coding-screen asks --
+    account names, a real account dropdown, payroll totals all/selected; `67ea15b` workflow
+    emails (`expense_notify.py`, ACS, background thread after commit, every send/failure/
+    "nobody to email" written to the report history) and the coding review (accounting
+    submits, cfo/accounting_manager review, ONLY REVIEWED batches; a change after review sends
+    it back), plus the duplicate-column race on the new columns. The CFO's JE-sign point was
+    already true (credits negative) and is now asserted. Features, not symptom repairs. Span vs
+    live `3893726`: `cdaff9e` (docs) and these. Build `cap6`, 2m54s, Succeeded; tag locked;
+    Healthy at 100%. Guardrails: expense_coding 81 (4 injections), add_options 42, report 98,
+    receipt 53, phase4 23, distance 26, mobile 28, am_import_rules 38, spa_fallback 19,
+    section_access 274. SERVED: `ExpenseCodingView-9Tgy4Zb6.js` ("Submit for review", "Waiting
+    for review"), `ExpensesView-CzNXWiht.js` ("Receipts that need a look"). IN THE CONTAINER on
+    PostgreSQL (no data load): the five coding_* columns added; accounting recipients kherrmann,
+    regolf, jstewart, nle; reviewers regolf, jstewart; reports 4, 6, 9 approved and NOT
+    submitted -- they need review before a batch. No email was sent by the check. **Rollback**
+    is FORWARD: `--image acrwaterfalldev.azurecr.io/waterfall-xirr:3893726 --revision-suffix
+    v594` (the added columns are harmless to v592).)
   - `v592` = `3893726` (ASSET MANAGEMENT'S THREE IMPORT RULES, Jack Day Oct 7 2026. Merge of
     `feat/am-import-rules` (`42e694f`): (1) only a row with a 4-digit account in the file is
     imported, totals included, account still editable, `left_out` recorded, pre-rule drafts read

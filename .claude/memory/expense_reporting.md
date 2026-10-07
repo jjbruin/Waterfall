@@ -399,7 +399,7 @@ would read alike -- not handled.
   Expenses page sets `apple-mobile-web-app-title` and removes it on leaving. Not full-screen
   mode (no popups there, and Microsoft sign-in needs one). `expense_mobile_check.py` section 6.
 
-## Emails and the coding review (Oct 7 2026, the CFO's asks; branch `feat/receipts-attention`)
+## Emails and the coding review (Oct 7 2026, the CFO's asks; live `v593`)
 - **Email** (`expense_notify.py`, via ACS, sent in a background thread AFTER the action
   commits): submit -> whoever may decide (approver; CFO for an approver's own; CEO/President
   for the CFO's own); approve -> accounting + the employee; return (approver or accounting)
