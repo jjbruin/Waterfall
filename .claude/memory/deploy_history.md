@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v590** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v591** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v590 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v591 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,23 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v591` = `97a88c2` (A MISSING FILE IS A 404, NOT THE APP PAGE. Jim added the app to his
+    iPhone home screen on v590 and was NOT offered the PSC Expenses icon. The SPA fallback in
+    `flask_app/__init__.py` answered every unknown path with index.html and a 200, so
+    `/apple-touch-icon-precomposed.png` and `/apple-touch-icon-180x180.png` -- names iOS asks
+    for -- came back "found", as HTML. `is_missing_file_request` now 404s a request for a file
+    type (image/script/style/font/manifest...) that is not there; app routes, including ones
+    with a dot, still get the page. Icon also shipped as `-precomposed.png`; the link declares
+    `sizes="180x180"`. A fix to the fallback rule itself, not a symptom repair; it touches every
+    missing-file request site-wide (Jim's call, given before the build). Span vs live `221718f`:
+    `77cec80` (docs) and `1a0bce4`. Build `cap4`, 3m15s, Succeeded; tag locked; Healthy at 100%.
+    Guardrails: `spa_fallback_check` 19/0 (`--inject=all|none|unwired` fail 7/8/3) and
+    `--live` 23/0 on production; `expense_mobile_check` 28/0, `expense_add_options_check` 37/0,
+    `section_access_check` 274/0. SERVED: both icon names image/png, `-180x180` 404, `/`,
+    `/login`, `/deals/P0000044`, `/msal-redirect.html` 200 HTML, the entry bundle 200 JS; 0
+    errors in the last 200 log lines. Whether iOS now offers the icon is NOT yet confirmed --
+    Jim to retry (delete the old home-screen item, reload, add again). **Rollback** is FORWARD:
+    `--image acrwaterfalldev.azurecr.io/waterfall-xirr:221718f --revision-suffix v592`.)
   - `v590` = `221718f` (A "PSC EXPENSES" ICON FOR AN IPHONE OR IPAD HOME SCREEN. Merge of
     `feat/expenses-home-icon` (`d009f4f`): `<link rel="apple-touch-icon">` to a 180x180 receipt
     on the app's navy (`vue_app/public/apple-touch-icon.png`, the app's first public/ file), and
