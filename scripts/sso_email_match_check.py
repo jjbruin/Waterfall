@@ -25,6 +25,7 @@ Usage: python scripts/sso_email_match_check.py [--inject=username|admin|create|n
   admin    -- the superuser not excluded
   create   -- an account created when none matches
   noproxy  -- the forwarded headers ignored (ProxyFix removed)
+  dropdest -- the requested page not kept across the Microsoft round trip
 """
 import os
 import re
@@ -169,6 +170,23 @@ def main():
     vue = (ROOT / "vue_app/src/views/LoginView.vue").read_text(encoding="utf-8")
     for reason in ("no_account", "ambiguous"):
         chk("LoginView handles %s" % reason, "'%s'" % reason in vue)
+
+    print("6. A direct link survives the Microsoft round trip")
+    # Oct 7 2026: the expense roll-out email links straight to /expenses. The callback
+    # returns to /login#token=..., dropping ?redirect=, so Microsoft sign-in always
+    # landed on the Dashboard.
+    if INJECT == "dropdest":
+        vue = vue.replace("sessionStorage.setItem(SSO_REDIRECT_KEY, want)", "")
+    sso_fn = vue.split("function handleSsoLogin()", 1)[1].split("\n}\n", 1)[0]
+    chk("the destination is kept before leaving for Microsoft",
+        "sessionStorage.setItem(SSO_REDIRECT_KEY, want)" in sso_fn
+        and sso_fn.index("sessionStorage.setItem") < sso_fn.index("/auth/sso/login"))
+    tok = vue.split("hash.includes('token=')", 1)[1].split("return", 1)[0]
+    chk("...and used when the token comes back",
+        "sessionStorage.getItem(SSO_REDIRECT_KEY)" in tok and "safeRedirect(saved)" in tok)
+    safe = vue.split("function safeRedirect", 1)[1].split("\n}\n", 1)[0]
+    chk("only an in-app path is followed (no //host, no absolute URL)",
+        "startsWith('/')" in safe and "!s.startsWith('//')" in safe)
 
     print("\n%d passed, %d failed" % (len(_passed), len(_failed)))
     return 1 if _failed else 0
