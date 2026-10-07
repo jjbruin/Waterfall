@@ -428,10 +428,20 @@ DEV_DEALS = {
 #: Sold total explains that the portfolio is not moved across until the final
 #: distributions land, expected end of 2Q27. Until then it belongs nowhere, and
 #: the report says so out loud in `diagnostics.excluded_deals`.
+#:
+#: DATED (Oct 7 2026). An exclusion holds FROM the day its reason became true,
+#: not for every quarter: at 31 Dec 2025 Apple was still held, and the January
+#: 2026 board deck carries it in Current. ``from`` is the realization --
+#: accounting books Apple's return of capital and realized gain on 2026-01-28.
+#: Before it the deal is reported like any other (values in a quarter stay in
+#: that quarter, the rule ``classify`` follows).
 EXCLUDED_DEALS = {
-    "P0000003": "Apple Self Storage — realized Jan 2026, Sale_Status still "
-                "NULL; the reference carries it in neither table until final "
-                "distributions are received (Sold footnote 3, expected 2Q27)",
+    "P0000003": {
+        "from": "2026-01-28",
+        "reason": "Apple Self Storage — realized 28 Jan 2026, Sale_Status still "
+                  "NULL; the reference carries it in neither table until final "
+                  "distributions are received (Sold footnote 3, expected 2Q27)",
+    },
 }
 
 LEASE_UP_DEALS = {

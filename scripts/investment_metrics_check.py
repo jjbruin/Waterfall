@@ -685,10 +685,11 @@ def main():
     # ── 9b. deals the reference carries in neither table ──────────────────
     section("9b. Excluded deals (both ways: dropped AND named; nothing else "
             "dropped)")
-    chk("Apple Self Storage is excluded by name, with a reason",
+    chk("Apple Self Storage is excluded by name, with a reason and a date",
         "P0000003" in cfg.EXCLUDED_DEALS
-        and "final distributions" in cfg.EXCLUDED_DEALS["P0000003"])
-    excl = build(inv=pd.concat([deals_fixture(), pd.DataFrame([
+        and "final distributions" in cfg.EXCLUDED_DEALS["P0000003"]["reason"]
+        and cfg.EXCLUDED_DEALS["P0000003"]["from"] == "2026-01-28")
+    apple_inv = pd.concat([deals_fixture(), pd.DataFrame([
         dict(vcode="P0000003", InvestmentID="APPLEX",
              Investment_Name="Apple Self Storage X", Property_Count="1",
              Sale_Status=None, Sale_Date="1/31/2026",
@@ -696,7 +697,8 @@ def main():
              City="Various", State=None, Asset_Type="Self Storage",
              Operating_Partner="Apple", Lifecycle="Stable",
              Portfolio_Name=""),
-    ])], ignore_index=True))
+    ])], ignore_index=True)
+    excl = build(inv=apple_inv)
     chk("it does not appear in either table",
         row_of(excl, "P0000003")[1] is None)
     chk("...and the omission is REPORTED, not silent",
@@ -705,6 +707,19 @@ def main():
     chk("no other deal is dropped with it",
         len(excl["current"]["rows"]) + len(excl["sold"]["rows"])
         == len(out["current"]["rows"]) + len(out["sold"]["rows"]))
+    # The other direction: the exclusion is DATED. The quarter before the
+    # realization still held the deal, so it is in Current there (Oct 7 2026).
+    held = build(inv=apple_inv, as_of=dt.date(2025, 12, 31))
+    chk("...but at 31 Dec 2025, before the 28 Jan 2026 realization, it IS in Current",
+        row_of(held, "P0000003")[0] == "current",
+        row_of(held, "P0000003"))
+    chk("...and is not reported as excluded there",
+        not any(x["vcode"] == "P0000003"
+                for x in held["diagnostics"].get("excluded_deals", [])))
+    held_eve = build(inv=apple_inv, as_of=dt.date(2026, 1, 27))
+    on_day = build(inv=apple_inv, as_of=dt.date(2026, 1, 28))
+    chk("the boundary is the realization day: held on the 27th, excluded on the 28th",
+        row_of(held_eve, "P0000003")[1] is not None and row_of(on_day, "P0000003")[1] is None)
 
     # ── 10. geometry the printed sheet depends on ─────────────────────────
     section("10. Column geometry (the printed sheet reads this off the payload)")
