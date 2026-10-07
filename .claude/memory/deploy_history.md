@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v596** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v598** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v596 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v598 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,30 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v598` = `850e9e9` (BOARD PHASE 1: PAGES 26, 27 AND 29-31, AND APPLE'S EXCLUSION DATED. Merge
+    of `feat/board-phase1-views`: `769b3ee` Investment Metrics' cache moves into
+    `investment_metrics_service.get_report` (no figure moves); `066f747` Apple's EXCLUDED_DEALS
+    entry holds from its realization, 2026-01-28 -- Investment Metrics at quarters BEFORE it now
+    carries Apple in Current, as the January deck does; from 28 Jan 2026 nothing changes. Flagged
+    to Jim before deploy as the one figure-moving commit; his "merge and deploy" was the call;
+    `6fad7be` the Board schedule views (`board_views_service`, composition only); `3c09e3a` docs.
+    **Live had moved:** P1 showed `v597` = `965d3a1` (Charlene's
+    `fix/snapshot-loan-remove-typed-ratios`), never merged to main -- merged at `dd342af` so this
+    deploy keeps it. Span vs live `965d3a1`: those four plus the two merges. Jim pushed main (my push
+    was refused by the permission classifier). Build `capb`, 2m47s, Succeeded; tag locked; P1
+    re-run (still `v597`); Healthy at 100%. Guardrails on the merged tree: board_views 35 (4
+    injections), board_access 167, investment_metrics 229 (2 injections), section_access 274,
+    one_engine_per_number 26, snapshot_loan_no_typed_ratios passed; snapshot_loan_manual_cells
+    SKIPPED (needs a live server -- skip is not pass). SERVED: `BoardView-Bi3mv52h.js` resolved from
+    `main-DZ-JpY8J.js` (the view route, "3rd Party Capital Sources", "Final Realized Gross IRR");
+    `/api/board/.../view` 401 without a token. IN THE CONTAINER (no data load -- a full load is
+    OOM-killed): the view route and both IM routes registered, Apple `from` 2026-01-28, three views
+    flagged. Reconciliation to the deck: `board.md`. **Rollback** is FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:965d3a1 --revision-suffix v599`.)
+  - `v597` = `965d3a1` (PORTFOLIO SNAPSHOT LOAN: TYPED RATIO SEEDS REMOVED -- Charlene's
+    `fix/snapshot-loan-remove-typed-ratios`, live 2026-10-07 20:56 UTC, build `capa`. Recorded from
+    what P1 showed at `v598`, not by its deployer: it was deployed unmerged and merged to main at
+    `dd342af`. Her own entry, if she writes one, supersedes this line.)
   - `v596` = `741e51e` (EXPENSES: THE MONTHLY CELL PHONE REIMBURSEMENT, PAID AUTOMATICALLY. Merge
     of `feat/cell-phone-allowance` (`365448b`): `expense_phone.py` -- the CFO's dated rate (seeded
     $50 from 2026-10), who is paid (everyone named in Expenses but the admin account; the CFO can

@@ -135,7 +135,7 @@ item it changes what the Snapshot prints, so it should not wait with the others.
 
 ## 20. Board package section -- planned, not started (Oct 5 2026)
 
-**Oct 7 2026: Phase 1 pp.26, 27, 29-31 built** (`feat/board-phase1-views`, not deployed;
+**Oct 7 2026: Phase 1 pp.26, 27, 29-31 live at `v598`** (
 reconciliation in `board.md`). Open from it:
 - **MRI `Property_Count`** -- Apple Self Storage P0000003 1 -> 16, PMAT Midwest P0000036
   1 -> 3, Prestige P0000080 1 -> 12. Then p.26 gives 98 properties, 23 wholly owned.

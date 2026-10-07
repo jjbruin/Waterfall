@@ -102,7 +102,7 @@ Open, before the Phase 1 views are built (decisions, not code):
 4. Page 24: a canonical operating-partner list (app names vary: JPI / JPI Companies,
    Vastgood / Vastgood Properties LLC, Apple / Apple Self Storage, Bertram and DiMarco).
 
-## Phase 1 views: pages 26, 27, 29-31 (Oct 7 2026; branch `feat/board-phase1-views`, NOT deployed)
+## Phase 1 views: pages 26, 27, 29-31 (Oct 7 2026; live `v598`)
 `GET /api/board/meetings/<id>/schedules/<key>/view`, at the meeting's as-of for that
 schedule; `services/board_views_service.py` composes, computes nothing. pp.29-31 ARE the
 Investment Metrics payload (through `investment_metrics_service.get_report`, the route's
