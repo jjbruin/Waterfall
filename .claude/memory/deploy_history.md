@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v589** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v590** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v589 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v590 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,20 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v590` = `221718f` (A "PSC EXPENSES" ICON FOR AN IPHONE OR IPAD HOME SCREEN. Merge of
+    `feat/expenses-home-icon` (`d009f4f`): `<link rel="apple-touch-icon">` to a 180x180 receipt
+    on the app's navy (`vue_app/public/apple-touch-icon.png`, the app's first public/ file), and
+    `apple-mobile-web-app-title` = "PSC Expenses" set by ExpensesView on entry and removed on
+    leaving. NOT `apple-mobile-web-app-capable`: standalone mode has no popups and Sign in with
+    Microsoft uses one. Feature, not a symptom repair. Span vs live `75bb1d4`: `e354f4b`,
+    `7759d5d` (docs) and this. Build `cap3`, 2m52s, Succeeded; tag locked; Healthy at 100%.
+    Guardrails: `expense_mobile_check` 28/0 (`--inject=noicon|stickyname` each fail),
+    `expense_add_options_check` 37/0, `section_access_check` 274/0, `claude_md_budget_check` 3/0.
+    SERVED: `/apple-touch-icon.png` 200 image/png, byte-identical to the repo; index.html carries
+    the link; entry `main-YW7Z7adF.js` -> `ExpensesView-DSrtygi2.js` carries "PSC Expenses"; 0
+    errors in the last 200 log lines. NOT verified on a real iPhone (Add to Home Screen) --
+    Jim to try once before the rollout email goes. **Rollback** is FORWARD:
+    `--image acrwaterfalldev.azurecr.io/waterfall-xirr:75bb1d4 --revision-suffix v591`.)
   - `v589` = `75bb1d4` (EXPENSES ON A PHONE, AND THREE EQUAL WAYS TO ADD. Merge of
     `feat/expenses-mobile`: `b0cf454` -- iPhone/iPad receipts from Photos or the camera
     (`accept` carries `image/*`; touch gets "Take a photo" instead of "Upload a folder"; iOS's

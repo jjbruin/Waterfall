@@ -395,3 +395,6 @@ would read alike -- not handled.
   blocks Save/Cancel/Close; Cancel asks, then removes what the pop-up added. A duplicate
   upload returns `receipt_id` so a re-picked photo (new name) is found.
   Guardrail `expense_add_options_check.py` (12 injections).
+- **"PSC Expenses" on the home screen** (`v590`): `apple-touch-icon` in index.html; the
+  Expenses page sets `apple-mobile-web-app-title` and removes it on leaving. Not full-screen
+  mode (no popups there, and Microsoft sign-in needs one). `expense_mobile_check.py` section 6.
