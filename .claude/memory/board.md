@@ -102,6 +102,39 @@ Open, before the Phase 1 views are built (decisions, not code):
 4. Page 24: a canonical operating-partner list (app names vary: JPI / JPI Companies,
    Vastgood / Vastgood Properties LLC, Apple / Apple Self Storage, Bertram and DiMarco).
 
+## Phase 1 views: pages 26, 27, 29-31 (Oct 7 2026; branch `feat/board-phase1-views`, NOT deployed)
+`GET /api/board/meetings/<id>/schedules/<key>/view`, at the meeting's as-of for that
+schedule; `services/board_views_service.py` composes, computes nothing. pp.29-31 ARE the
+Investment Metrics payload (through `investment_metrics_service.get_report`, the route's
+cache moved there). Guardrail `board_views_check.py` (35).
+
+The deck's own sources: p.26 gross cap / properties = `PSC Investment Summary Data_v34...`
+sheet `Investments_1` and `# Deals & Properties`; pp.27, 29-31 = `Asset Management
+Supporting Materials/PSC Investment Metrics 9.30.25 OW.xlsx` -- the 9/30/25 Investment
+Metrics workbook with Q4 closings and Q4 sales moved across by hand. **The deck mixes
+dates**: population and pref at 12/31/25, proceeds and CoC "through 9/30/25".
+
+Production, 12/31/25, after the Apple fix (`066f747`):
+
+| | Deck | App |
+|---|---|---|
+| p.26 PSC / 3rd party / total net pref | 115.9 / 519.6 / 635.5 | 115.97 / 519.66 / 635.63 |
+| p.26 TIAA / KoC / F&F / Decl / Amb | 383.6 / 82.5 / 28.1 / 13.1 / 12.3 | 383.65 / 82.53 / 28.08 / 13.12 / 12.29 |
+| p.26 wholly owned: deals / PSC | 6 / 24.5 | 6 / 24.53 (same six deals) |
+| p.26 deals | 54 | 53 (deck counts Brainerd I and II as two transactions) |
+| p.26 properties | 98 (WO 23) | 70 (WO 6): MRI `Property_Count` is 1 on Apple (16), PMAT Midwest (3), Prestige (12); with those, 98 and 23 exactly |
+| p.26 gross cap | 3,190.79 | 3,170.92: IM Total Size; Apple, Bales and Life Storage have none (first lien unknown, open item 20.2) |
+| p.27 current pref incl. unfunded | 691.6 | 692.40 (the future-funding items above) |
+| p.27 proj IRR / proceeds / CoC | 15.7% / 198.6 / 6.4% | 15.6% / 201.2 / 7.3% (cash through 12/31, not 9/30) |
+| p.27 exited pref / realized IRR / proceeds / CoC | 128.3 / 17.7% / 208.4 / 5.6% | 128.26 / 20.7% / 209.7 / 7.7% |
+| p.27 combined CoC | 6.1% | 7.4% (IM's pref-weighted average over both tables) |
+
+Jefferson Stephens (closed Oct 2025) has no funded capital at 12/31/25 -- the tracker
+carries $1 -- so it is classed JV by its $22.7M unfunded commitment and adds nothing to
+capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 workbook
+(per-deal first lien, CoC, realized IRR -- the workbook's sold 17.7% and 5.6% are typed
+on its Total row); not re-litigated here. Scripts (scratchpad): im_vs_deck.py, bv_run.py.
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

@@ -1,10 +1,13 @@
 <script setup lang="ts">
 // Board section, Phase 0 (Oct 5 2026): meetings, the as-of date each schedule is
 // drawn at, the narrative blocks, and -- for the admin account only -- who holds
-// what. No figures yet: each schedule's view arrives with its phase. Every gate
-// here is ALSO enforced by the server; the screen only hides what would be refused.
+// what. Phase 1 (Oct 7 2026) adds the first schedule views -- pages 26, 27 and
+// 29-31 -- each read from the server at the as-of THIS MEETING carries for it;
+// the screen computes nothing. Every gate here is ALSO enforced by the server;
+// the screen only hides what would be refused.
 import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
+import InvestmentMetricsTable from '@/components/reports/InvestmentMetricsTable.vue'
 
 const me = ref<{ permissions: string[]; manages_access: boolean } | null>(null)
 const tab = ref<'meetings' | 'access' | 'log'>('meetings')
@@ -44,6 +47,28 @@ async function saveSchedule(s: any, patch: Record<string, any>) {
     if (r.warnings?.length) notice.value = r.warnings.join('; ')
   } catch (e) { fail(e); await openMeeting(meeting.value.id) }
 }
+// ---- schedule views (Phase 1) ----
+const view = ref<any>(null)
+const viewKey = ref('')
+const viewLoading = ref(false)
+const showNotes = ref(false)
+async function openView(s: any) {
+  error.value = ''
+  if (viewKey.value === s.key) { viewKey.value = ''; view.value = null; return }
+  viewKey.value = s.key; view.value = null; viewLoading.value = true; showNotes.value = false
+  try {
+    view.value = (await api.get(`/api/board/meetings/${meeting.value.id}/schedules/${s.key}/view`)).data
+  } catch (e) { fail(e); viewKey.value = '' } finally { viewLoading.value = false }
+}
+// Dollars in, $ millions out. null is "the engine has no figure": a dash, never 0.
+function m(v: number | null | undefined, dp = 1) {
+  if (v === null || v === undefined) return '—'
+  return '$' + (v / 1e6).toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp })
+}
+function pct(v: number | null | undefined, dp = 1) {
+  return v === null || v === undefined ? '—' : (v * 100).toFixed(dp) + '%'
+}
+
 const narrativeDirty = ref<Record<string, boolean>>({})
 async function saveNarrative(n: any) {
   error.value = ''
@@ -129,7 +154,7 @@ onMounted(async () => {
 
           <h3>Schedules</h3>
           <table class="grid">
-            <thead><tr><th>In</th><th>Pages</th><th>Schedule</th><th>As of</th><th>Phase</th><th>Status</th></tr></thead>
+            <thead><tr><th>In</th><th>Pages</th><th>Schedule</th><th>As of</th><th>Phase</th><th>Status</th><th></th></tr></thead>
             <tbody>
               <tr v-for="s in meeting.schedules" :key="s.key" :class="{ off: !s.included }">
                 <td><input type="checkbox" :checked="s.included" :disabled="!editable || !can('board_edit')"
@@ -143,9 +168,96 @@ onMounted(async () => {
                 </td>
                 <td>{{ s.phase }}</td>
                 <td>{{ s.status }}</td>
+                <td><button v-if="s.view" class="btn-secondary" @click="openView(s)">
+                  {{ viewKey === s.key ? 'Hide' : 'View' }}</button></td>
               </tr>
             </tbody>
           </table>
+
+          <!-- SCHEDULE VIEW: figures from the server, at this meeting's as-of for the schedule -->
+          <div v-if="viewKey" class="view">
+            <div v-if="viewLoading" class="muted">Building the view from the engines…</div>
+            <template v-else-if="view">
+              <h3>p. {{ view.schedule.pages }} · {{ view.schedule.title }}
+                <span class="muted small">as of {{ view.schedule.as_of }}</span></h3>
+
+              <!-- p.26 -->
+              <template v-if="view.key === 'capitalization'">
+                <p class="muted small">$ in millions</p>
+                <table class="grid fig">
+                  <thead><tr><th></th><th>Deals</th><th>Properties</th><th>Total Gross Capitalization</th>
+                    <th>PSC Capital</th><th>3rd Party Capital</th><th>Total Net Pref. Equity*</th></tr></thead>
+                  <tbody>
+                    <tr v-for="l in view.lines" :key="l.key">
+                      <td>{{ l.label }}</td><td>{{ l.deals }}</td><td>{{ l.properties }}</td>
+                      <td>{{ m(l.gross_cap, 2) }}</td><td>{{ m(l.psc) }}</td><td>{{ m(l.third_party) }}</td>
+                      <td>{{ m(l.total) }}</td>
+                    </tr>
+                    <tr class="tot"><td>{{ view.total.label }}</td><td>{{ view.total.deals }}</td>
+                      <td>{{ view.total.properties }}</td><td>{{ m(view.total.gross_cap, 2) }}</td>
+                      <td>{{ m(view.total.psc) }}</td><td>{{ m(view.total.third_party) }}</td>
+                      <td>{{ m(view.total.total) }}</td></tr>
+                  </tbody>
+                </table>
+                <h4>3rd Party Capital Sources</h4>
+                <table class="grid fig narrow">
+                  <thead><tr><th>Investor</th><th>Current AUM**</th><th></th></tr></thead>
+                  <tbody>
+                    <tr v-for="x in view.third_party_sources" :key="x.group">
+                      <td>{{ x.label }}</td><td>{{ m(x.amount) }}</td><td>{{ pct(x.share) }}</td></tr>
+                    <tr class="tot"><td>TOTAL</td><td>{{ m(view.third_party_total) }}</td><td>100%</td></tr>
+                  </tbody>
+                </table>
+                <p class="muted small">*Portfolio data through {{ view.schedule.as_of }}. **Current AUM is third
+                  party net preferred equity; excludes the {{ m(view.unfunded) }}M unfunded.</p>
+              </template>
+
+              <!-- p.27 -->
+              <template v-else-if="view.key === 'performance'">
+                <table class="grid fig">
+                  <thead><tr><th></th><th>Pref. Equity</th><th>Proj. IRR</th><th>Final Realized Gross IRR</th>
+                    <th>Proceeds-to-Date</th><th>CoC Act. Rtns. Since Close</th></tr></thead>
+                  <tbody>
+                    <tr v-for="r in view.rows" :key="r.key">
+                      <td>{{ r.label }}</td>
+                      <td :title="r.pref_basis">{{ m(r.pref) }}{{ r.key === 'current' ? '*' : '' }}</td>
+                      <td>{{ r.key === 'exited' ? 'N/A' : pct(r.proj_irr) }}</td>
+                      <td>{{ r.key === 'current' ? 'N/A' : pct(r.realized_irr) }}</td>
+                      <td>{{ m(r.proceeds) }}</td><td>{{ pct(r.coc) }}</td>
+                    </tr>
+                    <tr class="tot"><td>Total</td><td></td><td></td><td></td>
+                      <td>{{ m(view.total.proceeds) }}</td><td>{{ pct(view.total.coc) }}</td></tr>
+                  </tbody>
+                </table>
+                <p class="muted small">*Preferred equity balance includes unfunded commitments at
+                  {{ view.schedule.as_of }}. Proceeds and CoC are through {{ view.schedule.as_of }}.</p>
+              </template>
+
+              <!-- pp.29-31: the Investment Metrics payload itself -->
+              <template v-else-if="view.key === 'investment_summaries'">
+                <template v-for="t in ['current', 'sold']" :key="t">
+                  <h4>{{ view.investment_metrics[t].title }}
+                    <span class="muted small">{{ view.investment_metrics.as_of_display }} ·
+                      {{ view.investment_metrics.units_note }}</span></h4>
+                  <div class="scroller">
+                    <InvestmentMetricsTable :table="view.investment_metrics[t]"
+                      :total-markers="t === 'sold' ? view.investment_metrics.sold.total_markers : undefined"
+                      :grand-total="t === 'sold' ? view.investment_metrics.grand_total : undefined" />
+                  </div>
+                  <div class="muted small">
+                    <div v-for="f in view.investment_metrics[t].footnotes" :key="f.n">({{ f.n }}) {{ f.text }}</div>
+                  </div>
+                </template>
+                <p class="muted small">{{ view.investment_metrics.disclaimer }}</p>
+              </template>
+
+              <div v-if="view.notes?.length" class="notes">
+                <button class="btn-secondary" @click="showNotes = !showNotes">
+                  {{ showNotes ? 'Hide' : 'Show' }} notes ({{ view.notes.length }})</button>
+                <ul v-if="showNotes" class="small"><li v-for="(n, i) in view.notes" :key="i">{{ n }}</li></ul>
+              </div>
+            </template>
+          </div>
 
           <h3>Narrative</h3>
           <div v-for="n in meeting.narratives" :key="n.key" class="narr">
@@ -225,6 +337,14 @@ h1 { margin: 0 0 4px; }
 .grid th, .grid td { border-bottom: 1px solid var(--color-border, #e5e7eb); padding: 5px 8px;
   text-align: left; vertical-align: top; }
 .grid tr.off td { opacity: .55; }
+.view { margin: 14px 0 20px; padding: 12px; border: 1px solid var(--color-border, #e5e7eb); border-radius: 6px; }
+.view h3 { margin: 0 0 6px; }
+.view h4 { margin: 14px 0 6px; }
+.grid.fig td:not(:first-child), .grid.fig th:not(:first-child) { text-align: right; }
+.grid.fig tr.tot td { font-weight: 600; border-top: 2px solid var(--color-border, #d1d5db); }
+.grid.narrow { width: auto; min-width: 360px; }
+.scroller { overflow-x: auto; }
+.notes { margin-top: 10px; }
 .narr { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .narr textarea { width: 100%; font: inherit; padding: 6px; }
 .narr button { align-self: flex-start; }

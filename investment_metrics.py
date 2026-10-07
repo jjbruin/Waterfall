@@ -1358,10 +1358,13 @@ def build_investment_metrics(
         # about final distributions, not a state MRI records — so the
         # alternative to naming it is a rule contorted until it happens to
         # drop this one deal, which nobody could later read.
-        if ident.vcode in cfg.EXCLUDED_DEALS:
+        # Dated: before ``from`` the reason was not yet true, so the deal is
+        # reported like any other at that quarter.
+        excluded = cfg.EXCLUDED_DEALS.get(ident.vcode)
+        if excluded and as_of >= _dt.date.fromisoformat(excluded["from"]):
             diag.setdefault("excluded_deals", []).append(
                 {"vcode": ident.vcode, "name": ident.name,
-                 "reason": cfg.EXCLUDED_DEALS[ident.vcode]})
+                 "from": excluded["from"], "reason": excluded["reason"]})
             continue
         # QUARTER INTEGRITY: a deal not yet invested at the as-of is not in that
         # quarter's report. Reported, not dropped silently.
