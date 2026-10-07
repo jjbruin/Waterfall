@@ -50,8 +50,9 @@ Web platform (server sign-in, `sso.py`): `.../auth/sso/callback` on both hosts
 (`http://localhost:5000/auth/sso/callback` locally).
 
 ### Verified
-**Jim signed in through the picker in Chrome, locally, Oct 6 2026** -- against the real
-Entra app, after IT registered the URIs. Two lessons from getting there:
+**On PRODUCTION (v581), Jim loaded a file from SharePoint through Valuations > Budget
+Review, Oct 6 2026.** Earlier the same day he signed in through the picker in Chrome
+locally against the real Entra app. Two lessons from getting there:
 - **The popup must open from the click.** The first version awaited config, MSAL and a
   Graph call before asking for the popup, and Chrome blocked it. The dialog now shows
   "Sign in with Microsoft" and that handler calls `sp.signIn()` first; `token()` never
