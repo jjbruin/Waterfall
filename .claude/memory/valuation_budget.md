@@ -56,8 +56,8 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **Guardrail**: `scripts/budget_import_mapping_check.py` (25), on fixtures of all
   three real file shapes plus the negative case for block re-basing; proved
   non-vacuous against nine injected defects including both opposite failures.
-- **ONLY A ROW WITH A 4-DIGIT ACCOUNT IS IMPORTED** (Jack, Oct 7 2026, superseding the
-  subtotal reading): `budget_import_service.file_account` -- the account the parser read,
+- **ONLY A ROW WITH A 4-DIGIT ACCOUNT IS IMPORTED** (Jack, Oct 7 2026, live `v592`,
+  superseding the subtotal reading): `budget_import_service.file_account` -- the account the parser read,
   else one leading/ending the label. Every such row is pre-filled from it, INCLUDING one
   whose label reads like a total (tagged "reads like a total" on screen, since it can
   double-count); a row without one is not offered, and `validate` refuses it by name

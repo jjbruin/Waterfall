@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v591** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v592** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v591 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v592 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,26 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v592` = `3893726` (ASSET MANAGEMENT'S THREE IMPORT RULES, Jack Day Oct 7 2026. Merge of
+    `feat/am-import-rules` (`42e694f`): (1) only a row with a 4-digit account in the file is
+    imported, totals included, account still editable, `left_out` recorded, pre-rule drafts read
+    by the rule on load (Camp Creek's would otherwise have imported no interest); (2) the Budget
+    column's debt service is the budget's own 5190/7060 by default (`DEBT_BASES` budget /
+    modeled / underwriting), blank with a note when the budget has none; (3) 4042 nets into
+    Rental Income on the Budget Review in every column via `review_is_accounts()`, config
+    unchanged. Features, not symptom repairs. Span vs live `97a88c2`: `af87e99`, `bf3fe69`
+    (docs) and this. Build `cap5`, 3m15s, Succeeded; tag locked; Healthy at 100%. Guardrails:
+    `am_import_rules_check` 38/0 (8 injections each fail), argus_single_load 43, mapping_draft
+    58, budget_review_inputs 50, valuation_debt_service 39, budget_import_mapping 33,
+    mapping_feedback 33, line_mapping 35, valuation_summary 132, one_engine_per_number 26,
+    section_access 274. SERVED: entry `main-BuXCvp23.js` -> `ValuationsView-D-2gdDqW.js` carries
+    "As budgeted", "no account in the file", "reads like a total". IN THE CONTAINER, on
+    PostgreSQL: get_budget_review for P0000018 (budget debt blank, no 2027 budget), P0000069 and
+    P0000075 (budget's own 5190: 1,177,778 and 3,652,112) -- then the script was OOM-KILLED
+    looping every 2026 record (a second full data load beside the app in 2 GB); the app's
+    replica did not restart (count 0) and /health stayed 200. Not every record was exercised.
+    **Rollback** is FORWARD:
+    `--image acrwaterfalldev.azurecr.io/waterfall-xirr:97a88c2 --revision-suffix v593`.)
   - `v591` = `97a88c2` (A MISSING FILE IS A 404, NOT THE APP PAGE. Jim added the app to his
     iPhone home screen on v590 and was NOT offered the PSC Expenses icon. The SPA fallback in
     `flask_app/__init__.py` answered every unknown path with index.html and a 200, so
