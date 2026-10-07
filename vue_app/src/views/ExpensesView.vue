@@ -12,6 +12,7 @@
  * never infers a permission of its own.
  */
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDataStore } from '@/stores/data'
@@ -411,10 +412,17 @@ async function readReceipts(ids?: number[]) {
 }
 
 async function rereadReceipt(rc: any) { await readReceipts([rc.id]) }
+// Deleting removes the FILE from the report, so it asks first -- and says when lines use
+// it, because they keep their figures and lose their receipt (expense_receipts.delete_receipt).
 async function removeReceipt(rc: any) {
+  const n = linesFrom(rc.id)
+  const msg = `Delete ${rc.filename} from this report?` + (n
+    ? `\n\n${n} line(s) use it. They keep their amounts but lose the receipt, so each will need another receipt or a reason before the report can be submitted.`
+    : '')
+  if (!window.confirm(msg)) return
   try {
     report.value = (await api.delete(`/api/expenses/reports/${report.value.id}/receipts/${rc.id}`)).data
-  } catch (e) { fail(e, 'Could not remove the receipt') }
+  } catch (e) { fail(e, 'Could not delete the receipt') }
 }
 function lineForReceipt(rc: any) {
   resetInvoice()
@@ -578,6 +586,15 @@ const pendingCount = computed(() =>
   (report.value?.receipts || []).filter((r: any) => r.status === 'pending').length)
 const linesFrom = (rcId: number) =>
   (report.value?.lines || []).filter((l: any) => l.receipt_id === rcId).length
+// THE RECEIPTS LIST SHOWS ONLY WHAT NEEDS A LOOK (Jim, Oct 7 2026: "there is no reason to
+// have redundant links to receipts. Let's keep the links that are in the expense rows").
+// A receipt a line uses is reached from that line; the list keeps the ones no line uses
+// -- unread, unreadable, no receipt found, or simply not used -- where it is the ONLY way
+// to see the file, and the ones also on another report. The rest are counted, not listed.
+const needsAttention = (rc: any) => !linesFrom(rc.id) || !!rc.duplicate_of
+const attentionReceipts = computed(() => (report.value?.receipts || []).filter(needsAttention))
+const attachedReceiptCount = computed(() =>
+  (report.value?.receipts || []).filter((rc: any) => !needsAttention(rc)).length)
 
 // ---- phase 4 ----
 async function copyRecurring() {
@@ -666,10 +683,14 @@ function homeScreenName(name: string | null) {
   }
   tag.content = name
 }
+// The workflow emails link straight to a report: /expenses?report=<id> (Oct 7 2026).
+const route = useRoute()
 onMounted(async () => {
   homeScreenName(HOME_NAME)
   try { await loadOptions() } catch (e) { fail(e, 'Could not load the expense form') }
   loadList()
+  const linked = Number(route.query.report)
+  if (linked > 0) await openReport(linked)
 })
 onUnmounted(() => homeScreenName(null))
 </script>
@@ -1005,12 +1026,19 @@ onUnmounted(() => homeScreenName(null))
       <!-- ---------- receipts ---------- -->
       <div class="receipts">
         <div class="row">
-          <strong>Receipts on this report</strong>
+          <strong>{{ attentionReceipts.length ? 'Receipts that need a look' : 'Receipts' }}</strong>
           <span v-if="!report.receipts?.length" class="muted">none yet — add them above.</span>
+          <span v-else-if="attachedReceiptCount" class="muted">
+            {{ attachedReceiptCount }} receipt{{ attachedReceiptCount === 1 ? ' is' : 's are' }}
+            attached to the expenses above — open one from its row.</span>
         </div>
-        <table v-if="report.receipts?.length" class="data-table compact">
+        <p v-if="attentionReceipts.length && report.permissions.edit" class="muted receipts-help">
+          No expense uses {{ attentionReceipts.length === 1 ? 'this one' : 'these' }} yet. Add a line for it,
+          attach it to an expense with Edit, or delete it if it does not belong on this report.
+        </p>
+        <table v-if="attentionReceipts.length" class="data-table compact">
           <tbody>
-            <tr v-for="rc in report.receipts" :key="rc.id">
+            <tr v-for="rc in attentionReceipts" :key="rc.id">
               <td><button class="link" @click="viewing = { receipt_id: rc.id, receipt_page: 1 }">📎 {{ rc.filename }}</button>
                 <span v-if="rc.page_count > 1" class="muted"> ({{ rc.page_count }} pages)</span></td>
               <td :class="{ 'warn-text': rc.status === 'error' || rc.status === 'no_receipt' }">
@@ -1020,8 +1048,8 @@ onUnmounted(() => homeScreenName(null))
               <td class="row-actions">
                 <template v-if="report.permissions.edit">
                   <button v-if="!linesFrom(rc.id) && rc.status !== 'pending'" class="link" @click="rereadReceipt(rc)">Read again</button>
-                  <button class="link" @click="lineForReceipt(rc)">Add a line for it</button>
-                  <button class="link" @click="removeReceipt(rc)">Remove</button>
+                  <button v-if="!linesFrom(rc.id)" class="link" @click="lineForReceipt(rc)">Add a line for it</button>
+                  <button class="link danger" @click="removeReceipt(rc)">Delete</button>
                 </template>
               </td>
             </tr>
@@ -1128,7 +1156,10 @@ onUnmounted(() => homeScreenName(null))
       <ul class="history">
         <li v-for="e in report.events" :key="e.id">
           <span class="muted">{{ e.at?.replace('T', ' ').slice(0, 16) }}</span>
-          {{ e.action }} by {{ e.actor_name }}<template v-if="e.basis"> ({{ e.basis }})</template>
+          <!-- An email the workflow sent says WHO it went to, not "by the app". -->
+          <template v-if="e.action === 'emailed' || e.action === 'email not sent'">
+            {{ e.action === 'emailed' ? 'emailed' : 'email NOT sent to' }} {{ e.basis }}</template>
+          <template v-else>{{ e.action }} by {{ e.actor_name }}<template v-if="e.basis"> ({{ e.basis }})</template></template>
           <div v-if="e.note" class="note">“{{ e.note }}”</div>
         </li>
       </ul>
@@ -1291,6 +1322,7 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
 .receipt-col { min-width: 0; display: flex; }
 .receipt-col > * { flex: 1; }
 .receipts { margin: 10px 0; }
+.receipts-help { margin: 2px 0 6px; font-size: 12.5px; }
 .data-table.compact td { padding: 3px 8px; }
 /* The three ways to add, as equals: same size, same weight, side by side. */
 .add-bar { margin: 10px 0 14px; }

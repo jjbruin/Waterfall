@@ -398,3 +398,29 @@ would read alike -- not handled.
 - **"PSC Expenses" on the home screen** (`v590`): `apple-touch-icon` in index.html; the
   Expenses page sets `apple-mobile-web-app-title` and removes it on leaving. Not full-screen
   mode (no popups there, and Microsoft sign-in needs one). `expense_mobile_check.py` section 6.
+
+## Emails and the coding review (Oct 7 2026, the CFO's asks; branch `feat/receipts-attention`)
+- **Email** (`expense_notify.py`, via ACS, sent in a background thread AFTER the action
+  commits): submit -> whoever may decide (approver; CFO for an approver's own; CEO/President
+  for the CFO's own); approve -> accounting + the employee; return (approver or accounting)
+  -> the employee with the reason; coding submitted -> reviewers; coding returned -> its
+  submitter. **Accounting = roles** cfo / accounting_manager / accountant WITH accounting
+  authority; reviewers = cfo / accounting_manager. Nobody is emailed about their own report
+  or submission. EVERY send, failure, missing address or "nobody to email" is written to
+  the report's History. Links: `/expenses?report=<id>` (ExpensesView opens it) and
+  `/expense-coding`. Local `.env` has no ACS, so local runs record "not sent".
+- **Coding review** (`expense_coding.review_state`): not submitted -> submitted (accounting)
+  -> reviewed (cfo / accounting_manager, `REVIEWER_ROLES`, `roles_exactly`); return needs a
+  reason. ONLY REVIEWED reports batch. A coding change after review sends it back to
+  submitted. The state counts only if submitted after the report's latest approval
+  (`decided_at`), so a re-approved report starts over. Columns on `er_reports`, added by
+  `ensure_tables` -- which RACED (lines + settings load at once, second ALTER "duplicate
+  column", 500 + empty grid) and now tolerates a column that appeared in between.
+- **Screen**: account NAMES on the coding grid, a real account dropdown (name -- number),
+  payroll totals (all / selected). The receipts list on a report shows only receipts no
+  line uses (or also on another report); Delete asks first.
+- **The CFO's JE-sign question**: the batch already writes credits negative (production's
+  one batch ER-20261031-C7FB66: MR20000001 -3,628.65, every MR15000002 negative);
+  `expense_coding_check` now asserts it on the file.
+- Guardrail: `expense_coding_check.py` 81 (`--inject=nogate|noacct|selfemail|silentnobody`),
+  `expense_add_options_check.py` 42.

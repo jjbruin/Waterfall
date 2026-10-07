@@ -26,7 +26,7 @@ What must stay true:
      a typed amount kept over the receipt's says so.
 
 Usage: python scripts/expense_add_options_check.py
-         [--inject=split|reader|close|merge|mergeall|twice|unread|keep|savekeep|dupname|quiet|dupserver]
+         [--inject=split|reader|close|merge|mergeall|twice|unread|keep|savekeep|dupname|quiet|dupserver|listall|noconfirm]
 """
 import re
 import shutil
@@ -57,10 +57,10 @@ def fn_body(src, name):
 def main():
     view = (ROOT / "vue_app/src/views/ExpensesView.vue").read_text(encoding="utf-8")
     if INJECT == "split":      # the upload button left behind in the Receipts block too
-        view = view.replace('<strong>Receipts on this report</strong>',
-                            '<strong>Receipts on this report</strong><label class="btn-primary '
-                            'file-btn">Upload files<input type="file" multiple hidden '
-                            '@change="uploadFiles" /></label>')
+        anchor = '      <div class="receipts">\n'
+        assert view.count(anchor) == 1, "the split injection's anchor moved -- re-anchor it"
+        view = view.replace(anchor, anchor + '<label class="btn-primary file-btn">Upload files'
+                            '<input type="file" multiple hidden @change="uploadFiles" /></label>\n')
     if INJECT == "reader":     # a second reader in the pop-up
         view = view.replace("/receipts/${rid}/extract`", "/receipts/${rid}/read-invoice`")
     if INJECT == "close":      # the backdrop closes mid-read
@@ -91,6 +91,11 @@ def main():
         view = view.replace("const diff = amountNote(typed.amount, added[0].amount)", "const diff = ''")
     if INJECT == "dupserver":  # the server stops saying which receipt it is
         srv = srv.replace('"result": "duplicate", "receipt_id": here[0],', '"result": "duplicate",')
+
+    if INJECT == "listall":    # every receipt listed again, attached ones included
+        view = view.replace('<tr v-for="rc in attentionReceipts"', '<tr v-for="rc in report.receipts"')
+    if INJECT == "noconfirm":  # deleting a receipt no longer asks
+        view = view.replace("  if (!window.confirm(msg)) return\n", "")
 
     tpl = view[view.find("<template>"):view.find("<style scoped>")]
 
@@ -173,6 +178,20 @@ def main():
     chk("a typed amount kept over the receipt's is said, on a new expense and an existing one",
         "const diff = amountNote(typed.amount, added[0].amount)" in up
         and "amountNote(e.amount, x.amount)" in up and up.count("${diff}") == 2)
+
+    print("3b. The receipts list: only what needs a look (Jim, Oct 7 2026)")
+    rec_block = tpl[tpl.find('<div class="receipts">'):tpl.find("a line, read-only")]
+    chk("the list is the receipts that need attention, not every receipt",
+        '<tr v-for="rc in attentionReceipts"' in rec_block
+        and 'v-for="rc in report.receipts"' not in rec_block)
+    chk("...which is: no line uses it, or it is also on another report",
+        "const needsAttention = (rc: any) => !linesFrom(rc.id) || !!rc.duplicate_of" in view)
+    chk("receipts attached to a row are COUNTED, not dropped silently",
+        "attachedReceiptCount" in rec_block and "attached to the expenses above" in rec_block)
+    rm = fn_body(view, "removeReceipt")
+    chk("the employee can delete one that does not belong", '@click="removeReceipt(rc)">Delete' in rec_block)
+    chk("...and is asked first, told when lines use it",
+        "if (!window.confirm(msg)) return" in rm and "line(s) use it" in rm)
 
     print("4. The employee's typing wins; the receipt fills blanks (both directions)")
     merge = fn_body(view, "mergeTyped")

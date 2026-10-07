@@ -11,6 +11,8 @@
     GET  /api/expense-coding/batches                  every batch and whether the GL shows it
     GET  /api/expense-coding/batches/<id>/csv         the MRI GL upload
     POST /api/expense-coding/batches/<id>/void        release its reports
+    POST /api/expense-coding/review/submit            accounting submits coding for review
+    POST /api/expense-coding/review/decide            the CFO / accounting manager approves or returns it
 
 In the ACCOUNTING section. READS ARE ACCOUNTING_ROLES TOO, unlike the rest of
 the section: the grid is every employee's spending, and an analyst opening
@@ -56,7 +58,53 @@ def _body() -> dict:
 @login_required
 @roles_exactly(*ACCOUNTING_ROLES)
 def get_lines():
-    return _run("lines", lambda: {"rows": ec.coding_rows(get_engine())})
+    user = getattr(g, "current_user", None) or {}
+    return _run("lines", lambda: {"rows": ec.coding_rows(get_engine()),
+                                  "can_review": ec.can_review(user, get_engine())})
+
+
+def _notify(fn) -> None:
+    """Emails AFTER the action commits; one that cannot be queued never fails it."""
+    try:
+        fn()
+    except Exception as e:
+        logger.warning("expense coding email not queued: %s", e, exc_info=True)
+
+
+@expense_coding_bp.route("/review/submit", methods=["POST"])
+@login_required
+@roles_exactly(*ACCOUNTING_ROLES)
+def post_review_submit():
+    from flask_app.services import expense_notify as en
+    actor = getattr(g, "current_user", None) or {}
+    ids = _body().get("report_ids") or []
+
+    def go():
+        out = ec.submit_coding(get_engine(), ids, actor)
+        _notify(lambda: en.coding_event(get_engine(), out["submitted"], "coding_submitted",
+                                        request.url_root, actor))
+        return out
+    return _run("submit coding", go)
+
+
+@expense_coding_bp.route("/review/decide", methods=["POST"])
+@login_required
+@roles_exactly(*ec.REVIEWER_ROLES)
+def post_review_decide():
+    from flask_app.services import expense_notify as en
+    actor = getattr(g, "current_user", None) or {}
+    b = _body()
+
+    def go():
+        out = ec.review_coding(get_engine(), b.get("report_ids") or [], b.get("action"),
+                               b.get("note"), actor)
+        if out["action"] == "return":
+            for submitter, rids in out["submitters"].items():
+                _notify(lambda s=submitter, r=rids: en.coding_event(
+                    get_engine(), r, "coding_returned", request.url_root, actor,
+                    note=(b.get("note") or "").strip(), submitter=s))
+        return out
+    return _run("review coding", go)
 
 
 @expense_coding_bp.route("/lines/<int:line_id>/<int:split_id>", methods=["PUT"])
