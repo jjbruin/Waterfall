@@ -42,6 +42,75 @@ GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Cla
 
 VIEW_KEYS = ("capitalization", "performance", "investment_summaries")
 
+# ------------------------------------------------------------------ the deck's layout
+#
+# HOW A SCHEDULE IS LAID OUT ON THE SLIDE is decided here, not in the screen, so
+# there is one copy of it. None of it is a figure: titles, footnote wording, which
+# of an engine's columns the deck prints, and how many rows fit one page.
+
+#: The deck's slide titles (Jan 2026 deck, pp. 26-27).
+SLIDE_TITLES = {"capitalization": "Current Portfolio Capitalization",
+                "performance": "Performance: Portfolio Level"}
+
+#: The board deck prints a NARROWER Investment Metrics table than the tab (pp.
+#: 29-31): no DMA/Location and no Year-1 CoC columns, and the Sold page shows
+#: only the actual CoC. Keys are Investment Metrics' own; every one must exist in
+#: its column config (board_views_check), or a renamed column would vanish from
+#: the deck without a word.
+DECK_COLUMNS = {
+    "current": ("name", "asset_class", "invest_date", "partner", "total_size",
+                "first_lien", "first_lien_pct", "pref", "pref_pct", "first_loss",
+                "first_loss_pct", "uw_irr", "proceeds", "proj_coc_since_close",
+                "act_coc_since_close", "pref_coupon", "residual_cf_split", "irr_lookback"),
+    "sold": ("name", "asset_class", "invest_date", "partner", "total_size",
+             "first_lien", "first_lien_pct", "pref", "pref_pct", "first_loss",
+             "first_loss_pct", "uw_irr", "realized_irr", "proceeds",
+             "act_coc_since_close", "pref_coupon", "residual_cf_split", "irr_lookback"),
+}
+
+#: Deal rows on one investment-summary slide -- the deck's p. 29 carries 30.
+ROWS_PER_SLIDE = 30
+
+_SUMMARY_TITLES = {"current": ("Current Portfolio*", "Current Portfolio, Cont\u2019d.*"),
+                   "sold": ("Exited Investments*", "Exited Investments, Cont\u2019d.*")}
+
+
+def _short_date(iso: Optional[str]) -> str:
+    """2025-12-31 -> 12/31/25, the deck's own spelling."""
+    if not iso:
+        return ""
+    d = date.fromisoformat(str(iso)[:10])
+    return f"{d.month}/{d.day}/{d.strftime('%y')}"
+
+
+def deck_layout(im: dict) -> dict:
+    """The investment-summary slides: the deck's columns, and the rows on each page.
+
+    Pages split the engine's rows in the engine's order; the Total row (and the
+    Sold table's Grand Total) goes on each table's LAST page. A column the deck
+    names that the payload does not carry is reported, never silently dropped.
+    """
+    as_of = _short_date(im.get("as_of"))
+    columns, missing, slides = {}, [], []
+    for t in ("current", "sold"):
+        by_key = {c["key"]: c for c in (im.get(t) or {}).get("columns") or []}
+        columns[t] = [by_key[k] for k in DECK_COLUMNS[t] if k in by_key]
+        missing += [f"{t}.{k}" for k in DECK_COLUMNS[t] if k not in by_key]
+        n = len((im.get(t) or {}).get("rows") or [])
+        starts = list(range(0, n, ROWS_PER_SLIDE)) or [0]
+        for i, a in enumerate(starts):
+            slides.append({
+                "table": t, "first": a, "last": min(a + ROWS_PER_SLIDE, n),
+                "is_last": i == len(starts) - 1,
+                "title": _SUMMARY_TITLES[t][0 if i == 0 else 1],
+                "footnote": (f"*Portfolio investments closed through {as_of}. Cash received through "
+                             f"{as_of}. Pref Equity includes underwritten, capital call but does not "
+                             f"include return of capital" if t == "current" else
+                             f"*Exited investments through {as_of}. Gross Pref Equity includes "
+                             f"underwritten, capital call but does not include return of capital."),
+            })
+    return {"columns": columns, "slides": slides, "missing_columns": missing}
+
 
 def _add(a: Optional[float], b: Optional[float]) -> Optional[float]:
     if a is None:
@@ -267,9 +336,24 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
         from flask_app.services.data_service import get_data
         data = get_data()
     im = ims.get_report(as_of, data=data)
+    when = _short_date(as_of.isoformat())
     if key == "investment_summaries":
-        return {"key": key, "as_of": as_of.isoformat(), "investment_metrics": im}
+        layout = deck_layout(im)
+        notes = [f"The deck layout names a column Investment Metrics does not carry: {m}"
+                 for m in layout["missing_columns"]]
+        return {"key": key, "as_of": as_of.isoformat(), "investment_metrics": im,
+                "deck": layout, "notes": notes}
     pe = pe_svc.get_report(as_of, data=data, engine=engine)
     if key == "performance":
-        return {"key": key, **compose_performance(pe, im)}
-    return {"key": key, **compose_capitalization(pe, im, _property_counts(data.get("inv")))}
+        return {"key": key, "slide_title": SLIDE_TITLES[key], **compose_performance(pe, im),
+                "footnotes": [f"*Preferred equity balance includes unfunded commitments through "
+                              f"{when}. Proceeds and CoC return data is through {when}."]}
+    out = {"key": key, "slide_title": SLIDE_TITLES[key],
+           **compose_capitalization(pe, im, _property_counts(data.get("inv")))}
+    unfunded = out.get("unfunded")
+    out["footnotes"] = [
+        f"*Portfolio data is updated through {when}",
+        "**Current AUM is third party net preferred equity"
+        + (f", excludes the ${unfunded / 1e6:,.1f}M unfunded" if unfunded else ""),
+    ]
+    return out
