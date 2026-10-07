@@ -129,6 +129,11 @@ Production, 12/31/25, after the Apple fix (`066f747`):
 | p.27 exited pref / realized IRR / proceeds / CoC | 128.3 / 17.7% / 208.4 / 5.6% | 128.26 / 20.7% / 209.7 / 7.7% |
 | p.27 combined CoC | 6.1% | 7.4% (IM's pref-weighted average over both tables) |
 
+**DECIDED (Jim, Oct 7 2026): ONE AS-OF PER SCHEDULE, page 27 included.** No second "cash
+through" date. Every figure on a page belongs to that schedule's as-of; where the latest
+quarter's accounting is not closed by the meeting, set the schedule's as-of to the last closed
+quarter rather than mixing dates as the January deck did. Do not add a cash-through date.
+
 Jefferson Stephens (closed Oct 2025) has no funded capital at 12/31/25 -- the tracker
 carries $1 -- so it is classed JV by its $22.7M unfunded commitment and adds nothing to
 capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 workbook

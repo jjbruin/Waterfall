@@ -140,9 +140,6 @@ reconciliation in `board.md`). Open from it:
 - **MRI `Property_Count`** -- Apple Self Storage P0000003 1 -> 16, PMAT Midwest P0000036
   1 -> 3, Prestige P0000080 1 -> 12. Then p.26 gives 98 properties, 23 wholly owned.
   Owner: whoever maintains MRI deal records.
-- **p.27's mixed dates** -- the deck shows proceeds and CoC through 9/30 against a 12/31
-  population. The app answers one as-of per schedule. Decision: keep that (set p.27 to
-  the last CLOSED quarter), or give the schedule a second "cash through" date. Owner: **Jim**.
 - **Deal count** -- the deck counts Brainerd I and II as two deals (54); MRI has one (53).
   Owner: **Jim**.
 
