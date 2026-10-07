@@ -92,7 +92,9 @@ deck Non-Grocery); plus the future-funding items. Deck "Self Storage" = its "Oth
 Self-Storage" rows; deck "Other" = Industrial, RV Park, Specialty.
 
 Open, before the Phase 1 views are built (decisions, not code):
-1. Accounting enters the Brainerd override (and JB Fair, Nottingham) effective <= 12/31/25.
+1. DONE for Brainerd (Oct 7). JB Fair / Nottingham: the 12/31/25 tracker used the standard
+   ratios for both, so nothing to enter at 12/31/25; accounting's later corrections need
+   their own dated sets.
 2. Future funding: may remaining-to-fund be negative? Do Bearfoot / Lynch commitments count
    at 12/31/25? Why Pontchartrain shows $2.25M unfunded in the tracker and none in the app.
 3. Asset class: fix `Asset_Type` in MRI (Burton, Merle Hay, 5-15 Broad) or keep a board
@@ -117,7 +119,9 @@ ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by d
   committed - the override's funded amount); ratios everywhere else, as today. Reproduces
   the tracker on every deal: Brainerd via its two overrides, all others unchanged.
   RECOMMENDED. With no overrides entered, D changes nothing.
-Brainerd overrides (investment BRNERD, effective 2024-12-27, the last capital movement):
+Brainerd overrides -- ENTERED on production Oct 7 2026 after v594 (ids 1, 2), D is live;
+the funded and future splits now match the tracker. Investment BRNERD, effective
+2024-12-27, the last capital movement:
 PPIBPA <- INVBPS 9,316,074.29 / TGA22 9,091,603.11; INVBPS <- INVBPA 5,493,264.01 / TGA22
-3,822,810.30 (books: contributions less return of capital). Not entered -- accounting's table.
+3,822,810.30 (books: contributions less return of capital).
 Scripts (scratchpad, not in repo): ff_measure.py, ff_measure_c.py, belair_chain.py.

@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v593** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v594** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v593 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v594 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,26 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v594` = `f7cdb46` (PE EXPOSURE: FUTURE FUNDING AT AN OVERRIDE SPLITS BY WHAT IS STILL OWED.
+    Merge of `feat/future-funding-split` (`629fe43`): `group_shares(..., override_weights=
+    "remaining")`, used by `pe_exposure_service` for future funding only. A definitional change
+    to the one ownership engine, approved by Jim after the four-way measurement in `board.md`;
+    it acts only where accounting has entered an override. Span vs live `292a1c3`: `c01f4b4`,
+    `ae83699` (board docs) and this. Build `cap7`, 2m48s, Succeeded; tag locked; Healthy at
+    100%. Guardrails: future_funding_split 13 (4 injections), pe_exposure 28,
+    allocation_override 38, ownership_child_call 5, one_engine_per_number 26, section_access
+    274. THEN, AFTER the deploy (so the live report never split Brainerd's unfunded by the
+    funded shares): Brainerd's two override sets ENTERED ON PRODUCTION by Claude on Jim's
+    instruction, through `allocation_override_service.create`, entered_by `jbruin`, effective
+    2024-12-27 -- id 1 PPIBPA <- INVBPS 9,316,074.29 / TGA22 9,091,603.11; id 2 INVBPS <- INVBPA
+    5,493,264.01 / TGA22 3,822,810.30 (net funded from the books); no warnings. VERIFIED on
+    production data, deployed code, at 12/31/25: Brainerd funded PSC 6,784,705 / TIAA
+    11,622,972 and future PSC 1,331,425 / TIAA 11,982,825 -- the tracker to the dollar; no other
+    deal moved; funded PSC 115.97M / TIAA 383.65M (deck 115.9 / 383.6). **Rollback** is FORWARD:
+    `--image acrwaterfalldev.azurecr.io/waterfall-xirr:292a1c3 --revision-suffix v595` -- and
+    note the override rows are DATA, not undone by a rollback; under v593 they would split
+    Brainerd's future funding by the funded shares (PSC ~4.9M), so remove them (`aos.remove`,
+    kept as deleted) if rolling back.)
   - `v593` = `292a1c3` (EXPENSES: RECEIPTS LIST, CODING SCREEN, WORKFLOW EMAILS, CODING REVIEW.
     Merge of `feat/receipts-attention`: `8d679aa` the receipts list shows only receipts no line
     uses (or on another report), Delete asks first; `a9ce77d` the CFO's coding-screen asks --
