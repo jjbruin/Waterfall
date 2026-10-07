@@ -55,3 +55,47 @@ seven decisions Jim made on Oct 5.
 ## Next phases
 Phases 1, 2 and 4 can start now; their engines are live. Phase 3 needs the
 originations spreadsheet. Phase 5 needs the CFO's model and an anonymized payroll copy.
+
+## Phase 1 started Oct 7 2026: the PE exposure engine reconciled to the January deck at 12/31/25
+Run on PRODUCTION data (`pe_exposure_service.build(2025-12-31)`), against the deck's own
+source, `Source/Asset Management Supporting Materials/PSC Preferred Equity Tracker -
+12312025 updated 01082026.xlsx` (Cost sheet), and, for asset class, `Source/PSC Investment
+Summary Data_v34_12.31.25 - Acct 01082026.xlsx`, sheet "Asset Type Net Cost" (per-deal
+classes typed by hand; its total 691,681,937.6 IS the deck's $691.6M).
+
+| | Deck / tracker | Engine |
+|---|---|---|
+| Funded (p.26 total net pref) | 635,556,951 | 635.6M |
+| Future funding (p.26 footnote "$56.1M") | 56,124,986 | 56.77M |
+| Total incl. unfunded (p.23) | 691,681,937 | 692.4M |
+| PSC incl. unfunded (p.23) | 120.2M | 120.9M |
+| 3rd-party funded: KoC / F&F / Decl / Amb | 82.5 / 28.1 / 13.1 / 12.3 | identical |
+| TIAA funded / PSC funded | 383.6 / 115.9 | 385.7 / 113.9 |
+
+FUNDED ties holding by holding (54 holdings) except: **Brainerd** -- the engine gives TIAA
+$2,075,057 the tracker gives PSC; it is one of accounting's allocation overrides and
+`ownership_overrides` on production is EMPTY (none of BRNERD / JBFAIR / NOTTNV entered);
+**Pontchartrain** +$57,000 in the engine; **Bel Air** $11.7K PSC vs F&F (the tracker's
+typed constants); Apple only looks different (the tracker's Bales row has no ID; combined
+10.91M vs 10.93M, CAD).
+
+FUTURE FUNDING differs by +$0.65M, five deals: Pontchartrain (tracker 2,250,000, engine
+none); 30 Bearfoot (engine 915,000) and Donald Lynch (engine 2,485,000), both held at 12/31/25
+and sold 9/4/26, absent from the tracker; Apple Bales (-253,192) and Middle Island
+(-233,312 vs tracker +16,688) -- the One Pager's remaining-to-fund goes NEGATIVE when a deal
+is over-funded and the engine sums it.
+
+ASSET CLASS (p.23) differs only by classification: Burton $26.6M (deck Grocery-Anchored,
+app `Retail - Non Groc.`); Brainerd's future funding $13.3M (deck Non-Grocery Retail -- a
+deck error, Brainerd is multifamily); Merle Hay + 5-15 Broad $8.5M (app plain `Retail`,
+deck Non-Grocery); plus the future-funding items. Deck "Self Storage" = its "Other -
+Self-Storage" rows; deck "Other" = Industrial, RV Park, Specialty.
+
+Open, before the Phase 1 views are built (decisions, not code):
+1. Accounting enters the Brainerd override (and JB Fair, Nottingham) effective <= 12/31/25.
+2. Future funding: may remaining-to-fund be negative? Do Bearfoot / Lynch commitments count
+   at 12/31/25? Why Pontchartrain shows $2.25M unfunded in the tracker and none in the app.
+3. Asset class: fix `Asset_Type` in MRI (Burton, Merle Hay, 5-15 Broad) or keep a board
+   class per deal in the app.
+4. Page 24: a canonical operating-partner list (app names vary: JPI / JPI Companies,
+   Vastgood / Vastgood Properties LLC, Apple / Apple Self Storage, Bertram and DiMarco).
