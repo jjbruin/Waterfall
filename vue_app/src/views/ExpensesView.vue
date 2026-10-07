@@ -666,7 +666,34 @@ async function saveRate() {
   } catch (e) { fail(e, 'Could not save the rate') }
 }
 
-watch(tab, t => { report.value = null; if (t === 'setup') loadEmployees(); else loadList() })
+// ---- the monthly cell phone reimbursement (Jim, Oct 7 2026) ----
+// Paid automatically in each payroll batch; the rate and who receives it are the CFO's.
+// `can_edit` comes from the server, so the controls agree with what it allows.
+const phone = ref<any>({ rates: [], employees: [], can_edit: false, first_month: '' })
+const phoneMonth = ref('')
+const phoneRate = ref('')
+async function loadPhone() {
+  try { phone.value = (await api.get('/api/expenses/phone')).data }
+  catch { /* not accounting: the section is not shown */ }
+}
+async function savePhoneRate() {
+  try {
+    phone.value.rates = (await api.put('/api/expenses/phone/rate',
+      { effective_month: phoneMonth.value, rate: phoneRate.value })).data.rates
+    phoneMonth.value = phoneRate.value = ''
+    dataStore.addToast('Cell phone rate saved.', 'success')
+  } catch (e) { fail(e, 'Could not save the rate') }
+}
+async function savePhoneEmployee(e: any) {
+  try {
+    phone.value.employees = (await api.put(`/api/expenses/phone/employees/${e.user_id}`,
+      { eligible: e.eligible, start_month: e.start_month, end_month: e.end_month || null })).data.employees
+  } catch (err) { fail(err, 'Could not save'); loadPhone() }
+}
+const monthLabel = (m: string) => m ? new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1)
+  .toLocaleString('en-US', { month: 'long', year: 'numeric' }) : ''
+
+watch(tab, t => { report.value = null; if (t === 'setup') { loadEmployees(); loadPhone() } else loadList() })
 // "Add to Home Screen" on an iPhone or iPad (Jim, Oct 7 2026): Safari names the icon
 // from this tag and opens it on the page it was added from, so an employee who adds
 // it here gets "PSC Expenses" straight back to this screen. The icon itself is
@@ -900,6 +927,13 @@ onUnmounted(() => homeScreenName(null))
               <option value="" disabled>choose…</option>
               <option v-for="c in options.categories" :key="c.account" :value="c.account">{{ c.name }}</option>
             </select>
+            <!-- A hint only: the server declines the bill itself (expense_phone), so the
+                 rule lives in one place. -->
+            <span v-if="options.phone && /telephone/i.test(options.categories.find((c: any) => c.account === editing.category_account)?.name || '')"
+                  class="muted phone-hint">
+              Cell phone bills are not claimed here: from {{ options.phone.first_month_label }} they are
+              reimbursed automatically<template v-if="options.phone.rate"> ({{ fmt(options.phone.rate) }} a month)</template>.
+              Internet is still claimed.</span>
           </label>
           <label>Purpose
             <select v-model="editing.purpose">
@@ -1247,6 +1281,40 @@ onUnmounted(() => homeScreenName(null))
         <label class="grow">Basis <input v-model="rateBasis" placeholder="e.g. IRS standard rate 2026" /></label>
         <button class="btn-primary" :disabled="!rateDate || !rateValue" @click="saveRate">Set rate</button>
       </div>
+
+      <template v-if="phone.first_month">
+        <h4>Cell phone reimbursement</h4>
+        <p class="muted">Paid automatically: every payroll batch adds the monthly reimbursement for each
+          employee below, for every month owed since {{ monthLabel(phone.first_month) }}, once. Employees
+          do not claim cell phone bills on their reports — those lines are declined. Booked to
+          {{ phone.account }}. <template v-if="!phone.can_edit">Only the CFO changes the rate and who receives it.</template></p>
+        <table class="data-table narrow">
+          <thead><tr><th>From</th><th class="num">Per month</th><th>Set by</th></tr></thead>
+          <tbody>
+            <tr v-for="r in phone.rates" :key="r.effective_date">
+              <td>{{ monthLabel(r.effective_date.slice(0, 7)) }}</td><td class="num">{{ fmt(r.rate) }}</td>
+              <td>{{ r.set_by }}</td></tr>
+          </tbody>
+        </table>
+        <div v-if="phone.can_edit" class="row">
+          <label>From <input type="month" v-model="phoneMonth" /></label>
+          <label>Per month <input v-model="phoneRate" class="num-in" placeholder="50.00" /></label>
+          <button class="btn-primary" :disabled="!phoneMonth || !phoneRate" @click="savePhoneRate">Set rate</button>
+        </div>
+        <table class="data-table narrow">
+          <thead><tr><th>Employee</th><th>Receives it</th><th>From</th><th>Through</th></tr></thead>
+          <tbody>
+            <tr v-for="e in phone.employees" :key="e.user_id" :class="{ muted: !e.eligible }">
+              <td>{{ e.full_name }}</td>
+              <td><input type="checkbox" v-model="e.eligible" :disabled="!phone.can_edit" @change="savePhoneEmployee(e)" /></td>
+              <td><input type="month" v-model="e.start_month" :min="phone.first_month" :disabled="!phone.can_edit || !e.eligible"
+                         @change="savePhoneEmployee(e)" /></td>
+              <td><input type="month" v-model="e.end_month" :disabled="!phone.can_edit || !e.eligible"
+                         @change="savePhoneEmployee(e)" /><span v-if="!e.end_month" class="muted"> ongoing</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
     </template>
   </div>
 </template>
@@ -1323,6 +1391,7 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
 .receipt-col > * { flex: 1; }
 .receipts { margin: 10px 0; }
 .receipts-help { margin: 2px 0 6px; font-size: 12.5px; }
+.phone-hint { display: block; max-width: 280px; font-size: 11.5px; margin-top: 3px; white-space: normal; }
 .data-table.compact td { padding: 3px 8px; }
 /* The three ways to add, as equals: same size, same weight, side by side. */
 .add-bar { margin: 10px 0 14px; }

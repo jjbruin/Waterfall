@@ -1681,6 +1681,9 @@ PROTECTED_TABLES = {'ownership_overrides', 'ownership_override_lines', 'market_r
                     'er_events', 'er_mileage_rates', 'er_receipts',
                     'er_coding', 'er_entity_currency', 'er_recurring', 'er_batches',
                     'er_routes',
+                    # The cell phone reimbursement: the CFO's rates, who is paid,
+                    # and the ledger of months paid -- losing it would pay twice.
+                    'er_phone_rates', 'er_phone_eligibility', 'er_phone_paid',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',

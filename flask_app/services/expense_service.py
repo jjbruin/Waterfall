@@ -370,9 +370,16 @@ def options(engine) -> dict:
             missing.append(name)
 
     deals = [dict(OPERATIONS)] + am_deal_list()
+    # The automatic cell phone reimbursement, so the form can say so before a bill is typed.
+    from flask_app.services import expense_phone
+    from datetime import date as _date_t
+    now_rate = expense_phone.rate_for_month(engine, _date_t.today().isoformat()[:7])
     return {"categories": cats, "missing_categories": missing,
             "purposes": list(PURPOSES), "deals": deals,
-            "mileage_rates": mileage_rates(engine)}
+            "mileage_rates": mileage_rates(engine),
+            "phone": {"first_month": expense_phone.FIRST_MONTH,
+                      "first_month_label": expense_phone.month_label(expense_phone.FIRST_MONTH),
+                      "rate": float(now_rate["rate"]) if now_rate else None}}
 
 
 def am_deal_list() -> List[dict]:
@@ -752,6 +759,11 @@ def save_line(engine, actor, report_id, body: dict, line_id=None) -> dict:
             raise ValueError("Route %s is not one of your measurements." % route_id)
         if miles is None:
             raise ValueError("A measured route belongs on a mileage line.")
+    # Declined at the door: a cell phone bill dated in the automatic months.
+    from flask_app.services import expense_phone
+    why = expense_phone.declined(d, body.get("vendor"), body.get("comment"), engine)
+    if why:
+        raise ValueError("This line " + why)
     vals = {"report": r["id"], "d": d, "de": d_end,
             "cat": (body.get("category_account") or "").strip() or None,
             "pur": (body.get("purpose") or "").strip() or None,
@@ -860,8 +872,14 @@ def _check(engine, report: dict, lines: List[dict], receipts=None) -> dict:
     dupes = possible_duplicates(engine, report, lines)
     if not lines:
         errors.append("The report has no lines.")
+    from flask_app.services import expense_phone
     for i, ln in enumerate(lines, start=1):
         e, w = line_problems(ln, cats, codes)
+        # CELL PHONE BILLS ARE PAID AUTOMATICALLY from Oct 2026 (expense_phone). Checked
+        # here as well as on save, because a line read off a receipt is never "saved".
+        why = expense_phone.declined(ln.get("line_date"), ln.get("vendor"), ln.get("comment"), engine)
+        if why:
+            e.append(why)
         by_line[ln["id"]] = {"errors": e, "warnings": w}
         errors += ["Line %d %s." % (i, x) for x in e]
         warnings += ["Line %d %s." % (i, x) for x in w]
