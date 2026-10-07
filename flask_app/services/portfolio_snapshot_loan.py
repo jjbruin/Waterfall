@@ -363,18 +363,16 @@ MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
 PROJECTED_YE_NOI_FALLBACK: frozenset = frozenset({"P0000019"})   # Giant 7
 
 
-MANUAL_RATIO_SEEDS: dict[str, dict] = {
-    "P0000109": {"ltv": 69.0},                                    # Burton Retail Portfolio
-    "P0000116": {"ltv": 64.2},                                    # Plaza Del Mar
-    "P0000117": {"ltv": 69.7, "ytd_dscr": 1.9, "debt_yield": 12.1},   # Fairview Heights
-    "P0000118": {"ltv": 75.7, "ytd_dscr": 1.5, "debt_yield": 8.9},    # Hanestowne Waterstone
-    "P0000119": {"ltv": 70.6, "ytd_dscr": 1.1, "debt_yield": 5.93},   # Presidential Arms
-    # Citizen Storage. ITS DSCR SEED WAS REMOVED 2026-10-05: the deal now has a
-    # full YTD Interim IS, so the engine computes 1.67x at 26Q3 and the seeded
-    # 1.5x had stopped filling a gap and started overriding a real figure. LTV
-    # and Debt Yield stay — it still has no valuation and no complete quarter.
-    "P0000120": {"ltv": 74.0, "debt_yield": 9.7},
-}
+MANUAL_RATIO_SEEDS: dict[str, dict] = {}
+# EMPTIED 2026-10-07 (Charlene): every typed LTV / YTD DSCR / Debt Yield cell is
+# gone, so every ratio on this tab is computed or a dash. The 13 seeds that stood
+# here (Burton and Plaza Del Mar LTV; Fairview Heights, Hanestowne, Presidential
+# Arms LTV/DSCR/Debt Yield; Citizen Storage LTV and Debt Yield) were stand-ins
+# for data the source systems did not yet hold. The mechanism below is inert on
+# an empty dict -- a deal is typeable only if it appears here -- and is kept so a
+# future seed is one entry, not a rebuild. Any value already STORED for those
+# cells is ignored too: resolve_manual_ratio() returns nothing for a field with
+# no seed.
 
 #: The two source strings a typed cell reports, so the page can always say
 #: whether a figure is somebody's entry or the value it was pre-filled with.

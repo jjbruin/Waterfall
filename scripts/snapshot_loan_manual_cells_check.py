@@ -1,4 +1,7 @@
-"""Guardrail — the Loan subtab's TYPED ratio cells (LTV / YTD DSCR / Debt Yield).
+"""SUPERSEDED 2026-10-07: the six seeds this pinned were removed; see
+scripts/snapshot_loan_no_typed_ratios_check.py. Kept as the record of the old rule.
+
+Guardrail — the Loan subtab's TYPED ratio cells (LTV / YTD DSCR / Debt Yield).
 
 Proves, on LIVE data, that making six recent acquisitions' three ratio columns
 typeable did exactly that and nothing else:
