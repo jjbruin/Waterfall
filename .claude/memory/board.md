@@ -134,6 +134,10 @@ through" date. Every figure on a page belongs to that schedule's as-of; where th
 quarter's accounting is not closed by the meeting, set the schedule's as-of to the last closed
 quarter rather than mixing dates as the January deck did. Do not add a cash-through date.
 
+**DECIDED (Jim, Oct 7 2026): BRAINERD I AND II ARE ONE DEAL.** A deal is an MRI deal
+(Investment Metrics' Current table), so Brainerd Place is counted once; p.26's 53 against the
+January deck's 54 is this, not a gap. Do not split it into two transactions.
+
 Jefferson Stephens (closed Oct 2025) has no funded capital at 12/31/25 -- the tracker
 carries $1 -- so it is classed JV by its $22.7M unfunded commitment and adds nothing to
 capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 workbook
