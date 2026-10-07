@@ -108,6 +108,13 @@ body {
     --sidebar-width: 200px;
   }
 }
+/* Phone: less gutter, so a screen keeps its width (the sidebar folds to a rail --
+   see AppSidebar.toggleCollapsed). */
+@media (max-width: 600px) {
+  .page-content {
+    padding: 12px;
+  }
+}
 
 .update-banner {
   position: fixed;

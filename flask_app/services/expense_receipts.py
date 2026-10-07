@@ -273,8 +273,11 @@ def upload(engine, actor, report_id, files: List[Tuple[str, bytes]]) -> dict:
         with engine.connect() as c:
             same = c.execute(text("SELECT id, report_id FROM er_receipts WHERE sha256 = :s "
                                   "ORDER BY id"), {"s": sha}).fetchall()
-        if any(int(x[1]) == int(r["id"]) for x in same):
-            results.append({"file": base, "result": "duplicate",
+        here = [int(x[0]) for x in same if int(x[1]) == int(r["id"])]
+        if here:
+            # which receipt it already is, so the expense pop-up can attach that one
+            # (a re-picked iPhone photo arrives under a new name, so the name cannot say)
+            results.append({"file": base, "result": "duplicate", "receipt_id": here[0],
                             "why": "this file is already on this report"})
             continue
         dup = int(same[0][1]) if same else None
