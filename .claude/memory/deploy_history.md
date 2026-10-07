@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v585** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v586** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v585 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v586 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,18 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v586` = `ad319fb` (OWNERSHIP SEEDS A PORTFOLIO WITH ITS CHILD PROPERTIES --
+    `run_upstream_analysis` called `get_property_vcodes_for_deal(inv, entity_id)`
+    REVERSED; it raised, the `except` swallowed it, so every portfolio was seeded from
+    the parent alone. Now `(str(entity_id), inv)`, the February 2026 lookup unchanged.
+    Measured local, every parent: only P0000049 moves (seed capital 0 -> 59,100).
+    Span vs live `949a83f`: `c5111fe` (this), docs `cc36992` `696e92e` `4996aab`
+    `bf55258` and Charlene's docs `2ac3450` `c51b3b5` `1f6372a`, merge `ad319fb`. Build
+    `cany`, 2m52s, Succeeded; tag locked; P1 re-run before update; Healthy, `/health`
+    200, SSO still enabled and all 7 SSO_/SHAREPOINT_ settings carried over.
+    `ownership_child_call_check.py` run INSIDE the v586 container: 5/5. Charlene's
+    `1f6372a` (open_items 21.6) says P0000049 is not marked SOLD; production read Oct 7
+    showed it SOLD 9/4/2026 -- her note may predate Jim's correction.)
   - `v585` = `949a83f` (INVESTMENT METRICS: A DEAL SOLD AFTER THE AS-OF IS CURRENT AT THAT
     QUARTER. Charlene's decision on open_items 20.13. `classify` returns SOLD only when the
     SOLD marker is present AND the sale date is on or before the as-of; a SOLD marker with NO
