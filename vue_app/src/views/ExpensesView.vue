@@ -127,9 +127,17 @@ const blankLine = () => ({
   splits: [] as { deal_code: string; deal_name: string; amount: string; pct: string }[],
 })
 const editing = ref<any>(null)
+// The pop-up's own upload-and-read (uploadInvoice): what it is doing, and what it found.
+// `made` is what THIS pop-up added (the receipt, and the line the reader made for a new
+// expense), so Cancel can take it back out rather than leave it on the report.
+type Made = { receiptId: number; lineId: number | null; file: string } | null
+const invoice = ref<{ busy: string; note: string; bad: boolean; made: Made }>(
+  { busy: '', note: '', bad: false, made: null })
+const resetInvoice = () => { invoice.value = { busy: '', note: '', bad: false, made: null } }
 
-function newLine() { wiz.value = null; editing.value = blankLine() }
+function newLine() { wiz.value = null; resetInvoice(); editing.value = blankLine() }
 function editLine(ln: any) {
+  resetInvoice()
   wiz.value = null          // a route measured for another line must not follow this one
   editing.value = {
     ...blankLine(), ...ln,
@@ -226,6 +234,7 @@ async function saveLine() {
     const url = `/api/expenses/reports/${report.value.id}/lines`
     report.value = (e.id ? await api.put(`${url}/${e.id}`, body) : await api.post(url, body)).data
     editing.value = null
+    resetInvoice()          // saved: what the pop-up uploaded is now the employee's
   } catch (err) { fail(err, 'Could not save the line') }
 }
 
@@ -408,7 +417,162 @@ async function removeReceipt(rc: any) {
   } catch (e) { fail(e, 'Could not remove the receipt') }
 }
 function lineForReceipt(rc: any) {
+  resetInvoice()
   editing.value = { ...blankLine(), receiptChoice: rc.id, receipt_page: 1 }
+}
+
+// ---- the invoice, read inside the expense pop-up (Jim, Oct 7 2026) ----
+// "Employees are likely to see the '+ Add an expense' button and click that first
+// before knowing to upload a file." So the pop-up takes the receipt itself, through
+// the SAME two calls the upload buttons make (store, then extract) -- one reader.
+// The reader adds the line on the server; the pop-up then edits that line, keeping
+// whatever the employee had already typed (theirs wins; the receipt fills blanks).
+const invoiceBusy = computed(() => !!invoice.value.busy)
+async function closeEditing() {
+  if (invoiceBusy.value) return        // the line is being written: closing would orphan it
+  const made = invoice.value.made
+  if (made && report.value) {
+    // Cancel means cancel: what this pop-up uploaded goes back out -- after asking.
+    if (!window.confirm(`Discard ${made.file}? The receipt you uploaded here`
+        + `${made.lineId ? ' and the expense read from it' : ''} will be removed from the report.`)) return
+    const rep = report.value.id
+    try {
+      if (made.lineId) report.value = (await api.delete(`/api/expenses/reports/${rep}/lines/${made.lineId}`)).data
+      report.value = (await api.delete(`/api/expenses/reports/${rep}/receipts/${made.receiptId}`)).data
+    } catch (err) { fail(err, 'Could not remove the uploaded receipt') }
+  }
+  editing.value = null
+  resetInvoice()
+}
+
+// What the employee typed wins over what the receipt says; the receipt fills the rest.
+function mergeTyped(typed: any, read: any) {
+  const blank: any = blankLine()
+  const out: any = { ...read }
+  for (const k of ['line_date', 'line_date_end', 'category_account', 'purpose', 'deal_code',
+                   'deal_name', 'vendor', 'comment', 'amount', 'recurring', 'isPeriod',
+                   'isSplit', 'splits']) {
+    const mine = typed[k]
+    const changed = JSON.stringify(mine) !== JSON.stringify(blank[k])
+    const readBlank = read[k] === '' || read[k] == null
+      || (Array.isArray(read[k]) && !read[k].length)
+    if (changed || readBlank) out[k] = mine
+  }
+  return out
+}
+
+// The employee's amount is kept over the receipt's, so a difference is SAID, not hidden.
+function amountNote(mine: any, read: any) {
+  const a = parseFloat(mine), b = parseFloat(read)
+  return isNaN(a) || isNaN(b) || Math.abs(a - b) < 0.005 ? ''
+    : ` Your amount ${fmt(a)} is not the receipt's ${fmt(b)} -- check which is right.`
+}
+
+async function uploadInvoice(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const picked = input.files?.[0]
+  input.value = ''
+  const e = editing.value
+  if (!picked || !e || !report.value || invoiceBusy.value) return
+  const file = friendlyName(picked, 0)
+  const rep = report.value.id
+  invoice.value = { busy: `Uploading ${file.name}…`, note: '', bad: false, made: null }
+  const say = (note: string, bad = false) => {
+    invoice.value = { ...invoice.value, busy: '', note, bad } }
+  try {
+    // 1. store it -- the same endpoint as the Upload buttons
+    const fd = new FormData()
+    fd.append('files', file, file.name)
+    const up = (await api.post(`/api/expenses/reports/${rep}/receipts`, fd)).data
+    const res = (up.results || [])[0] || {}
+    if (res.result === 'duplicate') {
+      // The server says WHICH receipt it already is: an iPhone photo picked twice
+      // arrives under a new name each time, so the name cannot.
+      const same = (up.receipts || []).find((r: any) => r.id === res.receipt_id)
+      report.value = { ...report.value, receipts: up.receipts }
+      const used = same ? linesFrom(same.id) : 0
+      if (same && !used) {
+        e.receiptChoice = same.id; e.receipt_page = 1
+        return say(`That file is already on this report as "${same.filename}" -- it is attached `
+          + 'to this expense now. Fill in the details from the image, then Save.')
+      }
+      return say(`That file is already on this report${same ? ` as "${same.filename}"` : ''}`
+        + `${used ? `, and ${used === 1 ? 'a line already uses it' : used + ' lines already use it'}` : ''}. `
+        + 'To change that expense, Cancel and use Edit on its line. Or upload a different file here.', true)
+    }
+    if (res.result !== 'stored') {
+      return say(`${file.name} could not be used: ${res.why || 'the upload was refused'}.`, true)
+    }
+    const rid = res.receipt_id
+    invoice.value.made = { receiptId: rid, lineId: null, file: file.name }
+    // 2. read it -- the same endpoint as "Read N waiting"
+    invoice.value.busy = `Reading ${file.name}… this takes a few seconds`
+    const before = new Set((report.value.lines || []).map((l: any) => l.id))
+    let after: any
+    try {
+      after = (await api.post(`/api/expenses/reports/${rep}/receipts/${rid}/extract`)).data
+    } catch (err: any) {
+      after = (await api.get(`/api/expenses/reports/${rep}`)).data
+    }
+    report.value = after
+    const added = (after.lines || []).filter((l: any) => !before.has(l.id) && l.receipt_id === rid)
+    const rc = (after.receipts || []).find((r: any) => r.id === rid)
+    const dupNote = res.why ? ` Note: ${res.why}.` : ''
+
+    if (!added.length) {
+      // Unreadable or no receipt in it: still the receipt for this expense.
+      e.receiptChoice = rid; e.receipt_page = 1
+      return say(`${file.name} is attached, but it could not be read`
+        + `${rc?.error ? ' (' + rc.error + ')' : ''}. Fill in the details from the image.${dupNote}`, true)
+    }
+    if (!e.id && added.length === 1) {
+      // A new expense becomes the line the receipt made, with the employee's typing kept.
+      const typed = { ...e }
+      const made = invoice.value.made
+      editLine(added[0])                  // (clears the pop-up's state -- put `made` back)
+      editing.value = mergeTyped(typed, editing.value)
+      invoice.value.made = made && { ...made, lineId: added[0].id }
+      const diff = amountNote(typed.amount, added[0].amount)
+      const todo = editing.value.purpose ? 'Check the details' : 'Choose the purpose, check the details'
+      return say(`Read from ${file.name} and added to your report. ${todo}, then Save.`
+        + `${diff}${dupNote}`, !!diff)
+    }
+    if (!e.id) {
+      // Several receipts in one file: each is its own line already, and kept.
+      editing.value = null
+      resetInvoice()
+      dataStore.addToast(`${file.name} held ${added.length} receipts -- ${added.length} lines were `
+        + 'added to your report. Open each one with Edit to choose its purpose and deal.', 'info')
+      return
+    }
+    // An expense already on the report: it takes the receipt; the reader's own
+    // line(s) are removed so nothing is claimed twice.
+    for (const ln of added) {
+      report.value = (await api.delete(`/api/expenses/reports/${rep}/lines/${ln.id}`)).data
+    }
+    e.receiptChoice = rid
+    if (added.length === 1) {
+      const x = added[0]
+      const diff = e.isMileage ? '' : amountNote(e.amount, x.amount)
+      e.receipt_page = x.receipt_page || 1
+      e.extracted = x.extracted || null
+      if (!e.line_date && x.line_date) e.line_date = x.line_date
+      if (!e.vendor && x.vendor) e.vendor = x.vendor
+      if (!e.category_account && x.category_account) e.category_account = x.category_account
+      if (!e.isMileage && (e.amount === '' || e.amount == null) && x.amount != null) e.amount = x.amount
+      return say(`Read from ${file.name} and attached. Blank fields were filled from it; `
+        + `Save to keep it.${diff}${dupNote}`, !!diff)
+    }
+    e.receipt_page = 1
+    return say(`${file.name} holds ${added.length} receipts. It is attached -- choose the page `
+      + `for this expense below, then Save.${dupNote}`)
+  } catch (err: any) {
+    say(`Could not upload ${file.name}: ${err?.response?.data?.error || 'the upload failed'}. `
+      + 'Try again, or fill in the expense by hand.', true)
+    try { report.value = (await api.get(`/api/expenses/reports/${rep}`)).data } catch { /* shown */ }
+  } finally {
+    invoice.value.busy = ''
+  }
 }
 const pendingCount = computed(() =>
   (report.value?.receipts || []).filter((r: any) => r.status === 'pending').length)
@@ -543,6 +707,48 @@ onMounted(async () => {
         <button v-if="report.permissions.edit" class="btn-secondary" @click="saveHeader">Save</button>
       </div>
 
+      <!-- ---------- three ways to add, side by side (Jim, Oct 7 2026) ----------
+           Employees reached for "+ Add an expense" first and never saw the upload
+           buttons further down, so all three sit here at the same level. -->
+      <div v-if="report.permissions.edit" class="add-bar">
+        <div class="add-title">Add to this report</div>
+        <div class="add-options">
+          <button class="add-opt" :disabled="!!progress || !!editing" @click="newLine">
+            <span class="add-icon">＋</span>
+            <span class="add-name">Add an expense</span>
+            <span class="add-help">One at a time. Upload its receipt or invoice inside and we read it for you — or type it in. Mileage too.</span>
+          </button>
+          <!-- On an iPhone or iPad this one offers Photo Library, the camera and Files:
+               iOS reads the MIME types in `accept` (image/*), not only the extensions. -->
+          <label class="add-opt" :class="{ disabled: !!progress }">
+            <span class="add-icon">⇪</span>
+            <span class="add-name">{{ touch ? 'Photos or files' : 'Upload receipts' }}</span>
+            <span class="add-help">Pick one or many receipts and invoices. Each one read becomes a line for you to finish.</span>
+            <input type="file" multiple :accept="RECEIPT_PICK" hidden :disabled="!!progress" @change="uploadFiles" /></label>
+          <label v-if="touch" class="add-opt" :class="{ disabled: !!progress }">
+            <span class="add-icon">◉</span>
+            <span class="add-name">Take a photo</span>
+            <span class="add-help">Photograph a paper receipt now. It is read and becomes a line.</span>
+            <input type="file" accept="image/*" capture="environment" hidden :disabled="!!progress" @change="uploadFiles" /></label>
+          <!-- iOS and Android cannot pick a folder, so the button is not offered there. -->
+          <label v-if="!touch" class="add-opt" :class="{ disabled: !!progress }">
+            <span class="add-icon">▤</span>
+            <span class="add-name">Upload a folder</span>
+            <span class="add-help">A whole folder of receipts at once. Each one read becomes a line.</span>
+            <input type="file" webkitdirectory hidden :disabled="!!progress" @change="uploadFiles" /></label>
+        </div>
+        <div class="row add-more">
+          <SharePointPicker :accept="RECEIPT_ACCEPT" multiple folders remember-as="expense-receipts"
+                            :disabled="!!progress" @picked="uploadFileList" />
+          <button v-if="report.permissions.copy_recurring" class="btn-secondary"
+                  :disabled="!!progress" @click="copyRecurring">↻ Copy recurring lines from my last report</button>
+          <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
+            Read {{ pendingCount }} waiting</button>
+          <span v-if="progress" class="progress-text">{{ progress }}</span>
+          <span v-else class="muted">PDF, JPG, PNG, iPhone HEIC and other images.</span>
+        </div>
+      </div>
+
       <table class="data-table">
         <thead><tr>
           <th></th><th>Date / period</th><th>Category</th><th>Purpose</th><th>Deal</th>
@@ -620,22 +826,32 @@ onMounted(async () => {
         </tr></tfoot>
       </table>
 
-      <div class="row">
-        <button v-if="report.permissions.edit && !editing" class="btn-secondary add" @click="newLine">
-          + Add an expense</button>
-        <button v-if="report.permissions.copy_recurring && !editing" class="btn-secondary add"
-                @click="copyRecurring">↻ Copy recurring lines from my last report</button>
-      </div>
-
       <!-- ---------- line form: a pop-up, the receipt beside the entry ---------- -->
-      <div v-if="editing" class="modal-backdrop" @click.self="editing = null">
+      <div v-if="editing" class="modal-backdrop" @click.self="closeEditing">
        <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
           <strong>{{ editing.id ? 'Edit expense' : 'New expense' }}</strong>
-          <button class="link" @click="editing = null">✕ Close</button>
+          <button class="link" :disabled="invoiceBusy" @click="closeEditing">✕ Close</button>
         </div>
       <div class="line-form" :class="{ 'with-receipt': editingReceipt }">
        <div class="form-col">
+        <!-- The receipt FIRST: upload it here and it is read into the form. Not on a
+             mileage line (no receipt) nor once one is attached. -->
+        <div v-if="!editing.isMileage && typeof editing.receiptChoice !== 'number'" class="invoice-box">
+          <div class="invoice-q"><strong>Have the receipt or invoice?</strong>
+            Upload it and we fill in the date, vendor, amount and category for you.</div>
+          <div class="row">
+            <label class="btn-primary file-btn" :class="{ disabled: invoiceBusy }">
+              {{ touch ? 'Choose a photo or file' : 'Upload the receipt or invoice' }}
+              <input type="file" :accept="RECEIPT_PICK" hidden :disabled="invoiceBusy" @change="uploadInvoice" /></label>
+            <label v-if="touch" class="btn-primary file-btn" :class="{ disabled: invoiceBusy }">Take a photo
+              <input type="file" accept="image/*" capture="environment" hidden :disabled="invoiceBusy" @change="uploadInvoice" /></label>
+            <span class="muted">or fill in the details by hand below.</span>
+          </div>
+        </div>
+        <div v-if="invoice.busy" class="invoice-status busy">⏳ {{ invoice.busy }}</div>
+        <div v-else-if="invoice.note" class="invoice-status" :class="invoice.bad ? 'bad' : 'good'">
+          {{ invoice.bad ? '⚠' : '✓' }} {{ invoice.note }}</div>
         <div class="row">
           <label>Date <input type="date" v-model="editing.line_date" /></label>
           <label class="check"><input type="checkbox" v-model="editing.isPeriod" /> a period</label>
@@ -743,8 +959,8 @@ onMounted(async () => {
           </div>
         </div>
         <div class="row">
-          <button class="btn-primary" @click="saveLine">Save line</button>
-          <button class="btn-secondary" @click="editing = null">Cancel</button>
+          <button class="btn-primary" :disabled="invoiceBusy" @click="saveLine">Save line</button>
+          <button class="btn-secondary" :disabled="invoiceBusy" @click="closeEditing">Cancel</button>
         </div>
        </div>
        <!-- The receipt beside the line it supports, so a handwritten amount the
@@ -771,24 +987,8 @@ onMounted(async () => {
       <!-- ---------- receipts ---------- -->
       <div class="receipts">
         <div class="row">
-          <strong>Receipts</strong>
-          <template v-if="report.permissions.edit">
-            <!-- On an iPhone or iPad this one offers Photo Library, the camera and Files:
-                 iOS reads the MIME types in `accept` (image/*), not only the extensions. -->
-            <label class="btn-primary file-btn">{{ touch ? 'Photos or files' : 'Upload files' }}
-              <input type="file" multiple :accept="RECEIPT_PICK" hidden @change="uploadFiles" /></label>
-            <label v-if="touch" class="btn-primary file-btn">Take a photo
-              <input type="file" accept="image/*" capture="environment" hidden @change="uploadFiles" /></label>
-            <!-- iOS and Android cannot pick a folder, so the button is not offered there. -->
-            <label v-if="!touch" class="btn-primary file-btn">Upload a folder
-              <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
-            <SharePointPicker :accept="RECEIPT_ACCEPT" multiple folders remember-as="expense-receipts"
-                              :disabled="!!progress" @picked="uploadFileList" />
-            <button v-if="pendingCount && !progress" class="btn-secondary" @click="readReceipts()">
-              Read {{ pendingCount }} waiting</button>
-          </template>
-          <span v-if="progress" class="muted">{{ progress }}</span>
-          <span v-else class="muted">PDF, JPG, PNG, iPhone HEIC and other images. Each receipt read becomes a line for you to complete.</span>
+          <strong>Receipts on this report</strong>
+          <span v-if="!report.receipts?.length" class="muted">none yet — add them above.</span>
         </div>
         <table v-if="report.receipts?.length" class="data-table compact">
           <tbody>
@@ -1074,6 +1274,32 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
 .receipt-col > * { flex: 1; }
 .receipts { margin: 10px 0; }
 .data-table.compact td { padding: 3px 8px; }
+/* The three ways to add, as equals: same size, same weight, side by side. */
+.add-bar { margin: 10px 0 14px; }
+.add-title { font-weight: 600; margin-bottom: 6px; }
+.add-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.add-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left;
+  padding: 12px 14px; border: 2px solid var(--color-primary, #2f6f4f); border-radius: 10px;
+  background: var(--color-surface, #fff); color: var(--color-text); cursor: pointer;
+  font: inherit; min-width: 0; }
+.add-opt:hover:not(:disabled):not(.disabled) { background: rgba(31, 78, 121, .06); }
+.add-opt:disabled, .add-opt.disabled { opacity: .55; cursor: default; pointer-events: none; }
+.add-icon { font-size: 20px; line-height: 1; color: var(--color-primary, #2f6f4f); }
+.add-name { font-size: 15px; font-weight: 700; color: var(--color-primary, #2f6f4f); }
+.add-help { font-size: 12.5px; color: var(--color-text-secondary); line-height: 1.35; }
+.add-more { margin-top: 8px; flex-wrap: wrap; }
+.progress-text { font-weight: 600; color: var(--color-primary, #2f6f4f); }
+/* Inside the pop-up: the receipt first, then the form it fills. */
+.invoice-box { border: 1px dashed var(--color-primary, #2f6f4f); border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 8px; background: rgba(31, 78, 121, .04); }
+.invoice-box .row { flex-wrap: wrap; }
+.invoice-q { margin-bottom: 4px; font-size: 13.5px; }
+.file-btn.disabled { opacity: .55; pointer-events: none; }
+.invoice-status { border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; font-size: 13px; }
+.invoice-status.busy { background: #eef3fa; color: var(--color-primary, #2f6f4f); font-weight: 600; }
+.invoice-status.good { background: #eaf5ec; color: #23613a; }
+.invoice-status.bad { background: #fff4e5; color: #8a4b00; }
 /* The narrow-window stacking promised above, AFTER the side-by-side rule so it wins.
    Above it, `.line-form.with-receipt` came later in the sheet and always applied: on a
    phone the form and the receipt sat at 420px + 360px inside a 360px dialog, the
@@ -1096,6 +1322,9 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
   .modal .receipt-col { min-height: 55vh; }
   .receipts .row, .actions, .new-report, .period, .tabs { flex-wrap: wrap; }
   .file-btn { padding: 9px 14px; font-size: 14px; }
+  /* still equals on a phone: stacked, full width, each a large target */
+  .add-options { grid-template-columns: 1fr; }
+  .add-opt { padding: 12px; }
 }
 .file-btn { display: inline-flex; flex-direction: row; align-items: center; }
 /* The page used these two classes without ever styling them, so the key actions

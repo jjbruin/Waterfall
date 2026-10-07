@@ -379,3 +379,19 @@ Note: accounting's accepted Sep 24 file has punctuation on all 119 lines and 12 
 -- either MRI accepted them then or accounting cleaned the file; the acceptance check now
 compares against their text cleaned to the rule. Two employees with the same initials
 would read alike -- not handled.
+
+## Phones, and the three ways to add (Oct 7 2026, `feat/expenses-mobile`, NOT deployed)
+- **iPhone/iPad** (b0cf454): the picker's `accept` carries `image/*` so iOS offers Photos
+  and the camera; touch gets "Take a photo" instead of "Upload a folder"; iOS's
+  `image.jpg` is renamed "Photo <date time>". Guardrail `expense_mobile_check.py`.
+- **Three equal cards above the lines table** -- Add an expense / Upload receipts (Photos
+  or files on touch) / Upload a folder (Take a photo on touch). Employees clicked
+  "+ Add an expense" and never saw the upload buttons lower down; the Receipts block now
+  only LISTS files.
+- **The pop-up reads the receipt itself** (`uploadInvoice`), through the SAME `/receipts`
+  and `/extract` calls -- one reader. New expense: the reader's line becomes the line
+  being edited, the employee's typing wins, the receipt fills blanks, a differing amount
+  is SAID. Existing line: it takes the receipt and the reader's line is deleted. Busy
+  blocks Save/Cancel/Close; Cancel asks, then removes what the pop-up added. A duplicate
+  upload returns `receipt_id` so a re-picked photo (new name) is found.
+  Guardrail `expense_add_options_check.py` (12 injections).

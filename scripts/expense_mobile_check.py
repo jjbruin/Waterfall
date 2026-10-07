@@ -41,8 +41,7 @@ def main():
     if INJECT == "nophotos":
         view = view.replace("+ ',image/*,application/pdf'", "")
     if INJECT == "folder":
-        view = view.replace('<label v-if="!touch" class="btn-primary file-btn">Upload a folder',
-                            '<label class="btn-primary file-btn">Upload a folder')
+        view = view.replace('<label v-if="!touch" class="add-opt"', '<label class="add-opt"')
     if INJECT == "order":
         # the stacking rule moved back to where it was: before the rule it must override
         rule = "  .line-form.with-receipt { grid-template-columns: 1fr; }\n"
@@ -63,7 +62,10 @@ def main():
     cam = re.search(r'<label v-if="touch"[^>]*>Take a photo\s*<input type="file" accept="image/\*" '
                     r'capture="environment"', view)
     chk("a touch device gets 'Take a photo' (camera)", cam is not None)
-    folder = re.search(r'<label([^>]*)>Upload a folder', view)
+    # the card's label: the last <label before the "Upload a folder" name
+    at = view.find(">Upload a folder<")
+    lab = view.rfind("<label", 0, at) if at > 0 else -1
+    folder = re.match(r'<label([^>]*)>', view[lab:]) if lab >= 0 else None
     chk("'Upload a folder' is not offered on a touch device",
         folder and 'v-if="!touch"' in folder.group(1), folder and folder.group(1))
     chk("touch is the pointer, not the width (an iPad is wide)",
