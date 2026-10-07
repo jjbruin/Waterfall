@@ -277,6 +277,46 @@ def get_employees():
     return _run("employees", lambda: {"employees": ex.employees(get_engine())})
 
 
+@expenses_bp.route("/phone", methods=["GET"])
+@login_required
+@roles_exactly(*EMPLOYEE_LIST_ROLES)
+@accounting_authority_required
+def get_phone():
+    """The cell phone reimbursement: its rates, who is paid, and whether you may change it."""
+    from flask_app.services import expense_phone as ph
+    a = _actor()
+
+    def view():
+        eng = get_engine()
+        return {"rates": ph.rates(eng), "employees": ph.eligibility(eng),
+                "first_month": ph.FIRST_MONTH, "account": ph.PHONE_ACCOUNT,
+                "can_edit": a.get("role") in ph.RATE_ROLES}
+    return _run("phone", view)
+
+
+# The rate and who receives it are the CFO's (Jim, Oct 7 2026: "The CFO should have
+# control of the reimbursement rate"). `roles_exactly`, so no other level-1 role passes.
+@expenses_bp.route("/phone/rate", methods=["PUT"])
+@login_required
+@roles_exactly("cfo")
+@accounting_authority_required
+def put_phone_rate():
+    from flask_app.services import expense_phone as ph
+    b = _body()
+    return _run("phone rate", lambda: {"rates": ph.set_rate(
+        get_engine(), b.get("effective_month"), b.get("rate"), _actor().get("username"))})
+
+
+@expenses_bp.route("/phone/employees/<int:user_id>", methods=["PUT"])
+@login_required
+@roles_exactly("cfo")
+@accounting_authority_required
+def put_phone_employee(user_id):
+    from flask_app.services import expense_phone as ph
+    return _run("phone eligibility", lambda: {"employees": ph.set_eligibility(
+        get_engine(), user_id, _body(), _actor().get("username"))})
+
+
 @expenses_bp.route("/employees/<int:user_id>", methods=["PUT"])
 @login_required
 @roles_exactly("admin")

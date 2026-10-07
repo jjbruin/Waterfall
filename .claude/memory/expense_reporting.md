@@ -424,3 +424,28 @@ would read alike -- not handled.
   `expense_coding_check` now asserts it on the file.
 - Guardrail: `expense_coding_check.py` 81 (`--inject=nogate|noacct|selfemail|silentnobody`),
   `expense_add_options_check.py` 42.
+
+## The monthly cell phone reimbursement (Oct 7 2026; branch `feat/cell-phone-allowance`)
+`expense_phone.py`. Jim: a fixed monthly reimbursement for personal cell phones, $50 now,
+the CFO controls the rate, paid by an automatic batch, and cell phone bills declined on
+reports. Decided: everyone set up in Expenses (a name on reports; never the admin account)
+is on by default and the CFO can switch one off or bound the months; from October 2026;
+cell phone BILLS only -- internet on Telephone & Internet is still claimed.
+- **Rate**: `er_phone_rates`, dated by month, seeded once at $50 from 2026-10 (Jim's
+  figure); set by `roles_exactly("cfo")` + accounting authority only. A rate for a month
+  already paid is refused.
+- **Paid by the payroll batch**: `build_batch` adds every (employee, month) owed through the
+  payroll month, MR53000015 at PSCMAN, "ER <initials> Cell Phone Reimbursement <Month YYYY>",
+  inside the payroll credit; `er_phone_paid` is the ledger (key user_id + month), written
+  in the batch's transaction, released by voiding. No report needed. A month with no rate
+  is reported, not paid at $0. Untick "Include the monthly cell phone reimbursements" to
+  leave them out of one batch.
+- **Not `er_recurring`** (accounting's standing items, ticked per batch): those pay per
+  BATCH, not per month -- two batches in a month would pay twice, a month with no batch
+  would pay nothing -- carry no CFO-owned rate, and would need one row per employee edited
+  at every rate change.
+- **Filter**: `expense_phone.declined` -- at `save_line` AND in `_check` (a line read off a
+  receipt is never saved). Carrier names or cell-phone words; internet, chargers, cases and
+  repairs are not declined. Lines dated before Oct 2026 stand (on production: Alay's
+  approved T-Mobile $50 for Aug; Joseph's two draft Verizon $103.46 for Jul/Aug).
+- Guardrail `scripts/expense_phone_check.py` (32; `--inject=double|nofilter|everyone`).

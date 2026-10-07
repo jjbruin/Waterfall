@@ -588,7 +588,13 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
     rows = coding_rows(engine, report_ids) if reports else []
     rec_ids = {int(x) for x in (body.get("recurring_ids") or [])}
     recs = [r for r in recurring(engine) if r["id"] in rec_ids and r["active"]]
-    if not rows and not recs:
+    # THE MONTHLY CELL PHONE REIMBURSEMENT (expense_phone): every month owed through the
+    # payroll month, once. On unless the batch says phone=False.
+    from flask_app.services import expense_phone
+    phone = (expense_phone.due(engine, pdate[:7]) if body.get("phone", True)
+             else {"items": [], "problems": []})
+    warnings += phone["problems"]
+    if not rows and not recs and not phone["items"]:
         errors.append("There is nothing to batch.")
     for r in rows:
         for p in r["problems"]:
@@ -638,6 +644,12 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
         manager.append(gl(MANAGER_ENTITY, rc["account"], float(rc["amount"]),
                           tu.mri_description("ER", initials(rc["employee"]), rc["description"],
                                              keep=2)))
+    emp_names = {int(e["user_id"]): e.get("full_name") or e.get("username") for e in ex.employees(engine)}
+    for it in phone["items"]:
+        manager.append(gl(MANAGER_ENTITY, expense_phone.PHONE_ACCOUNT, it["amount"],
+                          tu.mri_description("ER", initials(emp_names.get(it["user_id"]) or it["employee"]),
+                                             "Cell Phone Reimbursement",
+                                             expense_phone.month_label(it["month"]), keep=2)))
     credit_desc = tu.mri_description("ER Trinet Payroll", period,
                                      body.get("credit_suffix") or "", keep=2)
     total = round(sum(ln["amount"] for ln in manager), 2)
@@ -649,7 +661,9 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
     out = {"lines": lines, "errors": errors, "warnings": warnings, "total": total,
            "period": period, "payroll_date": pdate, "fx_used": used_fx,
            "credit_description": credit_desc, "reports": [r["id"] for r in reports],
-           "recurring": [r["id"] for r in recs]}
+           "recurring": [r["id"] for r in recs],
+           "phone": phone["items"],
+           "phone_total": round(sum(it["amount"] for it in phone["items"]), 2)}
     if not commit:
         return out
     if errors:
@@ -674,6 +688,13 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
             {"b": batch_id, "pd": pdate, "p": period, "r": json.dumps(out["reports"]),
              "rc": json.dumps(out["recurring"]), "cd": credit_desc, "fx": json.dumps(used_fx),
              "csv": csv_text, "t": total, "by": by, "at": ex._now()})
+        # The months this batch pays, in the same transaction: a month another batch
+        # paid a moment ago fails the ledger's key and nothing is written.
+        try:
+            expense_phone.record_paid(c, phone["items"], batch_id)
+        except Exception:
+            raise ValueError("A cell phone reimbursement in this batch was just paid by another "
+                             "batch. Preview again.")
     out.update({"batch_id": batch_id, "csv": csv_text})
     return out
 
@@ -729,4 +750,8 @@ def void_batch(engine, batch_id: str, by: str) -> dict:
                        "updated_at = :at WHERE batch_id = :b"), {"at": ex._now(), "b": batch_id})
         for i in ids:
             ex._event(c, i, "unbatched", {"username": by}, basis="%s voided" % batch_id)
-    return {"voided": batch_id, "reports": ids}
+        # Its cell phone months are owed again, and the next batch pays them.
+        from flask_app.services import expense_phone
+        expense_phone.ensure_tables(engine)
+        released = expense_phone.release(c, batch_id)
+    return {"voided": batch_id, "reports": ids, "phone_months_released": released}

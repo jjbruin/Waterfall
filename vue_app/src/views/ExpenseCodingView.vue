@@ -155,6 +155,9 @@ const payrollDate = ref('')
 const suffix = ref('End of Month')
 const fx = ref<Record<string, string>>({})
 const recPick = ref<Record<number, boolean>>({})
+// The monthly cell phone reimbursement (expense_phone): on unless unticked; the preview
+// says which employees and months it pays.
+const includePhone = ref(true)
 const preview = ref<any>(null)
 const busy = ref(false)
 const pickedIds = computed(() => Object.entries(pick.value).filter(([, v]) => v).map(([k]) => Number(k)))
@@ -196,6 +199,7 @@ function batchBody(commit: boolean) {
     report_ids: pickedIds.value, payroll_date: payrollDate.value, credit_suffix: suffix.value,
     fx: Object.fromEntries(Object.entries(fx.value).filter(([, v]) => v !== '')),
     recurring_ids: Object.entries(recPick.value).filter(([, v]) => v).map(([k]) => Number(k)),
+    phone: includePhone.value,
     commit,
   }
 }
@@ -512,7 +516,11 @@ onMounted(async () => { await load(); loadBatches() })
           <input type="checkbox" v-model="recPick[r.id]" /> {{ r.employee }} — {{ r.description }} {{ fmt(r.amount) }}</label>
       </div>
       <div class="row">
-        <button class="btn-secondary" :disabled="busy || !payrollDate || (!pickedIds.length && !Object.values(recPick).some(Boolean))"
+        <label class="check"><input type="checkbox" v-model="includePhone" />
+          Include the monthly cell phone reimbursements (every month owed, once)</label>
+      </div>
+      <div class="row">
+        <button class="btn-secondary" :disabled="busy || !payrollDate || (!pickedIds.length && !Object.values(recPick).some(Boolean) && !includePhone)"
                 @click="runPreview">Preview</button>
         <button class="btn-primary" :disabled="busy || !preview || preview.errors?.length" @click="generate">
           Generate &amp; download</button>
@@ -521,6 +529,11 @@ onMounted(async () => { await load(); loadBatches() })
         <div v-if="preview.errors?.length" class="notice"><strong>Cannot generate:</strong>
           <ul><li v-for="m in preview.errors" :key="m">{{ m }}</li></ul></div>
         <div v-else class="muted">{{ preview.lines.length }} lines, {{ fmt(preview.total) }} reimbursed, period {{ preview.period }}.</div>
+        <div v-if="preview.phone?.length" class="muted">
+          Cell phone: {{ preview.phone.length }} reimbursement(s), {{ fmt(preview.phone_total) }} —
+          <span v-for="(p, i) in preview.phone" :key="p.user_id + p.month">{{ i ? ', ' : '' }}{{ p.employee }} {{ p.month }}</span>.
+        </div>
+        <div v-for="w in preview.warnings || []" :key="w" class="warn-text">{{ w }}</div>
         <table v-if="preview.lines?.length" class="data-table">
           <thead><tr><th>Entity</th><th>Account</th><th class="num">Amount</th><th>Description</th><th>Related</th></tr></thead>
           <tbody><tr v-for="(l, i) in preview.lines" :key="i">
