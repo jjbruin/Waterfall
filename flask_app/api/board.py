@@ -3,7 +3,7 @@ OPT-IN (``auth/sections.py``): the section gate refuses a user who has not been
 granted it before any route here runs. Inside, what may be DONE is a permission
 by username (``auth/permissions.py``), checked per route:
 
-    read anything here ............ the Board section
+    read anything here ............ the Board section (schedule views included)
     meeting schedules, narratives . board_edit
     create a meeting, rename it ... board_build
     grants and the access log ..... the admin USERNAME only
@@ -97,6 +97,32 @@ def create_meeting():
 def meeting(mid):
     m = svc.get_meeting(mid)
     return jsonify(m) if m else (jsonify({"error": "Meeting not found"}), 404)
+
+
+@board_bp.route("/meetings/<int:mid>/schedules/<key>/view", methods=["GET"])
+@login_required
+def schedule_view(mid, key):
+    """One schedule's figures, at the as-of date THIS MEETING carries for it.
+
+    Read-only, so the Board section is the whole gate (like reading the meeting).
+    Every figure comes from an engine the app already owns -- see
+    ``services/board_views_service.py``; a schedule whose phase has not built
+    its view yet answers 404 with that said.
+    """
+    from flask_app.serializers import safe_json
+    from flask_app.services import board_views_service as views
+
+    m = svc.get_meeting(mid)
+    if not m:
+        return jsonify({"error": "Meeting not found"}), 404
+    s = next((x for x in m["schedules"] if x["key"] == key), None)
+    if s is None:
+        return jsonify({"error": "Unknown schedule %r" % key}), 404
+    if key not in views.VIEW_KEYS:
+        return jsonify({"error": "The %s schedule has no view yet (phase %s)." % (s["title"], s["phase"])}), 404
+    as_of = svc.parse_date(s["as_of"], "As-of date")
+    out = views.build_view(key, as_of)
+    return jsonify(safe_json({**out, "schedule": {k: s[k] for k in ("key", "title", "pages", "as_of")}}))
 
 
 @board_bp.route("/meetings/<int:mid>", methods=["PUT"])

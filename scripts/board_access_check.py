@@ -160,9 +160,16 @@ def main():
         if not str(rule).startswith("/api/board"):
             continue
         for meth in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+            # A narrative's key, or a schedule's for a schedule view.
             path = (str(rule).replace("<int:mid>", str(mid)).replace("<int:user_id>", str(ids["ana"]))
-                    .replace("<key>", "strategy"))
+                    .replace("<key>", "performance" if str(rule).endswith("/view") else "strategy"))
             routes.append((meth, path, str(rule)))
+    # The schedule views read every engine; this check is about WHO may call
+    # them, so the figures are stubbed (board_views_check proves the figures).
+    from flask_app.services import board_views_service as views
+    views.build_view = lambda key, as_of, **k: {"key": key, "as_of": as_of.isoformat(), "stub": True}
+    chk("the schedule view route is among those enumerated",
+        any(str(r).endswith("/schedules/<key>/view") for r in app.url_map.iter_rules()))
     st = client.get("/api/board/meetings", headers=H["ana"]).status_code
     chk("a user never granted Board is refused (403)", st == 403, st)
     chk("there are Board routes to call (enumerated: %d)" % len(routes), len(routes) >= 10)

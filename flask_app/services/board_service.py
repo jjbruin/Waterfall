@@ -70,12 +70,12 @@ SCHEDULES = (
      "status": "View to build"},
     {"key": "capitalization", "pages": "26", "phase": 1,
      "title": "Capitalization and third-party capital by investor",
-     "source": "PE exposure investor columns + One Pager capitalization",
-     "status": "Ready now"},
+     "source": "PE exposure (funded capital by investor) + Investment Metrics (deals held, Total Size)",
+     "status": "View built", "view": True},
     {"key": "performance", "pages": "27", "phase": 1,
      "title": "Portfolio performance",
-     "source": "Investment Metrics + Sold Portfolio",
-     "status": "Ready now"},
+     "source": "Investment Metrics totals + PE exposure (pref incl. unfunded)",
+     "status": "View built", "view": True},
     {"key": "debt", "pages": "28", "phase": 1,
      "title": "Debt, occupancy and DSCR by asset class",
      "source": "loans, Market Rates (SOFR), One Pager occupancy and DSCR",
@@ -83,7 +83,7 @@ SCHEDULES = (
     {"key": "investment_summaries", "pages": "29-31", "phase": 1,
      "title": "Investment summaries, current and exited",
      "source": "Investment Metrics",
-     "status": "Ready now"},
+     "status": "View built", "view": True},
 )
 SCHEDULE_KEYS = tuple(s["key"] for s in SCHEDULES)
 
