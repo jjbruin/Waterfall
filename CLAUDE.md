@@ -72,7 +72,7 @@ matter — the date format that silently broke a "through 6/30" filter, `--repai
 `.claude/memory/azure_deployment.md`.
 
 ### Azure Infrastructure
-- **Container App** app-waterfall-dev-v2 (1 CPU, 2GB RAM, 2 Gunicorn workers) —
+- **Container App** app-waterfall-dev-v2 (1 CPU, 2GB RAM, 1 Gunicorn worker) —
   **Registry** acrwaterfalldev.azurecr.io — **Resource group** rg-waterfall-dev (eastus)
   — **PostgreSQL** psql-waterfall-dev.postgres.database.azure.com (B1ms, v16)
 - Logs: `az containerapp logs show -g rg-waterfall-dev -n app-waterfall-dev-v2 --type console --tail 50`

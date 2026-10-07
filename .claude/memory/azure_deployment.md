@@ -17,6 +17,14 @@ All future development targets the Azure deployment. No more local-only features
   - Database: waterfall_xirr, User: wfadmin
 - **Container App Env**: cae-waterfall-vnet (VNet-integrated, Consumption plan, eastus)
 - **Container App**: app-waterfall-dev-v2 (1 CPU, 2GB RAM, 1 Gunicorn worker)
+  - `GUNICORN_WORKERS=1` is set on the Container App and overrides the Dockerfile's 2;
+    one replica (min = max = 1). Verified Oct 7 2026.
+  - **Before raising either, fix cache invalidation.** `data_service.load_all` caches in
+    a module-level dict per PROCESS, and every refresh / reload / CSV import clears only
+    the process that served the request (`mri_service._clear_all_caches`,
+    `/api/data/reload`). With two workers or two replicas the others keep serving the
+    pre-refresh data until restarted -- e.g. a deleted MRI loan still counted on half of
+    the requests. The same goes for the Dashboard caps cache and the compute cache.
 
 ### Networking (May 2026)
 - **VNet**: vnet-waterfall-dev (10.0.0.0/16)
