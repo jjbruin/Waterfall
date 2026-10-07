@@ -2720,6 +2720,55 @@ def _is_return_of_capital(row) -> bool:
     return str(raw).strip().upper() == "Y"
 
 
+def _compute_uw_roe(pe: Dict[str, Any], isbs_raw: Optional[pd.DataFrame],
+                    vcode: str, quarter_end: date) -> None:
+    """Fill ``uw_roe_to_date`` / ``uw_roe_components`` from ISBS Projected IS.
+
+    7073: underwritten capital events; 7071: underwritten distributions (the
+    numerator). NO actual accounting is read, so this must not depend on the
+    accounting feed — it used to sit inside ``if capital_events:`` (itself inside
+    ``if not deal_acct.empty:``) only because it was written next to the actual
+    ROE, and a deal with underwritten rows but no actual capital events silently
+    lost a number that never needed them. Oct 7 2026.
+
+    NO UNDERWRITTEN CAPITAL -> NOTHING IS COMPUTED. ``calculate_roe_detailed``
+    answers 0.0 when the capital base is 0, and that 0.0 would be read as "the
+    underwriting expects nothing" when the truth is "no underwritten
+    contribution is on file, so the figure cannot be determined". The
+    components are the witness Investment Metrics reads (``None`` -> dash), so
+    they are left unset and the scalar keeps its initial 0.0, which the One
+    Pager already prints as a dash. Same-engine call as the actual ROE.
+    """
+    if isbs_raw is None or isbs_raw.empty:
+        return
+    try:
+        from metrics import calculate_roe_detailed
+        uw_capital = _get_uw_7073_signed(isbs_raw, vcode, date(2000, 1, 1), quarter_end)
+        uw_dists = _get_uw_pe_distributions(isbs_raw, vcode, date(2000, 1, 1), quarter_end)
+        if not (uw_capital or uw_dists):
+            return
+        all_dates = [d for d, _ in uw_capital] + [d for d, _ in uw_dists]
+        uw_inception = min(all_dates)
+        uw_capital = [(d, a) for d, a in uw_capital if d <= quarter_end]
+        uw_dists = [(d, a) for d, a in uw_dists if uw_inception <= d <= quarter_end]
+        detail = calculate_roe_detailed(uw_capital, uw_dists, uw_inception, quarter_end)
+        if not detail['weighted_avg_capital'] or detail['weighted_avg_capital'] <= 0:
+            return
+        pe['uw_roe_to_date'] = detail['roe']
+        pe['uw_roe_components'] = {
+            'total_cf_distributions': detail['total_cf_distributions'],
+            'weighted_avg_capital': detail['weighted_avg_capital'],
+            'years': detail['years'],
+            'inception': uw_inception,
+            'through': quarter_end,
+            'total_days': (quarter_end - uw_inception).days,
+        }
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "U/W ROE to date failed for %s at %s", vcode, quarter_end, exc_info=True)
+
+
 def get_pe_performance(
     vcode: str,
     quarter_str: str,
@@ -2995,39 +3044,12 @@ def get_pe_performance(
                         'through': quarter_end,
                         'total_days': (quarter_end - inception).days,
                     }
-
-                    # Compute U/W ROE to Date from ISBS Projected IS ONLY
-                    # 7073: positive = contribution, negative = return of capital
-                    # 7071: underwritten distributions (ROE numerator)
-                    # No actual accounting data used.
-                    if isbs_raw is not None and not isbs_raw.empty:
-                        uw_capital = _get_uw_7073_signed(
-                            isbs_raw, vcode, date(2000, 1, 1), quarter_end
-                        )
-                        uw_dists = _get_uw_pe_distributions(
-                            isbs_raw, vcode, date(2000, 1, 1), quarter_end
-                        )
-                        if uw_capital or uw_dists:
-                            all_dates = [d for d, _ in uw_capital] + [d for d, _ in uw_dists]
-                            uw_inception = min(all_dates) if all_dates else inception
-                            uw_capital = [(d, a) for d, a in uw_capital if d <= quarter_end]
-                            uw_dists = [(d, a) for d, a in uw_dists if d >= uw_inception and d <= quarter_end]
-                            # Same swap, same guarantee — the U/W figure is
-                            # produced by the same delegating call.
-                            _uw_detail = calculate_roe_detailed(
-                                uw_capital, uw_dists, uw_inception, quarter_end
-                            )
-                            pe['uw_roe_to_date'] = _uw_detail['roe']
-                            pe['uw_roe_components'] = {
-                                'total_cf_distributions': _uw_detail['total_cf_distributions'],
-                                'weighted_avg_capital': _uw_detail['weighted_avg_capital'],
-                                'years': _uw_detail['years'],
-                                'inception': uw_inception,
-                                'through': quarter_end,
-                                'total_days': (quarter_end - uw_inception).days,
-                            }
         except Exception:
             pass
+
+    # U/W ROE to Date reads ISBS Projected IS ONLY — no accounting — so it
+    # sits OUTSIDE every accounting-feed gate above.
+    _compute_uw_roe(pe, isbs_raw, vcode, quarter_end)
 
     # Committed pref: ONE ENGINE, shared with cap_stack and Investment Metrics.
     _pe_committed, _pe_basis = resolve_committed_pref(
