@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v587** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v588** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v587 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v588 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,39 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v588` = `dbdb1ab` (REVERT OF `e9c63a3`: THE ONE PAGER'S PE-BLOCK COUPON IS WATERFALL-FIRST
+    AGAIN. Charlene's call, Oct 7 2026: "these inconsistencies are expected". `e9c63a3`
+    (Sep 30, in `v547`) had made the PE Performance block's Coupon read MRI `deal_terms.pe_coupon`
+    first with the waterfall as fallback. Reverted: the block keeps the waterfall's first Pref row
+    when it states a rate and fills from MRI only when the waterfall gave nothing; the
+    Capitalization block still lets MRI override. Where both sources state a coupon and disagree,
+    ONE PAGE PRINTS TWO COUPONS -- expected, not a defect -- and at 26Q2 that is three deals:
+    Pegasus Life Storage PE 10% (was 9%) vs Capitalization 9%; Cocoplum Apartments PE 5% (was
+    8.5%) vs 8.5%; Orange Grove PE 8% (was 8.5%) vs 8.5%. MEASURED before shipping, on the real
+    One Pager PE calculation for 99 deals at 26Q2 (local copy, Oct 5 pull): 54 deals carry both
+    sources and 51 of them agree; only those three change; the other 96 do not move. The Coupon
+    cell is display-only -- nothing derived reads it, and Investment Metrics, the Snapshot and the
+    NAV engine read `deal_terms` directly -- so nothing else moves. The revert also makes the
+    traceability data dictionary (`one_pager.coupon`: waterfall primary, deal_terms fallback) true
+    again; it was never updated for `e9c63a3`. Participation stays MRI-first (`eef3b64` untouched).
+    THE ACCRUED BALANCE IS A SEPARATE PATH AND IS UNCHANGED: `build_pref_balance_detail` takes each
+    investor's own waterfall Pref step as its rate, because its `deal_terms.pe_coupon` read (an
+    `exec_driver_sql` string with a `:vc` named parameter) fails silently on PostgreSQL. So these
+    deals show one coupon beside an accrual at another rate: Cocoplum accrues at 5% ($264,844 at
+    6/30) against $2,573,678 at MRI's 8.5%; Pegasus's TGA22 accrues at 10% ($435,165 more than
+    9% would give). Which rate is right for Cocoplum is a question for the agreement. Span vs live
+    `b694496`: `9324a68` (docs) and this change. Built and pushed from a clean worktree; build
+    `cap1`, 2m29s, Succeeded; tag locked; Healthy at 100%. Guardrails:
+    `onepager_participation_precedence_check` 32/32 (section 5 now asserts the intended behaviour:
+    the three live deals' two coupons, and the fallback / NaN / zero / no-waterfall directions;
+    re-injecting `e9c63a3`'s rule fails 7), `traceability_tools_check` 129/0,
+    `one_engine_per_number_check` 26/0, `section_access_check` 274/0, `q3_cleanup_check` 20/0,
+    `committed_pref_check` 47/0, `claude_md_budget_check` 3/0. SMOKE: unauthenticated only --
+    `/` 200, `/auth/me` and `/api/investment-metrics` 401 without a token, 0 tracebacks and 0
+    errors in the last 300 log lines. **THE AUTHENTICATED CHECK (the One Pager's PE block for
+    P0000066 / P0000084 / P0000032 at 2026-Q2) WAS NOT RUN: the admin token had expired.**
+    **Rollback** is FORWARD: `az containerapp update -g rg-waterfall-dev -n app-waterfall-dev-v2
+    --image acrwaterfalldev.azurecr.io/waterfall-xirr:b694496 --revision-suffix v589`.)
   - `v587` = `b694496` (A DIRECT LINK SURVIVES "SIGN IN WITH MICROSOFT" -- for the expense
     roll-out email, which links straight to /expenses. The password sign-in honoured
     `?redirect=`; the Microsoft round trip returns to /login#token=... and dropped it, so
