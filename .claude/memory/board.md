@@ -99,3 +99,25 @@ Open, before the Phase 1 views are built (decisions, not code):
    class per deal in the app.
 4. Page 24: a canonical operating-partner list (app names vary: JPI / JPI Companies,
    Vastgood / Vastgood Properties LLC, Apple / Apple Self Storage, Bertram and DiMarco).
+
+### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
+The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
+ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:
+- **Brainerd** is the only deal the tracker splits differently: PSC 1.33M / TIAA 11.98M
+  (all unfunded is owed by the TIAA JV: INVBPA funded its whole 5,493,264). Engine: PSC 3.41M.
+- **A -- split by unfunded commitment (committed - net funded from the books) at every
+  level**: Brainerd exact; Giant 7 drifts (a shared fund's fund-wide unfunded); **Bel Air
+  WRONG** (PSC 0.61 -> 0.41, KoC 0.72 -> 1.16) -- PSC1 has FUNDED MORE THAN IT COMMITTED
+  at I1BAS2 (2.35M committed, 8.88M funded, carrying PIG6) and PIG5 (0.54M / 2.11M,
+  carrying CFCNI), so "who still owes" is not who funds the deal.
+- **B** (A, but commitment ratios at shared funds) and **C** (B, plus ratios wherever an
+  investor over-funded): Giant 7 fixed; Bel Air still off (C: PSC 0.65, KoC 1.01, F&F 0.76
+  vs 0.61 / 0.72 / 1.11) -- uneven funding inside PIG6 / PIG5 shifts the weights.
+- **D -- unfunded split ONLY at an entity carrying an allocation override** (remaining =
+  committed - the override's funded amount); ratios everywhere else, as today. Reproduces
+  the tracker on every deal: Brainerd via its two overrides, all others unchanged.
+  RECOMMENDED. With no overrides entered, D changes nothing.
+Brainerd overrides (investment BRNERD, effective 2024-12-27, the last capital movement):
+PPIBPA <- INVBPS 9,316,074.29 / TGA22 9,091,603.11; INVBPS <- INVBPA 5,493,264.01 / TGA22
+3,822,810.30 (books: contributions less return of capital). Not entered -- accounting's table.
+Scripts (scratchpad, not in repo): ff_measure.py, ff_measure_c.py, belair_chain.py.
