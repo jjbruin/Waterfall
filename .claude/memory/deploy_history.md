@@ -356,8 +356,9 @@ entry pointing at it. Nothing here was summarised.
     `--live` 23/0 on production; `expense_mobile_check` 28/0, `expense_add_options_check` 37/0,
     `section_access_check` 274/0. SERVED: both icon names image/png, `-180x180` 404, `/`,
     `/login`, `/deals/P0000044`, `/msal-redirect.html` 200 HTML, the entry bundle 200 JS; 0
-    errors in the last 200 log lines. Whether iOS now offers the icon is NOT yet confirmed --
-    Jim to retry (delete the old home-screen item, reload, add again). **Rollback** is FORWARD:
+    errors in the last 200 log lines. CONFIRMED by Jim on his iPhone the same day: after
+    deleting the old home-screen item and reloading, Add to Home Screen offers the receipt icon.
+    **Rollback** is FORWARD:
     `--image acrwaterfalldev.azurecr.io/waterfall-xirr:221718f --revision-suffix v592`.)
   - `v590` = `221718f` (A "PSC EXPENSES" ICON FOR AN IPHONE OR IPAD HOME SCREEN. Merge of
     `feat/expenses-home-icon` (`d009f4f`): `<link rel="apple-touch-icon">` to a 180x180 receipt
