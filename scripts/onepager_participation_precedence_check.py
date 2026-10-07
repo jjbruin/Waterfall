@@ -1,4 +1,4 @@
-"""Guardrail: the One Pager PE term cells agree, and a 1.0 share is 100%.
+"""Guardrail: the two One Pager participation cells agree, and a 1.0 is 100%.
 
 The One Pager prints the PE participation TWICE — Capitalization
 (`cap_stack.pe_participation`) and PE Performance (`pe_performance
@@ -10,6 +10,12 @@ The One Pager prints the PE participation TWICE — Capitalization
 so on a deal where the two sources disagree the same term printed two numbers.
 Both now take MRI deal terms first and fall back to the waterfall only where
 deal terms say nothing.
+
+THE COUPON IS THE DELIBERATE EXCEPTION (section 5). Its PE block keeps the
+waterfall primary and MRI deal terms only as the fallback, while the
+Capitalization block lets MRI override -- so on the few deals where the two
+sources disagree the page prints two coupons, and that is EXPECTED (Charlene,
+Oct 7 2026, reverting e9c63a3).
 
 The second defect was the percent normalisation. A share is stated either as a
 fraction (0.475) or as a percentage (47.5), and the reader decided with
@@ -139,69 +145,78 @@ cap_v, pe_v = both_cells("P0000995", 1.0, None)
 chk("both cells show 1.0 (=100%), the latent case the <= 1 fix covers",
     cap_v == pe_v == 1.0, f"cap={cap_v} pe={pe_v}")
 
-#: The COUPON mirror of LIVE above. Measured on production 2026-09-30 at 26Q2 —
-#: every deal carrying BOTH a waterfall Pref row and a deal_terms coupon where
-#: the two disagree. Each was printing two different coupons on one page.
-#:   vcode, name, waterfall nPercent, deal_terms.pe_coupon, expected
+print("\n5. the COUPON keeps waterfall primacy in the PE block (expected: two coupons)")
+
+#: Measured on production 2026-09-30 at 26Q2 and again on the local copy
+#: 2026-10-07: every deal carrying BOTH a waterfall Pref row and a deal_terms
+#: coupon where the two disagree. The page prints TWO coupons for each, and that
+#: is the intended behaviour.
+#:   vcode, name, waterfall nPercent, deal_terms.pe_coupon, CAP cell, PE cell
 LIVE_COUPON = [
-    ("P0000066", "Pegasus Life Storage",     0.1,  0.09,  0.09),
-    ("P0000084", "Cocoplum Apartments",      0.05, 0.085, 0.085),
-    ("P0000032", "Orange Grove",             0.08, 0.085, 0.085),
+    ("P0000066", "Pegasus Life Storage",     0.1,  0.09,  0.09,  0.10),
+    ("P0000084", "Cocoplum Apartments",      0.05, 0.085, 0.085, 0.05),
+    ("P0000032", "Orange Grove",             0.08, 0.085, 0.085, 0.08),
 ]
 
 
 def both_coupons(vcode, wf_value, dt_value):
     """(capitalization, pe_performance) coupon for one deal.
 
-    Same shape as `both_cells`, seeded with the waterfall figure exactly as
-    each block's own reader would have left it. The coupon normalisation is
-    `< 1` in both readers, deliberately NOT normalize_share — see that
-    docstring.
+    Drives the SHIPPING resolvers -- `_enrich_cap_stack_from_deal_terms` for the
+    Capitalization cell and `_pe_terms_fallback` for the PE block -- each seeded
+    with the waterfall figure exactly as its own reader would have left it. The
+    coupon normalisation is `< 1` in both, deliberately NOT normalize_share.
     """
     seed = 0.0 if wf_value is None else (wf_value if wf_value < 1
                                          else wf_value / 100)
+    frame = pd.DataFrame([{"vcode": vcode, "pe_coupon": dt_value,
+                           "pe_split_capital": None}])
     cap = {"pe_participation": None, "pe_coupon": seed}
-    _enrich_cap_stack_from_deal_terms(
-        cap, pd.DataFrame([{"vcode": vcode, "pe_coupon": dt_value,
-                            "pe_split_capital": None}]), vcode)
+    _enrich_cap_stack_from_deal_terms(cap, frame, vcode)
     pe = {"participation": None, "coupon": seed}
-    OP._pe_terms_fallback(
-        pe, pd.DataFrame([{"vcode": vcode, "pe_coupon": dt_value,
-                           "pe_split_capital": None}]), vcode)
+    OP._pe_terms_fallback(pe, frame, vcode)
     return cap["pe_coupon"], pe["coupon"]
 
 
-print("\n5. the two COUPON cells agree — deal terms first, waterfall fallback")
-print(f"    {'vcode':<10}{'deal':<27}{'wf':>7}{'terms':>8}"
-      f"{'CAP':>9}{'PE':>9}   agree")
-for vc, nm, wf, dt_v, want in LIVE_COUPON:
+print(f"    {'vcode':<10}{'deal':<27}{'wf':>7}{'terms':>8}{'CAP':>9}{'PE':>9}")
+for vc, nm, wf, dt_v, want_cap, want_pe in LIVE_COUPON:
     cap_v, pe_v = both_coupons(vc, wf, dt_v)
     print(f"    {vc:<10}{nm[:26]:<27}{wf:>7}{dt_v:>8}"
-          f"{round(cap_v, 4):>9}{round(pe_v, 4):>9}   {cap_v == pe_v}")
-    chk(f"{vc} {nm[:22]}: both cells show the deal-terms coupon {want}",
-        abs(cap_v - want) < 1e-12 and abs(pe_v - want) < 1e-12,
+          f"{round(cap_v, 4):>9}{round(pe_v, 4):>9}")
+    chk(f"{vc} {nm[:22]}: Capitalization shows MRI {want_cap}, PE block the "
+        f"waterfall's {want_pe}",
+        abs(cap_v - want_cap) < 1e-12 and abs(pe_v - want_pe) < 1e-12,
         f"cap={cap_v} pe={pe_v}")
+    chk(f"{vc} {nm[:22]}: the two cells DISAGREE, as intended",
+        abs(cap_v - pe_v) > 1e-9, f"cap={cap_v} pe={pe_v}")
 
-# BOTH directions — "deal terms win" must not mean "the waterfall is ignored".
+# The other direction: "waterfall primary" must not mean "deal terms ignored".
+dt = pd.DataFrame([{"vcode": "P0000994", "pe_coupon": 9.0,
+                    "pe_split_capital": None}])
+pe = {"participation": None, "coupon": 0.08}
+OP._pe_terms_fallback(pe, dt, "P0000994")
+chk("a coupon the waterfall supplied is NOT overwritten by deal terms",
+    pe["coupon"] == 0.08, f"got {pe['coupon']}")
+pe = {"participation": None, "coupon": 0.0}
+OP._pe_terms_fallback(pe, dt, "P0000994")
+chk("but an absent coupon is still filled from deal terms (9% -> 0.09)",
+    abs(pe["coupon"] - 0.09) < 1e-12, f"got {pe['coupon']}")
+cap_v, pe_v = both_coupons("P0000991", None, 9.0)
+chk("a 9.0 deal_terms coupon with no waterfall fills BOTH cells as 0.09",
+    abs(cap_v - 0.09) < 1e-12 and abs(pe_v - 0.09) < 1e-12,
+    f"cap={cap_v} pe={pe_v}")
 cap_v, pe_v = both_coupons("P0000994", 0.08, None)
 chk("with NO deal_terms coupon both cells keep the waterfall's 8%",
     abs(cap_v - 0.08) < 1e-12 and abs(pe_v - 0.08) < 1e-12,
     f"cap={cap_v} pe={pe_v}")
 cap_v, pe_v = both_coupons("P0000993", 0.08, float("nan"))
-chk("a NaN deal_terms coupon is not a value — the waterfall stands",
+chk("a NaN deal_terms coupon is not a value -- the waterfall stands",
     abs(cap_v - 0.08) < 1e-12 and abs(pe_v - 0.08) < 1e-12,
     f"cap={cap_v} pe={pe_v}")
-
-# A ZERO is not a coupon: unlike participation, it must NOT override.
 cap_v, pe_v = both_coupons("P0000992", 0.08, 0.0)
-chk("a 0 deal_terms coupon does NOT override — 0% is not a preferred return",
+chk("a 0 deal_terms coupon does not override either block -- 0% is not a "
+    "preferred return",
     abs(cap_v - 0.08) < 1e-12 and abs(pe_v - 0.08) < 1e-12,
-    f"cap={cap_v} pe={pe_v}")
-
-# A percentage-form coupon still normalises, and an absent waterfall still fills.
-cap_v, pe_v = both_coupons("P0000991", None, 9.0)
-chk("a 9.0 deal_terms coupon with no waterfall fills both cells as 0.09",
-    abs(cap_v - 0.09) < 1e-12 and abs(pe_v - 0.09) < 1e-12,
     f"cap={cap_v} pe={pe_v}")
 
 print()
