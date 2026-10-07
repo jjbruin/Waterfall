@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v586** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v587** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v586 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v587 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,20 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v587` = `b694496` (A DIRECT LINK SURVIVES "SIGN IN WITH MICROSOFT" -- for the expense
+    roll-out email, which links straight to /expenses. The password sign-in honoured
+    `?redirect=`; the Microsoft round trip returns to /login#token=... and dropped it, so
+    every Microsoft sign-in landed on the Dashboard (an expenses-only user then bounced
+    with a "no access" notice). The requested page now rides in sessionStorage across
+    the trip; only an in-app path is followed (no `//host`). Span vs live `ad319fb`:
+    `e307c9d` (this), docs `574b791` `f56b0dd` (CLAUDE.md worker count 2 -> 1) `a9ab3ee`,
+    merge `b694496`. Build `cap0`, 2m53s, Succeeded -- NOTE: the first `git push` was
+    rejected (transient; nothing new on origin) and the chained build ran anyway; the
+    push was retried, origin/main confirmed = `b694496` = the built SHA, THEN locked and
+    deployed. Tag locked; P1 re-run; Healthy, `/health` 200, SSO enabled. Served:
+    entry `main-84onRee6.js` -> `LoginView-C29XQu-S.js` carries `sso_redirect`.
+    Guardrails: sso_email_match 16, sharepoint_picker 39, section_access 274. The
+    round trip itself needs a person to sign in with Microsoft to prove.)
   - `v586` = `ad319fb` (OWNERSHIP SEEDS A PORTFOLIO WITH ITS CHILD PROPERTIES --
     `run_upstream_analysis` called `get_property_vcodes_for_deal(inv, entity_id)`
     REVERSED; it raised, the `except` swallowed it, so every portfolio was seeded from
