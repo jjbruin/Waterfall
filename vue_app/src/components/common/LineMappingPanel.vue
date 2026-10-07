@@ -69,26 +69,34 @@
       <p class="lm-note">
         {{ parsed.lines.length }} line(s), {{ parsed.periods.length }} month(s)
         — {{ fmtPeriod(parsed.periods[0]) }} to {{ fmtPeriod(parsed.periods[parsed.periods.length - 1]) }}.
-        <!-- Both sources, one rule (AM, Sep 28 2026: "mirror the budget process end to
-             end"). The Argus keyword guesses are gone. -->
+        <!-- ONE RULE FOR BOTH SOURCES (Jack, Oct 7 2026): a row with a 4-digit account
+             in the file is imported under that account; a row without one is not --
+             no guessing whether a row is a subtotal. The account can still be changed:
+             partners use accounts we do not carry (7076 Tenant Improvements -> our 7050). -->
         <span>
-          <template v-if="parsed.stated_account_count">
-            {{ parsed.stated_account_count }} line(s) carry an account number in the
-            spreadsheet and are filled in from it — that is read, not guessed.
+          <template v-if="accountLineCount">
+            {{ accountLineCount }} line(s) carry a 4-digit account and are imported under it.
           </template>
-          <template v-if="parsed.history_count">
-            {{ parsed.history_count }} line(s) have been mapped before and show what was
-            chosen last time.
+          <template v-if="noAccountCount">
+            {{ noAccountCount }} line(s) have no account number and are <strong>not imported</strong>.
           </template>
-          <template v-if="!parsed.stated_account_count && !parsed.history_count">
-            Nothing is pre-filled: this sheet states no account numbers and none of these
-            lines has been mapped before, so every line is yours to assign.
-          </template>
+          <span v-if="!accountLineCount" class="warn-note">
+            This file has no 4-digit account numbers, so nothing in it can be imported. Add the
+            account beside each line in the file and upload it again.
+          </span>
         </span>
-        <span v-if="parsed.unknown_accounts && parsed.unknown_accounts.length" class="warn-note">
-          {{ parsed.unknown_accounts.length }} line(s) name an account we do not carry
-          ({{ parsed.unknown_accounts.map(u => u.account).join(', ') }}) — left for you
-          rather than dropped.
+        <span v-if="unknownAccounts.length" class="warn-note">
+          {{ unknownAccounts.length }} line(s) name an account that is not on our chart
+          ({{ [...new Set(unknownAccounts.map(l => l.file_account))].join(', ') }}) — choose ours
+          for each, or clear it to leave the line out.
+        </span>
+        <span v-if="clearedOnLoad" class="warn-note">
+          {{ clearedOnLoad }} line(s) mapped in this saved mapping have no account number in
+          the file, so they are no longer imported.
+        </span>
+        <span v-if="filledOnLoad" class="warn-note">
+          {{ filledOnLoad }} line(s) this saved mapping left out carry an account, so they are
+          now imported under it — check the tie-out, and clear any that double-count.
         </span>
         <span v-if="!cats.has_history" class="warn-note">
           This deal has no recent actuals, so the list is not ranked and there are no defaults from history.
@@ -112,14 +120,12 @@
         <button class="btn-secondary lm-coa-btn" @click="toggleCoa">
           {{ coaOpen ? 'Hide the chart of accounts' : 'Show the chart of accounts' }}
         </button>
-        <!-- Asked for as "only pick up rows with a 3+ digit acct number, so we're not
-             pulling in blank rows". Offered rather than imposed: a sheet with no
-             account numbers at all would show nothing, and the count says what is
-             being held back so it is never a silent drop. -->
-        <label v-if="parsed.stated_account_count">
+        <!-- A view, not the rule: lines without an account are not imported either way,
+             and the count says how many are hidden. -->
+        <label v-if="accountLineCount && noAccountCount">
           <input type="checkbox" v-model="onlyNumbered" />
           Only show lines with an account number
-          <span class="lm-note-inline">({{ unnumberedCount }} hidden)</span>
+          <span class="lm-note-inline">({{ noAccountCount }} hidden)</span>
         </label>
         <span class="lm-note-inline">
           The account number is the mapping. The category is whatever our chart of
@@ -184,35 +190,25 @@
           </thead>
           <tbody>
             <tr v-for="line in visibleLines" :key="line.row"
-                :class="{ 'lm-subtotal': isSubtotal(line), 'lm-mapped': !!m(line.row).account }">
+                :class="{ 'lm-subtotal': !line.file_account, 'lm-mapped': !!m(line.row).account }">
               <td>
                 {{ line.label }}
-                <!-- A subtotal is the app's READING of the label, not a fact, and it can
-                     be wrong: "Total Recoveries" was a real line item in an appraiser's
-                     file and had to be renamed CAM in the source to get it mapped (AM,
-                     Sep 28 2026). The reading is now one click to overturn, both ways. -->
-                <template v-if="line.looks_like_total">
-                  <span v-if="isSubtotal(line)" class="lm-tag">subtotal</span>
-                  <span v-else class="lm-tag lm-unflagged">read as a line, not a subtotal</span>
-                  <button v-if="editable" class="lm-more" @click="setNotSubtotal(line, isSubtotal(line))">
-                    {{ isSubtotal(line) ? 'not a subtotal' : 'it is a subtotal' }}
-                  </button>
-                </template>
-                <!-- Where a pre-fill came from decides how much to trust it. An
-                     account number the sheet states is a fact; a prior mapping is a
-                     decision somebody made; a keyword match is a guess. -->
-                <span v-if="m(line.row).from_file" class="lm-tag lm-stated"
-                      title="The account number is in the spreadsheet — read, not inferred">
-                  acct {{ line.stated_account }} from the file
+                <span v-if="!line.file_account" class="lm-tag">no account — not imported</span>
+                <span v-else-if="m(line.row).account && String(m(line.row).account) === String(line.file_account)"
+                      class="lm-tag lm-stated" title="The account number is in the spreadsheet">
+                  acct {{ line.file_account }} from the file
                 </span>
-                <span v-if="m(line.row).from_history" class="lm-tag lm-prior"
-                      title="Mapped this way before">as mapped before</span>
-                <span v-if="line.prior_mapping && !m(line.row).from_history"
-                      class="lm-prior-note"
-                      :title="'Last mapped ' + (line.prior_mapping.last_seen || '')">
-                  last time: {{ line.prior_mapping.account }}
-                  <template v-if="line.prior_mapping.category">({{ line.prior_mapping.category }})</template>
-                  <template v-if="!line.prior_mapping.same_deal">on {{ line.prior_mapping.vcode }}</template>
+                <span v-else-if="m(line.row).account" class="lm-tag lm-prior"
+                      :title="'The file says ' + line.file_account">
+                  file says {{ line.file_account }}
+                </span>
+                <!-- Imported because it carries an account -- Jack's rule, which takes a
+                     total with an account as a line. Said, so a double count can be seen
+                     and the line cleared if it is one. -->
+                <span v-if="line.looks_like_total && line.file_account && m(line.row).account"
+                      class="lm-tag lm-unflagged"
+                      title="Its label reads like a total. It is imported because it carries an account — if the lines it totals are imported too, clear this one.">
+                  reads like a total
                 </span>
                 <span v-if="line.months < parsed.periods.length" class="lm-tag lm-partial">
                   {{ line.months }} of {{ parsed.periods.length }} mo
@@ -229,9 +225,10 @@
                 <span v-else class="lm-note-inline">not imported</span>
               </td>
               <td>
-                <select :value="m(line.row).account || ''" :disabled="!editable"
+                <span v-if="!line.file_account" class="lm-note-inline">no account in the file</span>
+                <select v-else :value="m(line.row).account || ''" :disabled="!editable"
                         @change="setAccount(line.row, $event.target.value)">
-                  <option value="">— not imported —</option>
+                  <option value="">— leave out —</option>
                   <optgroup v-if="dealAccounts.length" label="Used by this deal">
                     <option v-for="a in dealAccounts" :key="'d-' + a.account" :value="a.account">
                       {{ a.account }} {{ a.description || '' }} — {{ a.category }}
@@ -284,9 +281,9 @@
             </tbody>
           </table>
           <p class="lm-note">
-            A difference is <strong>not an error</strong> — spreadsheets carry subtotal rows and
-            skipping them is correct. It is here so you can tell a skipped subtotal from a
-            line you missed.
+            A difference is <strong>not an error</strong>, but it is worth a look: a subtotal that
+            carries an account is imported on top of the lines it adds up, and a line with no
+            account is not imported at all.
             <span v-if="!check?.reconciliation?.has_stated_totals">
               This sheet states no totals of its own, so only our side is shown.
             </span>
@@ -317,6 +314,13 @@
             <div v-for="(b, i) in check.blocking" :key="'b' + i" class="lm-block">
               {{ b.message }}
             </div>
+            <!-- Rows WITH an account that were cleared: allowed (a subtotal carrying an
+                 account would double-count) but never silent. -->
+            <p v-if="check.left_out?.length" class="lm-note">
+              Left out, though the file gives an account:
+              <span v-for="(l, i) in check.left_out" :key="l.row">{{ i ? ' · ' : '' }}{{ l.label }}
+                ({{ l.account }}, {{ fmtCurrency(l.total) }})</span>
+            </p>
           </template>
           <button class="btn-secondary lm-export no-print" :disabled="!canExport"
                   :title="exportTitle" @click="doExport">
@@ -482,10 +486,50 @@ async function toggleCoa() {
 
 const visibleLines = computed(() => {
   const all = parsed.value?.lines || []
-  return onlyNumbered.value ? all.filter(l => l.stated_account) : all
+  return onlyNumbered.value ? all.filter(l => l.file_account) : all
 })
-const unnumberedCount = computed(() =>
-  (parsed.value?.lines || []).filter(l => !l.stated_account).length)
+// The import rule, as the server applies it (`budget_import_service.file_account`):
+// only a line with a 4-digit account in the file comes in.
+const accountLineCount = computed(() =>
+  (parsed.value?.lines || []).filter(l => l.file_account).length)
+const noAccountCount = computed(() =>
+  (parsed.value?.lines || []).filter(l => !l.file_account).length)
+// A file account we do not carry, on a line still waiting for one of ours.
+const unknownAccounts = computed(() => (parsed.value?.lines || []).filter(l =>
+  l.file_account && !m(l.row).account
+  && !allAccounts.value.some(a => String(a.account) === String(l.file_account))))
+// Mappings dropped from a saved draft because their line has no account (said once).
+const clearedOnLoad = ref(0)
+// Lines a saved draft left unmapped that carry an account, now filled from it (said once).
+const filledOnLoad = ref(0)
+let pendingPrefill = false
+
+/**
+ * A MAPPING SAVED BEFORE THE 4-DIGIT RULE (Oct 7 2026) left accounted rows unmapped --
+ * Camp Creek's budget imported interest through its unnumbered "CIBC" rows and left
+ * "5190 Total Interest" out. Under the rule the CIBC rows no longer come in, so applying
+ * that mapping as saved would import NO interest. Every accounted row with no decision
+ * recorded is filled from its account, exactly as a fresh upload would be. A row the
+ * analyst cleared since the rule carries `left_out` and stays out. An account we do not
+ * carry is left for the analyst, as on upload.
+ */
+function prefillFromFile() {
+  if (!pendingPrefill) return
+  pendingPrefill = false
+  let filled = 0
+  const next = { ...mapping.value }
+  for (const l of parsed.value?.lines || []) {
+    const key = String(l.row)
+    if (!l.file_account || next[key]?.account || next[key]?.left_out) continue
+    const a = allAccounts.value.find(x => String(x.account) === String(l.file_account))
+    if (!a) continue
+    next[key] = { category: a.category, account: String(l.file_account),
+                  flip: defaultFlip(l.row, a.category, l.file_account), from_file: true }
+    filled++
+  }
+  mapping.value = next
+  filledOnLoad.value = filled
+}
 
 // Every account in the chart, each carrying the category that owns it, sorted by
 // number — which is the order the accountants think in and the order Jack reads them
@@ -522,27 +566,6 @@ const canCommit = computed(() =>
 
 function m(row) { return mapping.value[String(row)] || {} }
 
-/** Flagged by the label AND not overturned by the analyst. */
-function isSubtotal(line) { return !!line.looks_like_total && !m(line.row).not_subtotal }
-
-/** Overturn (or restore) the subtotal reading. Overturning pre-fills the account the file
- *  states, exactly as any other line would have been; restoring clears the line. */
-function setNotSubtotal(line, notSubtotal) {
-  const key = String(line.row)
-  if (!notSubtotal) {
-    delete mapping.value[key]
-    mapping.value = { ...mapping.value }
-    return void runCheck()
-  }
-  mapping.value = { ...mapping.value, [key]: { ...m(line.row), not_subtotal: true } }
-  if (line.stated_account && !m(line.row).account) {
-    setAccount(line.row, String(line.stated_account))
-    mapping.value = { ...mapping.value, [key]: { ...m(line.row), from_file: true } }
-  } else {
-    runCheck()
-  }
-}
-
 /** Where this line lands, read off the account. The server derives it the same way
  *  from the same map and ignores whatever the screen sends, so the two cannot drift. */
 function categoryOf(row) {
@@ -555,9 +578,11 @@ function setAccount(row, acct) {
   const key = String(row)
   const cur = m(row)
   if (!acct) {
-    // Clearing the account must not also undo "not a subtotal" -- that is a separate
-    // decision about the line, and losing it silently would re-grey the row.
-    if (cur.not_subtotal) mapping.value = { ...mapping.value, [key]: { not_subtotal: true } }
+    // LEAVING OUT a row the file gives an account is a decision, and it is recorded:
+    // without the mark, reopening the mapping would pre-fill the row from its account
+    // again (see loadDraft) and the double count it was cleared to avoid would return.
+    const line = (parsed.value?.lines || []).find(l => String(l.row) === key)
+    if (line?.file_account) mapping.value = { ...mapping.value, [key]: { left_out: true } }
     else delete mapping.value[key]
     mapping.value = { ...mapping.value }
     return void runCheck()
@@ -570,7 +595,7 @@ function setAccount(row, acct) {
   mapping.value = {
     ...mapping.value,
     [key]: { ...cur, category, account: acct, flip: defaultFlip(row, category, acct),
-             from_file: false, from_history: false },
+             from_file: false, left_out: false },
   }
   runCheck()
 }
@@ -664,6 +689,8 @@ async function parseFile(file) {
     const res = await api.post(
       `/api/valuations/records/${props.recordId}/mapping/parse`, form)
     parsed.value = res.data
+    clearedOnLoad.value = 0
+    filledOnLoad.value = 0
     cats.value = { categories: res.data.categories, has_history: true }
     // Argus pre-fills; a budget starts empty. Either way the analyst sees it before
     // anything is written — which is the whole point of this screen existing.
@@ -734,12 +761,25 @@ async function loadDraft() {
     const d = res.data
     if (d && d.parsed && (d.parsed.lines || []).length) {
       parsed.value = d.parsed
-      mapping.value = { ...(d.mapping || {}) }
+      // A mapping saved before the 4-digit rule may map lines with no account. They are
+      // not imported now; dropped from the mapping here, and the count is said.
+      const keep = {}
+      let cleared = 0
+      const byRow = Object.fromEntries((d.parsed.lines || []).map(l => [String(l.row), l]))
+      for (const [k, v] of Object.entries(d.mapping || {})) {
+        const ln = byRow[k]
+        if (ln && !ln.file_account && Number(k) >= 0 && v?.account) { cleared++; continue }
+        keep[k] = v
+      }
+      mapping.value = keep
+      clearedOnLoad.value = cleared
+      pendingPrefill = true
       acceptedProposals.value = Object.fromEntries(
         (d.parsed?.accepted_proposals || []).map(p => [p.account, p]))
       draftLoaded.value = d
       uploadedName.value = d.filename || ''
       await loadCategories()
+      prefillFromFile()
       await runCheck()
     }
   } catch { /* nothing stored, or unreadable — the screen simply starts empty */ }

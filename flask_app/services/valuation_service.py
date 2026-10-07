@@ -981,11 +981,18 @@ def get_budget_review(engine, record_id: int, data: dict,
     """
     from flask_app.services import argus_service
     from flask_app.services import valuation_budget_inputs as inputs
+    from flask_app.services.budget_import_service import review_is_accounts
     from flask_app.services.financials_service import (
         _prepare_isbs, _calculate_is_amounts, _get_bs_principal,
         _get_budget_principal, _get_valuation_sum,
     )
     from one_pager import uw_debt_service_for_year
+
+    # The REVIEW's grouping, for every column and every row below: config's, with Loss
+    # to Lease (4042) netted into Rental Income instead of Vacancy (Jack, Oct 7 2026).
+    # The same engine (`_calculate_is_amounts`) with a different account map -- the map
+    # is a parameter it already takes. Financials and the One Pager keep config's.
+    IS_ACCOUNTS = review_is_accounts()
 
     if compare not in ("valuation", "underwriting"):
         raise ValueError(f"Unknown comparison '{compare}'. Expected valuation or underwriting.")
@@ -1137,13 +1144,18 @@ def get_budget_review(engine, record_id: int, data: dict,
         pv = _get_valuation_sum(argus_fc, bud_jan1.date(), bud_ref.date(), {"_": {"P": ["7060"]}})
         prin_v = abs(pv.get("_", {}).get("P", 0) or 0)
 
-    # --- Modeled debt service replaces the source figures, Budget and Valuation only ---
+    # --- Where each column's debt service comes from ---
     #
-    # The appraiser's Argus download is UNLEVERED, so int_v/prin_v above are 0 and the
-    # Valuation DSCR was blank. The partner's budget may carry debt service or may not,
-    # and when it does it is their amortization assumption rather than ours. Both are
-    # replaced from the deal's own loan terms — the same strip-and-replace compute.py
-    # already applies to the AM forecast.
+    # VALUATION: modeled from the deal's own loan terms. The appraiser's Argus download is
+    # UNLEVERED, so int_v/prin_v above are 0 and the Valuation DSCR was blank -- the same
+    # strip-and-replace compute.py applies to the AM forecast.
+    #
+    # BUDGET: the record's basis (`valuation_budget_inputs.DEBT_BASES`). By default the
+    # budget's OWN interest (5190) and principal (7060) -- Jack, Oct 7 2026: "we want debt
+    # service to come from the partner's submitted budget that we are uploading, not from
+    # our MRI/loan calculation." A budget that carries neither is shown BLANK and said so,
+    # never as $0 debt service: a zero would read as an unlevered deal and print a DSCR
+    # nobody can trust. Modeled and underwriting remain one click away.
     #
     # The ESTIMATE column is deliberately untouched: it means actuals plus budget for the
     # rest of the year, and its interest is interest that was actually paid.
@@ -1152,18 +1164,14 @@ def get_budget_review(engine, record_id: int, data: dict,
     source_debt = {"interest_budget": int_b, "principal_budget": float(prin_b or 0),
                    "interest_valuation": int_v, "principal_valuation": float(prin_v or 0)}
     applied_to = []
-    if modeled["available"]:
-        int_b = modeled["interest"]
-        prin_b = modeled["principal"]
-        applied_to.append("budget")
-        # ONLY when there is an Argus forecast to lever. With no import the Valuation
-        # column is empty by design, and putting debt service against a zero NOI turns a
-        # blank DSCR into a hard 0.00 — a figure that reads as "this deal cannot cover
-        # its debt" when it actually means "no appraiser forecast has been loaded".
-        if compare == "valuation" and has_argus:
-            int_v = modeled["interest"]
-            prin_v = modeled["principal"]
-            applied_to.append("valuation")
+    # ONLY when there is an Argus forecast to lever. With no import the Valuation column
+    # is empty by design, and putting debt service against a zero NOI turns a blank DSCR
+    # into a hard 0.00 -- a figure that reads as "this deal cannot cover its debt" when it
+    # actually means "no appraiser forecast has been loaded".
+    if modeled["available"] and compare == "valuation" and has_argus:
+        int_v = modeled["interest"]
+        prin_v = modeled["principal"]
+        applied_to.append("valuation")
 
     # UNDERWRITING records debt service as ONE figure (7010, P&I), so wherever UW is
     # the source, Interest and Principal are unknown -- shown blank, never split by a
@@ -1172,22 +1180,65 @@ def get_budget_review(engine, record_id: int, data: dict,
     uw_ds_amount = uw_ds["amount"] if uw_ds["amount"] > 0 else None
     ds_notes: List[str] = []
 
+    budget_debt_rows = (not budget_data.empty) and bool(
+        budget_data[(budget_data["dtEntry_parsed"] > bud_jan1)
+                    & (budget_data["dtEntry_parsed"] <= bud_ref)
+                    & budget_data["vAccount"].astype(str).str.strip().isin(
+                        [valuation_debt_service.INTEREST_ACCOUNT,
+                         valuation_debt_service.PRINCIPAL_ACCOUNT])].shape[0])
+
+    def _use_modeled() -> None:
+        nonlocal int_b, prin_b, budget_debt_from
+        int_b, prin_b = modeled["interest"], modeled["principal"]
+        applied_to.insert(0, "budget")
+        budget_debt_from = "modeled"
+
+    def _fall_back(why: str) -> None:
+        """The chosen basis has nothing for this year: keep a figure rather than a blank
+        that reads as "no debt" -- the budget's own, else modeled -- and SAY which. Blank
+        only when neither exists, and said too."""
+        nonlocal int_b, prin_b, budget_debt_from
+        if budget_debt_rows:
+            budget_debt_from = "budget"          # int_b / prin_b as the budget states them
+            ds_notes.append(why + " the Budget column shows the budget's own figure instead.")
+        elif modeled["available"]:
+            _use_modeled()
+            ds_notes.append(why + " the Budget column shows the modeled figure instead.")
+        else:
+            int_b = prin_b = None
+            budget_debt_from = None
+            ds_notes.append(why + " the budget carries none and no loans are modeled, so "
+                            "the Budget column's debt service is blank.")
+
     ds_b_total = None
     basis = inputs.get_debt_basis(engine, record_id)
     basis_applied = False
-    if basis == "underwriting":
+    budget_debt_from: Optional[str] = None
+    if basis == "budget":
+        if budget_debt_rows:
+            budget_debt_from = "budget"          # int_b / prin_b as the budget states them
+        else:
+            int_b = prin_b = None
+            ds_notes.append(f"The {budget_year} budget carries no debt service (no 5190 "
+                            f"interest or 7060 principal), so the Budget column's debt "
+                            f"service is blank. Choose Modeled or Underwriting below to fill it.")
+    elif basis == "modeled":
+        if modeled["available"]:
+            _use_modeled()
+        else:
+            _fall_back("Modeled was chosen for the Budget debt service, but no loans are "
+                       "modeled for this deal;")
+    elif basis == "underwriting":
         if uw_ds_amount is not None:
             int_b = prin_b = None
             ds_b_total = uw_ds_amount
             basis_applied = True
-            if "budget" in applied_to:
-                applied_to.remove("budget")
+            budget_debt_from = "underwriting"
         else:
-            # Chosen but not available: say so, and keep what the column had rather
-            # than showing a blank that reads as "no debt".
-            ds_notes.append(f"Underwriting was chosen for the Budget debt service, but UW "
-                            f"carries no {budget_year} debt service (7010); the Budget "
-                            f"column shows the modeled figure instead.")
+            # Chosen but not available: say so, and keep a figure rather than showing a
+            # blank that reads as "no debt".
+            _fall_back(f"Underwriting was chosen for the Budget debt service, but UW "
+                       f"carries no {budget_year} debt service (7010);")
 
     ds_v_total = None
     if compare == "underwriting":
@@ -1260,6 +1311,9 @@ def get_budget_review(engine, record_id: int, data: dict,
             "source": "modeled" if applied_to else "file",
             "applies_to": applied_to,
             "budget_basis": basis,
+            # What the Budget column's debt rows actually hold: "budget", "modeled",
+            # "underwriting", or None (blank -- see basis_notes).
+            "budget_from": budget_debt_from,
             "budget_basis_applied": basis_applied,
             "uw_available": uw_ds_amount is not None,
             "uw_months_active": uw_ds["months_active"] if uw_ds_amount is not None else None,

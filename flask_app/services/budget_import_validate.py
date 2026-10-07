@@ -104,9 +104,9 @@ def reconcile(parsed: Dict[str, Any], mapping: Dict[str, Any],
     tick box never reached the server until Sep 28 2026.)
     What is mapped below the line is reported beside the three rows, not dropped.
     """
-    import config
-    rev_accts = {str(a) for accts in config.IS_ACCOUNTS["REVENUES"].values() for a in accts}
-    exp_accts = {str(a) for accts in config.IS_ACCOUNTS["EXPENSES"].values() for a in accts}
+    review = budget_service.review_is_accounts()     # the sections the review sums
+    rev_accts = {str(a) for accts in review["REVENUES"].values() for a in accts}
+    exp_accts = {str(a) for accts in review["EXPENSES"].values() for a in accts}
     by_row = {l["row"]: l for l in parsed["lines"]}
     rev = exp = 0.0
     outside: Dict[str, float] = {}
@@ -152,6 +152,27 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
     if not mapped:
         blocking.append({"code": "no_lines",
                          "message": "No lines have been assigned an account."})
+
+    # ONLY A ROW WITH A 4-DIGIT ACCOUNT IN THE FILE COMES IN (Jack, Oct 7 2026; see
+    # `budget_import_service.file_account`). The screen does not offer the others, so a
+    # mapping on one is a stale draft or a crafted payload -- refused, by name, rather
+    # than imported or quietly dropped.
+    for row_key, m in sorted(mapped.items(), key=lambda kv: int(kv[0])):
+        line = by_row.get(int(row_key))
+        if line and not budget_service.file_account(line):
+            blocking.append({
+                "code": "no_file_account",
+                "message": (f"Row {line['row'] + 1} '{line['label']}' has no 4-digit account "
+                            f"in the file, so it is not imported. Add the account to the "
+                            f"file, or clear this line.")})
+    # A row WITH an account that the analyst cleared is not an error -- a partner's
+    # subtotal carrying an account would double-count -- but it is never silent: listed,
+    # with its figure, beside the tie-out.
+    left_out = [{"row": l["row"], "label": l["label"], "account": budget_service.file_account(l),
+                 "total": l.get("total")}
+                for l in parsed["lines"]
+                if budget_service.file_account(l) and str(l["row"]) not in mapped]
+    no_account = sum(1 for l in parsed["lines"] if not budget_service.file_account(l))
 
     # SEVERAL LINES ON ONE ACCOUNT ADD UP. They do not collide.
     #
@@ -317,7 +338,8 @@ def validate(parsed: Dict[str, Any], mapping: Dict[str, Any], vcode: str,
         w["critical"] = w["code"] in CRITICAL_WARNINGS
 
     return {"blocking": blocking, "warnings": warnings, "reconciliation": recon,
-            "can_import": not blocking}
+            "can_import": not blocking, "left_out": left_out,
+            "no_account_count": no_account}
 
 
 def commit(engine, vcode: str, parsed: Dict[str, Any], mapping: Dict[str, Any],

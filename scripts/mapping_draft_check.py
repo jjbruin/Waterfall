@@ -327,8 +327,12 @@ except OSError:
 else:
     check('a stated account is labelled as read from the file',
           'from_file' in vue2 and 'from the file' in vue2)
-    check('a prior mapping is labelled as such',
-          'from_history' in vue2 and 'as mapped before' in vue2)
+    # REVERSED Oct 7 2026: only a row with a 4-digit account is imported, so the
+    # "as mapped before" pre-fill -- which only ever filled rows with NO account -- is
+    # gone. What replaced it: a row without an account says so and cannot be mapped.
+    check('a row with no account says it is not imported, and offers no account to pick',
+          'no account — not imported' in vue2 and 'v-if="!line.file_account"' in vue2
+          and 'from_history' not in vue2)
     # REVERSED Sep 28 2026: Argus is mapped from the file's account like the budget, so
     # there are no keyword guesses left to label. (The old string check had also gone
     # vacuous -- it matched a comment saying the guesses were gone.)
@@ -346,7 +350,7 @@ else:
     check('the category is displayed, read-only',
           'categoryOf(' in vue2 and 'setCategory(' not in vue2)
     check('unnumbered rows can be hidden, with a count',
-          'onlyNumbered' in vue2 and 'unnumberedCount' in vue2)
+          'onlyNumbered' in vue2 and 'noAccountCount' in vue2)
     check('the chart of accounts opens beside the work', 'toggleCoa' in vue2)
     check('the partnership line is a tick box, off by default',
           'acceptedProposals' in vue2 and 'toggleProposal' in vue2)

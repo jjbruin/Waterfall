@@ -52,18 +52,22 @@ def chk(label, cond, detail=""):
 def make_workbook() -> bytes:
     """A partner budget in the shape they actually arrive in: months across the top,
     the partner's own line names down the side, revenue shown POSITIVE (their
-    convention, the opposite of MRI's), and subtotal rows mixed in."""
+    convention, the opposite of MRI's), and subtotal rows mixed in.
+
+    The detail lines carry their account ("Insurance - 5110") and the subtotals do not:
+    since Oct 7 2026 only a row with a 4-digit account is imported (Jack), so a budget
+    with no account numbers imports nothing."""
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(["2026 Operating Budget"] + [None] * 12)
     months = [f"{m}/{[31,28,31,30,31,30,31,31,30,31,30,31][m-1]}/2026" for m in range(1, 13)]
     ws.append(["Line Item"] + months)
-    ws.append(["Base Rental Revenue"] + [1000] * 12)
-    ws.append(["CAM Recoveries"] + [200] * 12)
+    ws.append(["Base Rental Revenue - 4010"] + [1000] * 12)
+    ws.append(["CAM Recoveries - 4090"] + [200] * 12)
     ws.append(["Total Revenue"] + [1200] * 12)          # subtotal — skipped
-    ws.append(["Real Estate Taxes"] + [300] * 12)
-    ws.append(["Insurance"] + [100] * 12)
+    ws.append(["Real Estate Taxes - 5090"] + [300] * 12)
+    ws.append(["Insurance - 5110"] + [100] * 12)
     ws.append(["Total Operating Expenses"] + [400] * 12)  # subtotal — skipped
     ws.append(["Net Operating Income"] + [800] * 12)      # subtotal — skipped
     buf = io.BytesIO()
@@ -85,7 +89,9 @@ def main() -> int:
 
     print("1. Reading the workbook")
     parsed = svc.parse_budget_workbook(make_workbook(), "budget.xlsx")
-    labels = [l["label"] for l in parsed["lines"]]
+    # The name without its account, so the checks below read as the partner's lines.
+    short = lambda label: label.split(" - ")[0]
+    labels = [short(l["label"]) for l in parsed["lines"]]
     chk("twelve month columns detected", len(parsed["periods"]) == 12,
         f"got {parsed['periods']}")
     chk("month-ends, not raw dates", parsed["periods"][0] == "2026-01-31",
@@ -94,14 +100,18 @@ def main() -> int:
         "Base Rental Revenue" in labels and "Total Revenue" in labels, f"got {labels}")
     tot = next(l for l in parsed["lines"] if l["label"] == "Total Revenue")
     chk("subtotal rows are FLAGGED, not dropped", tot["looks_like_total"] is True)
-    base = next(l for l in parsed["lines"] if l["label"] == "Base Rental Revenue")
+    base = next(l for l in parsed["lines"] if short(l["label"]) == "Base Rental Revenue")
     chk("a line totals its months", base["total"] == 12000, f"got {base['total']}")
     chk("stated totals are picked up",
         parsed["stated_totals"]["revenue"] == 14400
         and parsed["stated_totals"]["noi"] == 9600,
         f"got {parsed['stated_totals']}")
 
-    rows = {l["label"]: l["row"] for l in parsed["lines"]}
+    rows = {short(l["label"]): l["row"] for l in parsed["lines"]}
+    chk("a detail line's account is read off its label",
+        svc.file_account(base) == "4010", f"{base.get('stated_account')}")
+    chk("a subtotal with no account has none", svc.file_account(tot) is None,
+        f"{tot.get('stated_account')}")
 
     print("\n2. Reconciliation — subtotals skipped, and it still ties")
     mapping = {
@@ -152,6 +162,21 @@ def main() -> int:
         any(w["code"] == "lines_combined" for w in vd["warnings"]),
         f"{vd['warnings']}")
     chk("an unmapped subtotal row does NOT block", v["can_import"] is True)
+    # BOTH DIRECTIONS of the 4-digit rule: the four accounted lines import (above), and
+    # a row with no account in the file is refused even if a payload maps it.
+    noacct = dict(mapping)
+    noacct[str(rows["Total Revenue"])] = {"account": "4010", "flip": True}
+    vn = val.validate(parsed, noacct, "P0000004", isbs)
+    chk("a row with NO account in the file is refused, by name",
+        vn["can_import"] is False
+        and any(b["code"] == "no_file_account" and "Total Revenue" in b["message"]
+                for b in vn["blocking"]), f"{vn['blocking']}")
+    lo = dict(mapping)
+    del lo[str(rows["Insurance"])]
+    vl = val.validate(parsed, lo, "P0000004", isbs)
+    chk("a row WITH an account that is cleared is allowed, and listed as left out",
+        vl["can_import"] is True
+        and [x["account"] for x in vl["left_out"]] == ["5110"], f"{vl['left_out']}")
 
     print("\n5. Warnings against the deal's real history")
     from flask_app import create_app

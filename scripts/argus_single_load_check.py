@@ -125,14 +125,15 @@ nokw = LM.parse(eng, 1, "argus", xlsx([[None] + MONTHS, ["Potential Base Rent"] 
 check("a file stating NO account gets NO pre-fill, not a keyword guess",
       nokw["suggested_count"] == 0, nokw["suggested"])
 
-print("\n3. A line read as a subtotal is not final")
+print("\n3. A row with a 4-digit account comes in, even one whose label reads like a total")
+# Jack, Oct 7 2026: "if a row has a 4-digit account number, bring it in and map it by
+# that account" -- "including the last one, even though it's clearly a subtotal".
 tr = by_label["Total Recoveries"]
-check("'Total Recoveries' is read as a subtotal", tr["looks_like_total"] is True)
-check("...so it is NOT pre-filled", sug["Total Recoveries"] is None, sug["Total Recoveries"])
-check("...but it CARRIES the account it states, so 'not a subtotal' can pre-fill it",
-      tr.get("stated_account") == "4090", tr)
+check("'Total Recoveries' reads like a total (the label is still read)", tr["looks_like_total"] is True)
+check("...and carries the account it states", tr.get("stated_account") == "4090", tr)
+check("...so it IS pre-filled from that account, not left out as a subtotal",
+      (sug["Total Recoveries"] or {}).get("account") == "4090", sug["Total Recoveries"])
 mapping = {k: dict(v) for k, v in pa["suggested"].items()}
-mapping[str(tr["row"])] = {"account": "4090", "not_subtotal": True}
 ck = LM.check(eng, 1, "argus", pa, mapping, data)
 check("a subtotal the analyst maps is accepted by the gate", ck["can_import"], ck["blocking"])
 
@@ -255,8 +256,10 @@ else:
     check("the tab is 'Load Valuation Cash Flow'",
           "Load Valuation Cash Flow</button>" in v and "Review Argus Coding" not in v)
     check("the panel shows no keyword-guess tag", "from_keywords" not in pn)
-    check("the subtotal reading can be overturned",
-          "setNotSubtotal" in pn and "not a subtotal" in pn and "not_subtotal" in pn)
+    check("no subtotal toggle any more: the account decides (Jack, Oct 7 2026)",
+          "setNotSubtotal" not in pn and "not_subtotal" not in pn)
+    check("...a total that carries an account is imported and TAGGED, so a double count shows",
+          "reads like a total" in pn)
     # Jack, Oct 6 2026: "Add the flip sign checkbox. The budget upload has it and the
     # Argus load doesn't." It writes `reverse` for Argus, never `flip`.
     check("the flip box is offered for Argus too, writing its own key",
