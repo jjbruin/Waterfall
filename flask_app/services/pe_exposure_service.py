@@ -271,10 +271,16 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
     # FUTURE FUNDING: the One Pager's remaining to fund, per deal. Split by the
     # holder's groups when the deal has one holder; a deal with several (Pegasus)
     # is shown whole, since the deal-level figure does not say whose it is.
+    #
+    # WHO STILL OWES, AT AN OVERRIDE (Oct 7 2026). Where accounting has entered an
+    # allocation override, the funded split is theirs and the commitments are not --
+    # so the unfunded part splits by what each investor still owes there
+    # (`override_weights="remaining"`). Everywhere else, commitment ratios, as before:
+    # that is how accounting's tracker splits future funding, and a general
+    # "who still owes" walk mis-split Bel Air (see ownership_chain_service.group_shares).
     holders_by_deal: Dict[str, list] = {}
     for h in holdings(inv, commitments, as_of):
         holders_by_deal.setdefault(h["vcode"], []).append(h)
-    row_by_holder = {(r["vcode"], r["holder"]): r for r in rows}
     future = []
     for vcode, hs in holders_by_deal.items():
         rtf = _remaining_to_fund(vcode, hs[0]["investment_id"], as_of, acct, wf, inv, commitments)
@@ -285,11 +291,18 @@ def build(as_of: date, data: Optional[dict] = None, engine=None) -> dict:
         amt_usd = amt if cur == "USD" else (amt / fx["value"] if (fx and cur == "CAD") else None)
         shares = None
         if len(hs) == 1:
-            r = row_by_holder.get((vcode, hs[0]["holder"]))
-            shares = (r["shares"] if r else
-                      oc.group_shares(hs[0]["holder"], as_of, STOPS, context=_context,
-                                      default_group=DEFAULT_GROUP, src=src,
-                                      investment=hs[0]["investment_id"])["shares"])
+            fwalk = oc.group_shares(hs[0]["holder"], as_of, STOPS, context=_context,
+                                    default_group=DEFAULT_GROUP, src=src,
+                                    investment=hs[0]["investment_id"],
+                                    override_weights="remaining")
+            shares = fwalk["shares"]
+            for o in {(o["entity"], o["weighed_by"]) for rt in fwalk["routes"]
+                      for o in rt.get("overrides") or []}:
+                notes.append(f"{hs[0]['deal_name']}: future funding at {o[0]} splits by what each "
+                             f"investor still owes there (commitment less accounting's funded "
+                             f"amount)" if o[1] == "remaining" else
+                             f"{hs[0]['deal_name']}: nothing remains unfunded at {o[0]}, so its "
+                             f"future funding uses the funded split")
         future.append({
             "vcode": vcode, "deal_name": hs[0]["deal_name"], "currency": cur,
             "holders": [x["holder"] for x in hs], **rtf,

@@ -79,3 +79,17 @@ injected defect: `ignore` (10 failures), `nodate` (7), `global` (1).
 
 **Accounting enters the actual sets**: they have the funded amounts. Nothing was
 entered on their behalf.
+
+### Future funding at an override is split by what is still OWED (variant D, Oct 7 2026)
+`ownership_chain_service.group_shares(..., override_weights="remaining")` weighs an
+override entity's investors by commitment in force less the override's funded amount;
+`pe_exposure_service` uses it for FUTURE FUNDING only (funded rows keep the funded split).
+No override -> identical to before (verified on production at 12/31/25: not one deal
+moved). Why only at overrides: measured four ways against accounting's 12/31/25 tracker
+(see `board.md`); a general "who still owes" walk mis-split Bel Air, where PSC1 funded
+beyond its commitment at I1BAS2 and PIG5 to carry other investors. With Brainerd's two
+sets supplied in memory, Brainerd's funded (PSC 6,784,705 / TIAA 11,622,972) and future
+(PSC 1,331,425 / TIAA 11,982,825) match the tracker to the dollar, and nothing else moves.
+Nothing remaining at the entity -> funded split, said in the route; a committed investor
+the set does not name owes its whole commitment. Guardrail
+`scripts/future_funding_split_check.py` (13; `--inject=ignore|nofallback|unnamed|wiring`).
