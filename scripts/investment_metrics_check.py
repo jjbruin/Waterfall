@@ -1248,8 +1248,11 @@ def main():
         set((a_fb.get("alternates") or {}).get("first_lien_origination", {}))
         == {"deal", "property", "in_use"})
     chk("the raw loans frame is what the report is handed",
-        "mri_loans_all" in _read_repo("flask_app", "api",
-                                      "investment_metrics.py"),
+        # The build moved from the route into the shared service (Oct 7 2026).
+        "mri_loans_all" in _read_repo("flask_app", "services",
+                                      "investment_metrics_service.py")
+        and "mri_loans_raw" not in _read_repo("flask_app", "services",
+                                              "investment_metrics_service.py"),
         "mri_loans_raw would be post-_filter_paid_off_loans and "
         "post-_collapse_loan_date_events, which overwrites dtEvent with a maturity")
 
