@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v594** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v595** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v594 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v595 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,33 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v595` = `245d1a9` (U/W ROE TO DATE NO LONGER HIDES BEHIND THE ACCOUNTING FEED, AND A DEAL
+    WITH NO UNDERWRITTEN CAPITAL IS A DASH, NOT 0.0%. Charlene Oct 7 2026. `get_pe_performance`
+    computed the U/W ROE from ISBS Projected IS 7071/7073 only, but the block sat inside
+    `if capital_events:` (inside `if not deal_acct.empty:`, inside `if acct is not None`), so a deal
+    with underwritten rows and no ACTUAL capital events lost a number that never needed them. It is
+    now `one_pager._compute_uw_roe`, called at function level. Lifting it out exposed what the gate
+    had hidden: with no underwritten contribution `calculate_roe_detailed` answers 0.0 (capital base
+    0) and Investment Metrics reads `uw_roe_components` as "the engine ran", so the deal printed a
+    real-looking 0.0%. With `weighted_avg_capital <= 0` the components are now left unset (a dash);
+    the scalar keeps its initial 0.0, which the One Pager already prints as a dash. A real zero
+    (contribution, no distributions) is still a zero. Not a symptom repair: the trigger is the
+    capital base itself, not a proxy, and all 61 deals with UW rows were enumerated at 26Q2/26Q1/
+    25Q4 rather than one. MEASURED (local copy, Oct 5 pull): 164 of 183 rows identical; 5 deals go
+    from a computed 0.0% to no figure at 26Q2 (Berger Pittsburgh, East Manchester, Quakertown,
+    Airport Plaza, Green Valley Ranch); Adirondack gains 42.7% locally (production already shows
+    it, and it is inflated against the reference's 8.0%); no real figure lost; actual ROE moves for
+    0. Span vs live `f7cdb46`: `e84e5bf` (docs) and this. Build `cap8`, 2m37s, Succeeded; tag
+    locked; Healthy at 100% traffic. Guardrail `scripts/uw_roe_ungated_check.py` 36 checks,
+    BOTH directions; re-injecting each defect fails 6 (re-gated) and 4 (capital guard dropped).
+    Existing guardrails unchanged: investment_metrics 226, traceability 129, one_engine 26,
+    participation precedence 32. IN THE CONTAINER: the new check passes 36/36 on v595. Three older
+    scripts fail or exit 2 IDENTICALLY on untouched origin/main and were not caused by this:
+    `onepager_missing_vs_zero_check` (1 FAIL, the Economic Occ. row), `onepager_participation_zero_check`
+    and `onepager_pe_terms_fallback_check` (exit 2, no FAIL lines). NOT DONE: the 61-deal sweep on
+    PRODUCTION data; the traceability tab falls back to its checked second engine for the five
+    dash deals (read, not run). **Rollback** is FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:f7cdb46 --revision-suffix v596`.)
   - `v594` = `f7cdb46` (PE EXPOSURE: FUTURE FUNDING AT AN OVERRIDE SPLITS BY WHAT IS STILL OWED.
     Merge of `feat/future-funding-split` (`629fe43`): `group_shares(..., override_weights=
     "remaining")`, used by `pe_exposure_service` for future funding only. A definitional change
