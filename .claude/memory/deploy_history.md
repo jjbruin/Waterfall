@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v595** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v596** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v595 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v596 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,22 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v596` = `741e51e` (EXPENSES: THE MONTHLY CELL PHONE REIMBURSEMENT, PAID AUTOMATICALLY. Merge
+    of `feat/cell-phone-allowance` (`365448b`): `expense_phone.py` -- the CFO's dated rate (seeded
+    $50 from 2026-10), who is paid (everyone named in Expenses but the admin account; the CFO can
+    switch one off or bound the months), the `er_phone_paid` ledger; each payroll batch pays
+    every month owed through its payroll month, once; cell phone bills dated Oct 2026+ declined at
+    save and on the report check. A feature, not a symptom repair. Span vs live `245d1a9`
+    (Charlene's v595, deployed while this was built): `c80a88c` (her v595 docs) and this. Build
+    `cap9`, 3m12s, Succeeded; tag locked; Healthy at 100%. Guardrails: expense_phone 32 (3
+    injections), expense_coding 81, report 98, receipt 53, phase4 23, add_options 42,
+    section_access 274, one_engine_per_number 26. SERVED: `ExpensesView-B79hkDxT.js` ("Cell phone
+    reimbursement"), `ExpenseCodingView-HJLae2bs.js` (the include box). IN THE CONTAINER on
+    PostgreSQL (no data load): tables created, $50 from 2026-10 seeded; 19 of 19 employees
+    eligible; October owed 19 x $50 = $950, no problems; no existing line declined (all before
+    October). Nothing paid by the check. **Rollback** is FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:245d1a9 --revision-suffix v597` (the new tables are
+    harmless to v595; a batch generated under v596 has its months in `er_phone_paid`).)
   - `v595` = `245d1a9` (U/W ROE TO DATE NO LONGER HIDES BEHIND THE ACCOUNTING FEED, AND A DEAL
     WITH NO UNDERWRITTEN CAPITAL IS A DASH, NOT 0.0%. Charlene Oct 7 2026. `get_pe_performance`
     computed the U/W ROE from ISBS Projected IS 7071/7073 only, but the block sat inside

@@ -425,7 +425,7 @@ would read alike -- not handled.
 - Guardrail: `expense_coding_check.py` 81 (`--inject=nogate|noacct|selfemail|silentnobody`),
   `expense_add_options_check.py` 42.
 
-## The monthly cell phone reimbursement (Oct 7 2026; branch `feat/cell-phone-allowance`)
+## The monthly cell phone reimbursement (Oct 7 2026; live `v596`)
 `expense_phone.py`. Jim: a fixed monthly reimbursement for personal cell phones, $50 now,
 the CFO controls the rate, paid by an automatic batch, and cell phone bills declined on
 reports. Decided: everyone set up in Expenses (a name on reports; never the admin account)
