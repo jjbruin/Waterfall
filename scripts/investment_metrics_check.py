@@ -1563,6 +1563,68 @@ def main():
         any(x.get("vcode") == "P0000200" for x in dq.get("not_in_reference_order", [])),
         f"got {[x.get('vcode') for x in dq.get('not_in_reference_order', [])]}")
 
+    # ── 24. twin deal terms ────────────────────────────────────────────────
+    section("24. Twin deal terms (both ways: a twin FILLS a blank, the primary WINS "
+            "a conflict, a lone deal is untouched)")
+    # The live MCCORD shape: one investment, two vcodes, each holding some of
+    # the terms. Donald Lynch keeps uw_irr / proj_yr1_coc on P0000049 and the
+    # coupon / lookback / split on P0000073. The fixture's MCX pair is the same.
+    def _t(vcode, **kw):
+        base = dict(vcode=vcode, pe_coupon=None, irr_lookback=None,
+                    pe_split_capital=None, pe_split_cf=None,
+                    uw_irr=None, proj_yr1_coc=None)
+        base.update(kw)
+        return base
+
+    o24 = build(deal_terms=pd.DataFrame([
+        _t("P0000006", uw_irr=0.22, proj_yr1_coc=0.10),
+        _t("P0000007", pe_coupon=0.09, irr_lookback=0.16, pe_split_capital=0.30),
+        _t("P0000001", pe_coupon=0.085, irr_lookback=0.12, pe_split_capital=0.25),
+    ]))
+    _, mc = row_of(o24, "P0000006")
+    chk("the twin's coupon fills the primary's blank",
+        mc and mc["pref_coupon"] == 0.09, f"got {(mc or {}).get('pref_coupon')}")
+    chk("...and its split", mc and mc["residual_cf_split"] == 0.30,
+        f"got {(mc or {}).get('residual_cf_split')}")
+    chk("...and its IRR lookback", mc and mc["irr_lookback"] == 0.16,
+        f"got {(mc or {}).get('irr_lookback')}")
+    chk("the primary's OWN fields are kept",
+        mc and mc["uw_irr"] == 0.22 and mc["proj_yr1_coc"] == 0.10,
+        f"got {(mc or {}).get('uw_irr')}, {(mc or {}).get('proj_yr1_coc')}")
+    d24 = o24["diagnostics"].get("terms_from_twin", [])
+    chk("every fill is NAMED in diagnostics, with the vcode it came from",
+        {x["field"] for x in d24 if x["vcode"] == "P0000006"}
+        >= {"pe_coupon", "irr_lookback", "pe_split_capital"}
+        and all(x["from_vcode"] == "P0000007" for x in d24 if x["vcode"] == "P0000006"),
+        f"got {d24}")
+    chk("a deal with no twin is untouched (its own terms, nothing borrowed)",
+        row_of(o24, "P0000001")[1]["pref_coupon"] == 0.085
+        and not any(x["vcode"] == "P0000001" for x in d24))
+    chk("a deal with no terms row does NOT borrow another deal's",
+        row_of(o24, "P0000200")[1]["pref_coupon"] is None,
+        f"got {row_of(o24, 'P0000200')[1]['pref_coupon']}")
+
+    # THE PRIMARY WINS a conflict, and the disagreement is named.
+    o24c = build(deal_terms=pd.DataFrame([
+        _t("P0000006", pe_coupon=0.085),
+        _t("P0000007", pe_coupon=0.09, irr_lookback=0.16),
+    ]))
+    _, mcc = row_of(o24c, "P0000006")
+    chk("where both carry a value the PRIMARY stands",
+        mcc and mcc["pref_coupon"] == 0.085, f"got {(mcc or {}).get('pref_coupon')}")
+    chk("...the disagreement is named, not resolved silently",
+        any(x["field"] == "pe_coupon" and x["kept"] == "0.085" and x["twin_value"] == "0.09"
+            for x in o24c["diagnostics"].get("terms_twin_conflict", [])),
+        f"got {o24c['diagnostics'].get('terms_twin_conflict')}")
+    chk("...while a field only the twin holds still fills",
+        mcc and mcc["irr_lookback"] == 0.16)
+
+    # Nothing to merge -> nothing reported (no noise in the default fixture).
+    dd = build()["diagnostics"]
+    chk("no twin terms -> no 'terms_from_twin' / 'terms_twin_conflict' entries",
+        "terms_from_twin" not in dd and "terms_twin_conflict" not in dd,
+        f"got {[k for k in dd if k.startswith('terms_')]}")
+
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("failed:")

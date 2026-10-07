@@ -1670,6 +1670,59 @@ def _as_rate(value: Any) -> Optional[float]:
     return v if abs(v) < 1 else v / 100.0
 
 
+def _blank(value: Any) -> bool:
+    """MRI's spellings of "no value": None, NaN, and the empty-ish strings."""
+    if value is None:
+        return True
+    if isinstance(value, float) and value != value:
+        return True
+    return str(value).strip() in ("", "nan", "None", "NaT")
+
+
+def _identity_terms(ident, dt_index, diag: dict) -> dict:
+    """The deal terms for a LOGICAL investment, across all of its vcodes.
+
+    An investment carried as two vcodes can hold different fields of its terms
+    on each: Donald Lynch keeps ``uw_irr`` and ``proj_yr1_coc`` under
+    ``P0000049`` and ``pe_coupon``, ``irr_lookback`` and ``pe_split_capital``
+    under its sold twin ``P0000073``. Reading only ``ident.vcode`` printed three
+    dashes for terms MRI does hold, and the MRI gaps file listed them as
+    missing. The identity merge exists so that one investment is read as one;
+    this makes the terms follow it, as the loan and the accounting already do.
+
+    THE PRIMARY VCODE WINS. A twin only fills a field the primary leaves blank,
+    so a deal with one vcode, or whose twin says nothing, reads exactly as
+    before. Where both carry a value and they differ, the primary stands and
+    the disagreement is NAMED in diagnostics, never resolved silently.
+
+    Measured on production over every investment with more than one vcode (20):
+    one fills anything, Donald Lynch, four fields; none conflicts.
+    """
+    primary = dt_index.get(norm_id(ident.vcode), {})
+    twins = [v for v in (getattr(ident, "vcodes", None) or [])
+             if norm_id(v) != norm_id(ident.vcode)]
+    if not twins:
+        return primary
+    merged = dict(primary)
+    for v in twins:
+        row = dt_index.get(norm_id(v))
+        if not row:
+            continue
+        for field, value in row.items():
+            if field == "vcode" or _blank(value):
+                continue
+            if _blank(merged.get(field)):
+                merged[field] = value
+                diag.setdefault("terms_from_twin", []).append(
+                    {"vcode": ident.vcode, "field": field, "from_vcode": v,
+                     "value": str(value)})
+            elif str(merged[field]) != str(value):
+                diag.setdefault("terms_twin_conflict", []).append(
+                    {"vcode": ident.vcode, "field": field, "kept": str(merged[field]),
+                     "twin_vcode": v, "twin_value": str(value)})
+    return merged
+
+
 def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
                isbs_interim_bs, inv, isbs_raw, waterfalls, diag) -> dict:
     from one_pager import _child_vcodes_for_parent
@@ -1721,7 +1774,7 @@ def _build_row(ident, table, as_of, acct, commitments, dt_index, loans,
 
     roe, uw_roe = _coc_since_close(ident, as_of, acct, waterfalls, inv, isbs_raw)
 
-    terms = dt_index.get(norm_id(ident.vcode), {})
+    terms = _identity_terms(ident, dt_index, diag)
     # A label (Dev., N/A, Inf.) describes the DEAL, so it follows the deal when a
     # quarter puts it in the other table than the reference does. The table's
     # own entry wins; the other table's is the fallback.
