@@ -1978,10 +1978,19 @@ with no ISBS debt, so both fall back to MRI origination amounts:
   deals the two lookups disagree on 2: Burton, and P0000073 (consolidation calls the
   OTHER "Donald Lynch", P0000049, its child; no debt moves). Fix: ONE child lookup.
   Measure every consumer before and after -- the Dashboard deal count drops by 3.
-- **OREI is a DATA question (Jim/Charlene):** loan 313 on the parent (34,851,000) and
-  loans 285 + 286 on Whitney Manor / Westchase (10,901,000 + 23,295,000 = 34,196,000),
-  all active. Same debt recorded at two levels, or two layers? compute says 69.0M,
-  the cap stack 34.9M.
+- **OREI ANSWERED (Jim, Oct 7 2026): "OREI has two properties and each has its own
+  loan. This is the same situation with the Burton portfolio."** So OREI's debt is the
+  property loans, 285 + 286 = **34,196,000** -- and BOTH engines are wrong: compute
+  69,047,000 (parent + properties), the cap stack 34,851,000 (parent's loan 313 instead
+  of the properties'). Loan 313 carries the same 2.73% and sits 655,000 above the
+  properties' total: a portfolio-level record of the same financing. Question for
+  Charlene: is 313 a duplicate to remove in MRI?
+  Every portfolio measured (local, Oct 7): loans on the PROPERTIES only -- Burton
+  (3, 75,302,500), Berger (8, sold); on the PARENT only -- Giant 7 (97.0M), Brainerd
+  (2, 64.4M), Town Fair Tire (20.0M); on BOTH -- OREI alone. **Proposed rule: a
+  portfolio's loans are its properties' when the properties carry any, else the
+  parent's; never both.** On today's data it moves only OREI (to 34,196,000 in both
+  engines). It should also decide which loans Deal Analysis models (§8.5).
 - The Dashboard's `/init-stream` calls compute WITHOUT `isbs_raw` while
   `dashboard_service` passes it, into the same cache key; identical figures on this
   data, but whichever runs first after a restart decides.
