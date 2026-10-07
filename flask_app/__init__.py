@@ -10,6 +10,24 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 
+# A FILE that is not there is a 404, not the app's page. The SPA fallback used to
+# answer every unknown path with index.html and a 200, so an iPhone asking for
+# /apple-touch-icon-precomposed.png was told "found" and handed HTML -- and "Add to
+# Home Screen" offered a screenshot instead of the PSC Expenses icon (Oct 7 2026).
+# Only these file types: an app route never ends in one, and a route that merely
+# contains a dot (a name, a date) still gets the page.
+_FILE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp",
+    ".js", ".mjs", ".css", ".map", ".woff", ".woff2", ".ttf", ".otf",
+    ".json", ".webmanifest", ".txt", ".xml", ".pdf", ".html",
+}
+
+
+def is_missing_file_request(path: str) -> bool:
+    """True when a path the SPA fallback would answer is asking for a file."""
+    return os.path.splitext((path or "").lower())[1] in _FILE_EXTENSIONS
+
+
 def create_app(config_name: str = None) -> Flask:
     """Create and configure the Flask application.
 
@@ -247,6 +265,9 @@ def create_app(config_name: str = None) -> Flask:
                 if path.startswith("assets/"):
                     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
                 return resp
+            if is_missing_file_request(path):
+                return "Not found", 404
+
             # index.html — never cache so deploys take effect immediately
             resp = make_response(send_from_directory(static_dir, "index.html"))
             resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"

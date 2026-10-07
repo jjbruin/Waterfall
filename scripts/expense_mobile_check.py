@@ -108,11 +108,11 @@ def main():
     print("6. 'PSC Expenses' on the home screen (Add to Home Screen, Oct 7 2026)")
     index = (ROOT / "vue_app/index.html").read_text(encoding="utf-8")
     if INJECT == "noicon":
-        index = index.replace('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />', "")
+        index = index.replace('<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />', "")
     if INJECT == "stickyname":
         view = view.replace("onUnmounted(() => homeScreenName(null))", "")
     chk("index.html declares the touch icon",
-        '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />' in index)
+        '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />' in index)
     icon = ROOT / "vue_app/public/apple-touch-icon.png"
     chk("...and it exists, 180x180 PNG (what iOS asks for)",
         icon.exists() and icon.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
