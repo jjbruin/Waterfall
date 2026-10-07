@@ -874,7 +874,7 @@ def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
                  context: Optional[Callable[[str], Optional[str]]] = None,
                  default_group: str = "Other", src: Optional[_Source] = None,
                  engine=None, investment: Optional[str] = None,
-                 use_overrides: bool = True) -> dict:
+                 use_overrides: bool = True, override_weights: str = "funded") -> dict:
     """Who ultimately holds ``entity_id`` on ``as_of``, as {group: share}.
 
     Returns ``{"entity", "as_of", "shares", "routes", "problems"}``. Shares are
@@ -891,7 +891,20 @@ def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
     commitments above it. Every route through an override names it.
     ``use_overrides=False`` is the raw commitment walk (the override's own
     validation uses it).
+
+    ``override_weights`` -- how an override entity's investors are weighed:
+    ``"funded"`` (default) by the amounts accounting entered, which is who holds the
+    capital now; ``"remaining"`` by what each still OWES there -- its commitment in
+    force less the override's funded amount -- which is who funds what is left. The
+    PE exposure report splits FUTURE FUNDING this way (measured Oct 7 2026 against
+    accounting's 12/31/25 tracker: Brainerd's INVBPA had funded its whole $5,493,264,
+    so all $13.3M unfunded is the TIAA JV's -- and only at override entities; a
+    general unfunded walk mis-split Bel Air, where PSC1 funded beyond its commitment
+    to carry other investors). Nothing remaining anywhere at the entity -> funded
+    weights, and the route says so.
     """
+    if override_weights not in ("funded", "remaining"):
+        raise ValueError("override_weights is 'funded' or 'remaining'")
     src = src or _Source(engine, as_of=as_of, with_balances=False)
     root = _norm(entity_id)
     inv_key = _norm(investment) if investment else root
@@ -921,8 +934,26 @@ def group_shares(entity_id: str, as_of: date, stops: Dict[str, str],
         if ov:
             owners = [{"entity_id": _norm(l["investor_id"]), "pct": l["pct"]}
                       for l in ov["lines"] if (l.get("pct") or 0) > 0]
+            weighed = "funded"
+            if override_weights == "remaining":
+                # What each investor still owes here: its commitment in force less what
+                # accounting says it has funded. A committed investor the set does not
+                # name has funded nothing, so it owes its whole commitment.
+                committed = {o["entity_id"]: float(o["committed"] or 0.0)
+                             for o in _owners_of(src, ent)}
+                funded = {_norm(l["investor_id"]): float(l["amount"] or 0.0) for l in ov["lines"]}
+                remaining = {i: max(committed.get(i, 0.0) - funded.get(i, 0.0), 0.0)
+                             for i in set(committed) | set(funded)}
+                left = sum(remaining.values())
+                if left > 0.005:
+                    owners = [{"entity_id": i, "pct": 100.0 * v / left}
+                              for i, v in sorted(remaining.items()) if v > 0]
+                    weighed = "remaining"
+                else:
+                    weighed = "funded (nothing remains unfunded here)"
             used = used + ({"entity": ent, "investment": inv_key, "id": ov["id"],
-                            "effective_date": ov["effective_date"], "reason": ov["reason"]},)
+                            "effective_date": ov["effective_date"], "reason": ov["reason"],
+                            "weighed_by": weighed},)
         else:
             owners = [o for o in _owners_of(src, ent) if (o.get("pct") or 0) > 0]
         if not owners:
