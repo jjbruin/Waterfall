@@ -1955,6 +1955,31 @@ locally, so a local comparison proves nothing. This needs
 treat the two Debt columns as potentially different numbers.
 
 ### 8.4 Two capitalization engines, measured — OPEN (Oct 6 2026)
+**READ FIRST -- Jim, Oct 7 2026: "We solved the parent child relationship early on ...
+some deals with the loan at the portfolio level and others with individual loans at the
+property levels. We already have logic to handle the difference."** That logic is
+`consolidation.py` (Feb 4 2026, `3bd3c56` / `363bb31`; DOCUMENTATION.md "Sub-Portfolio
+Structure"): a child's Portfolio_Name = the parent's Investment_Name; LOANS ROLL UP FROM
+PARENT AND PROPERTIES ("All loans will be included in our MRI_Loans table and should roll
+to the deal level"); a sub-portfolio's FORECASTS come from the properties only. **Do not
+propose a new child rule or a "properties-else-parent" loan rule** -- both were proposed
+below and Jim declined. `fix/one-child-lookup` is DROPPED (left unmerged). Under the
+February logic the findings below are DATA problems:
+- **OREI:** LoanID 313 on the parent duplicates the two property loans (Jim: each
+  property has its own loan). Remove/close 313 in MRI -> 34,196,000. Owner: Charlene.
+- **Burton:** its buildings' Portfolio_Name is "Burton Portfolio", not the parent's
+  Investment_Name "Burton Retail Portfolio", so the February logic never sees Burton as
+  a portfolio (Dashboard lists the buildings; Deal Analysis models no loans, §8.5).
+  Portfolio_Name is app-managed. CAUTION: once recognised, the forecast comes from the
+  buildings only, and Burton's is on the parent -- decide where it lives first.
+- Still worth its own one-line fix: `ownership_service` calls
+  `get_property_vcodes_for_deal(inv, entity_id)` REVERSED; the error is swallowed, so
+  every portfolio is seeded without its children.
+- The One Pager's Aug 6-7 helper (`_child_vcodes_for_parent`, the "Burton exception")
+  and `valuation_service._child_parent_map` are workarounds for the Burton naming; with
+  Burton's data aligned they become redundant, not wrong.
+
+Measurement that led here (Oct 6):
 `compute.get_deal_capitalization` (Dashboard KPIs, Deal Analysis header, the assistant's
 `get_capitalization`) vs `one_pager.get_capitalization_stack` (One Pager, both Snapshot
 pages, Valuation Summary). Measured on local data (recent production copy) over the
