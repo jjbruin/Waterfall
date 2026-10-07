@@ -11,7 +11,7 @@
  * shows what the API returned and the buttons its `permissions` allow; it
  * never infers a permission of its own.
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import api from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDataStore } from '@/stores/data'
@@ -650,10 +650,28 @@ async function saveRate() {
 }
 
 watch(tab, t => { report.value = null; if (t === 'setup') loadEmployees(); else loadList() })
+// "Add to Home Screen" on an iPhone or iPad (Jim, Oct 7 2026): Safari names the icon
+// from this tag and opens it on the page it was added from, so an employee who adds
+// it here gets "PSC Expenses" straight back to this screen. The icon itself is
+// /apple-touch-icon.png (index.html). Taken down on leaving, so another screen added
+// to a home screen is not labelled Expenses.
+const HOME_NAME = 'PSC Expenses'
+function homeScreenName(name: string | null) {
+  let tag = document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-title"]')
+  if (!name) { tag?.remove(); return }
+  if (!tag) {
+    tag = document.createElement('meta')
+    tag.name = 'apple-mobile-web-app-title'
+    document.head.appendChild(tag)
+  }
+  tag.content = name
+}
 onMounted(async () => {
+  homeScreenName(HOME_NAME)
   try { await loadOptions() } catch (e) { fail(e, 'Could not load the expense form') }
   loadList()
 })
+onUnmounted(() => homeScreenName(null))
 </script>
 
 <template>

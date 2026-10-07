@@ -18,7 +18,7 @@ fixed:
   5. On a phone the sidebar starts folded and overlays when opened; the lines table
      scrolls inside itself below 900px (an upright iPad overflowed the page by 370px).
 
-Usage: python scripts/expense_mobile_check.py [--inject=nophotos|folder|order|rename]
+Usage: python scripts/expense_mobile_check.py [--inject=nophotos|folder|order|rename|noicon|stickyname]
 """
 import re
 import sys
@@ -104,6 +104,27 @@ def main():
         "isPhone() || collapsed.value ? '40px' : '240px'" in side)
     chk("...and folds away again after picking a screen",
         "watch(() => route.fullPath" in side)
+
+    print("6. 'PSC Expenses' on the home screen (Add to Home Screen, Oct 7 2026)")
+    index = (ROOT / "vue_app/index.html").read_text(encoding="utf-8")
+    if INJECT == "noicon":
+        index = index.replace('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />', "")
+    if INJECT == "stickyname":
+        view = view.replace("onUnmounted(() => homeScreenName(null))", "")
+    chk("index.html declares the touch icon",
+        '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />' in index)
+    icon = ROOT / "vue_app/public/apple-touch-icon.png"
+    chk("...and it exists, 180x180 PNG (what iOS asks for)",
+        icon.exists() and icon.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+        and int.from_bytes(icon.read_bytes()[16:20], "big") == 180
+        and int.from_bytes(icon.read_bytes()[20:24], "big") == 180)
+    chk("the Expenses page names it 'PSC Expenses'",
+        "const HOME_NAME = 'PSC Expenses'" in view and "homeScreenName(HOME_NAME)" in view
+        and "apple-mobile-web-app-title" in view)
+    chk("...and takes the name down on leaving, so no other screen is called Expenses",
+        "onUnmounted(() => homeScreenName(null))" in view)
+    chk("NOT full-screen mode: it would break Sign in with Microsoft's popup",
+        "apple-mobile-web-app-capable" not in index + view)
 
     print("\n%d passed, %d failed" % (len(_passed), len(_failed)))
     return 1 if _failed else 0
