@@ -120,10 +120,118 @@ def ensure_tables(engine) -> None:
             voided_by    TEXT,
             voided_at    TEXT)"""))
     from sqlalchemy import inspect
-    if "batch_id" not in {c["name"] for c in inspect(engine).get_columns("er_reports")}:
-        with engine.begin() as c:
-            c.execute(text("ALTER TABLE er_reports ADD COLUMN batch_id TEXT"))
+    have = {c["name"] for c in inspect(engine).get_columns("er_reports")}
+    # batch_id, and the coding review (Oct 7 2026) -- see `review_state`.
+    for col in ("batch_id", "coding_state", "coding_submitted_by", "coding_submitted_at",
+                "coding_reviewed_by", "coding_reviewed_at"):
+        if col not in have:
+            # TWO REQUESTS RACE HERE: the coding screen loads its lines and its settings at
+            # once, both find the column missing, and the second ALTER fails "duplicate
+            # column" -- which returned a 500 and an empty grid (found Oct 7 2026). A column
+            # that appeared in between is the outcome wanted; anything else is raised.
+            try:
+                with engine.begin() as c:
+                    c.execute(text("ALTER TABLE er_reports ADD COLUMN %s TEXT" % col))
+            except Exception:
+                if col not in {x["name"] for x in inspect(engine).get_columns("er_reports")}:
+                    raise
     _DONE.add(key)
+
+
+# ------------------------------------------------------------------ the coding review
+#
+# The CFO, Oct 7 2026: "Do we have the ability to have Ken/Nghia submit the expense coding
+# for final review?" Jim: yes, the CFO approves, and only reviewed reports can be batched.
+#
+#   (not submitted) --submit (accounting)--> submitted --approve (reviewer)--> reviewed
+#                          ^                     |  return, with a reason       |
+#                          +---------------------+                              |
+#                          +--- the coding changed after review: back to submitted
+#
+# A report returned to the employee and approved AGAIN starts over: the state counts only
+# if it was submitted after the report's latest approval (`decided_at`), so nothing in the
+# approval code has to remember to clear it.
+REVIEWER_ROLES = ("cfo", "accounting_manager")
+
+
+def review_state(rep: dict) -> str:
+    """'' (not submitted) | 'submitted' | 'reviewed', for an approved report."""
+    st = (rep.get("coding_state") or "").strip()
+    if st and (rep.get("coding_submitted_at") or "") < (rep.get("decided_at") or ""):
+        return ""                                    # submitted before a re-approval
+    return st if st in ("submitted", "reviewed") else ""
+
+
+def can_review(user: dict, engine=None) -> bool:
+    from flask_app.auth.sections import has_accounting_authority
+    return bool(user) and user.get("role") in REVIEWER_ROLES and \
+        has_accounting_authority(user, engine)
+
+
+def submit_coding(engine, report_ids, actor: dict) -> dict:
+    """Accounting submits these reports' coding for review. Refused while any line has a
+    problem -- a reviewer should not be asked to approve coding that cannot be batched."""
+    ensure_tables(engine)
+    ids = sorted({int(x) for x in (report_ids or [])})
+    if not ids:
+        raise ValueError("Choose the reports to submit.")
+    reports = {int(r["id"]): r for r in _approved_reports(engine, ids)}
+    missing = [i for i in ids if i not in reports]
+    if missing:
+        raise ValueError("Report(s) %s are not approved and unbatched." % ", ".join(map(str, missing)))
+    already = [i for i in ids if review_state(reports[i])]
+    if already:
+        raise ValueError("Report(s) %s are already %s." % (", ".join(map(str, already)),
+                         review_state(reports[already[0]])))
+    bad = sorted({r["report_id"] for r in coding_rows(engine, ids) if r["problems"]})
+    if bad:
+        raise ValueError("Report(s) %s still have coding problems to fix first."
+                         % ", ".join(map(str, bad)))
+    now = ex._now()
+    with engine.begin() as c:
+        for i in ids:
+            c.execute(text("UPDATE er_reports SET coding_state = 'submitted', "
+                           "coding_submitted_by = :by, coding_submitted_at = :at, "
+                           "coding_reviewed_by = NULL, coding_reviewed_at = NULL WHERE id = :i"),
+                      {"by": actor.get("username"), "at": now, "i": i})
+            ex._event(c, i, "coding submitted for review", actor)
+    return {"submitted": ids}
+
+
+def review_coding(engine, report_ids, action: str, note: Optional[str], actor: dict) -> dict:
+    """A reviewer approves submitted coding, or returns it with a reason.
+
+    Returns the submitters, so the caller can tell each whose coding came back."""
+    ensure_tables(engine)
+    if not can_review(actor, engine):
+        raise PermissionError("Only the CFO or the accounting manager reviews expense coding.")
+    if action not in ("approve", "return"):
+        raise ValueError("The action is approve or return.")
+    note = (note or "").strip() or None
+    if action == "return" and not note:
+        raise ValueError("Say why the coding is being returned.")
+    ids = sorted({int(x) for x in (report_ids or [])})
+    reports = {int(r["id"]): r for r in _approved_reports(engine, ids)}
+    not_waiting = [i for i in ids if i not in reports or review_state(reports[i]) != "submitted"]
+    if not ids or not_waiting:
+        raise ValueError("Report(s) %s are not waiting for review."
+                         % ", ".join(map(str, not_waiting or ids)))
+    now = ex._now()
+    submitters: Dict[str, List[int]] = {}
+    with engine.begin() as c:
+        for i in ids:
+            submitters.setdefault(reports[i].get("coding_submitted_by") or "", []).append(i)
+            if action == "approve":
+                c.execute(text("UPDATE er_reports SET coding_state = 'reviewed', "
+                               "coding_reviewed_by = :by, coding_reviewed_at = :at WHERE id = :i"),
+                          {"by": actor.get("username"), "at": now, "i": i})
+                ex._event(c, i, "coding reviewed", actor)
+            else:
+                c.execute(text("UPDATE er_reports SET coding_state = NULL, "
+                               "coding_reviewed_by = NULL, coding_reviewed_at = NULL WHERE id = :i"),
+                          {"i": i})
+                ex._event(c, i, "coding returned", actor, note=note)
+    return {"action": action, "reports": ids, "submitters": submitters}
 
 
 # ------------------------------------------------------------------ who owns it
@@ -315,6 +423,11 @@ def coding_rows(engine, report_ids=None) -> List[dict]:
                     "interco": interco, "interco_proposed": interco_p,
                     "interco_changed": bool(d.get("interco")),
                     "decided_by": d.get("updated_by"), "decided_at": d.get("updated_at"),
+                    "review_state": review_state(rep),
+                    "coding_submitted_by": rep.get("coding_submitted_by"),
+                    "coding_submitted_at": rep.get("coding_submitted_at"),
+                    "coding_reviewed_by": rep.get("coding_reviewed_by"),
+                    "coding_reviewed_at": rep.get("coding_reviewed_at"),
                     "problems": problems,
                     "warnings": ["may be a duplicate: " + w for w in dupes.get(ln["id"], [])],
                 })
@@ -331,12 +444,16 @@ def save_coding(engine, line_id: int, split_id: int, body: dict, by: str) -> dic
     ensure_tables(engine)
     with engine.connect() as c:
         ok = c.execute(text(
-            "SELECT r.status, r.batch_id FROM er_lines l JOIN er_reports r ON r.id = l.report_id "
+            "SELECT r.status, r.batch_id, r.id, r.coding_state, r.coding_submitted_at, "
+            "r.decided_at FROM er_lines l JOIN er_reports r ON r.id = l.report_id "
             "WHERE l.id = :l"), {"l": int(line_id)}).first()
     if not ok:
         raise LookupError("No line %s." % line_id)
     if ok[0] != "approved" or ok[1]:
         raise PermissionError("Only an approved report not yet in a batch can be coded.")
+    # Coding changed AFTER review goes back for review: a reviewer approved what they saw.
+    reviewed = review_state({"coding_state": ok[3], "coding_submitted_at": ok[4],
+                             "decided_at": ok[5]}) == "reviewed"
     booking = body.get("booking") or None
     if booking and booking not in BOOKINGS:
         raise ValueError("Booking is one of %s." % ", ".join(BOOKINGS))
@@ -367,7 +484,13 @@ def save_coding(engine, line_id: int, split_id: int, body: dict, by: str) -> dic
              "d": _clean_desc(body.get("description")),
              "a": (body.get("expense_account") or "").strip() or None, "b": booking,
              "i": json.dumps(interco) if interco else None, "by": by, "at": ex._now()})
-    return {"saved": True}
+        if reviewed:
+            c.execute(text("UPDATE er_reports SET coding_state = 'submitted', "
+                           "coding_reviewed_by = NULL, coding_reviewed_at = NULL WHERE id = :i"),
+                      {"i": int(ok[2])})
+            ex._event(c, int(ok[2]), "coding changed after review -- back for review",
+                      {"id": None, "username": by})
+    return {"saved": True, "back_for_review": reviewed}
 
 
 # ------------------------------------------------------------------ settings
@@ -456,6 +579,12 @@ def build_batch(engine, body: dict, by: str, commit: bool = False) -> dict:
     if missing:
         errors.append("Report(s) %s are not approved and unbatched."
                       % ", ".join(map(str, missing)))
+    # ONLY REVIEWED CODING IS BATCHED (Jim, Oct 7 2026).
+    for r in reports:
+        st = review_state(r)
+        if st != "reviewed":
+            errors.append("Report %s's coding %s." % (r["id"], "is waiting for review"
+                          if st == "submitted" else "has not been submitted for review"))
     rows = coding_rows(engine, report_ids) if reports else []
     rec_ids = {int(x) for x in (body.get("recurring_ids") or [])}
     recs = [r for r in recurring(engine) if r["id"] in rec_ids and r["active"]]

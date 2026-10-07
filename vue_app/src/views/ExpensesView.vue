@@ -12,6 +12,7 @@
  * never infers a permission of its own.
  */
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDataStore } from '@/stores/data'
@@ -682,10 +683,14 @@ function homeScreenName(name: string | null) {
   }
   tag.content = name
 }
+// The workflow emails link straight to a report: /expenses?report=<id> (Oct 7 2026).
+const route = useRoute()
 onMounted(async () => {
   homeScreenName(HOME_NAME)
   try { await loadOptions() } catch (e) { fail(e, 'Could not load the expense form') }
   loadList()
+  const linked = Number(route.query.report)
+  if (linked > 0) await openReport(linked)
 })
 onUnmounted(() => homeScreenName(null))
 </script>
@@ -1151,7 +1156,10 @@ onUnmounted(() => homeScreenName(null))
       <ul class="history">
         <li v-for="e in report.events" :key="e.id">
           <span class="muted">{{ e.at?.replace('T', ' ').slice(0, 16) }}</span>
-          {{ e.action }} by {{ e.actor_name }}<template v-if="e.basis"> ({{ e.basis }})</template>
+          <!-- An email the workflow sent says WHO it went to, not "by the app". -->
+          <template v-if="e.action === 'emailed' || e.action === 'email not sent'">
+            {{ e.action === 'emailed' ? 'emailed' : 'email NOT sent to' }} {{ e.basis }}</template>
+          <template v-else>{{ e.action }} by {{ e.actor_name }}<template v-if="e.basis"> ({{ e.basis }})</template></template>
           <div v-if="e.note" class="note">“{{ e.note }}”</div>
         </li>
       </ul>

@@ -39,6 +39,10 @@ ACCEPTED = os.environ.get("ER_ACCEPTED_CSV") or str(
     "2026-09-24 Payroll ERs Entries - JE Upload.csv")
 
 _passed, _failed = [], []
+#: --inject=nogate (batch unreviewed coding) | noacct (approval emails skip accounting)
+#:          | selfemail (the submitter is emailed about their own submission)
+#:          | silentnobody (nobody to email is not recorded)
+INJECT = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--inject=")), "")
 
 
 def chk(label, cond, detail=""):
@@ -77,11 +81,33 @@ def main():
     data_service.get_data = lambda *a, **k: {"inv": inv}
 
     people = {"admin": "admin", "acct": "accountant", "ana": "analyst", "mgr": "analyst",
-              "emp": "analyst"}
+              "emp": "analyst", "cfo1": "cfo", "amgr": "accounting_manager"}
+    # EVERY EMAIL IS CAPTURED, never sent, and sent inline so the history it writes can be
+    # read straight back. The manager has no address, so "not sent" is exercised too.
+    from flask_app.auth import email_utils
+    from flask_app.services import expense_notify as en
+    sent = []
+    email_utils.send_email_result = lambda to, subject, html: (
+        sent.append({"to": to, "subject": subject, "html": html}) or {"ok": True})
+    en.SYNC = True
+    from flask_app.services import expense_coding as _ec
+    if INJECT == "nogate":
+        _orig_rs = _ec.review_state
+        import inspect as _insp
+        def _rs(rep):
+            caller = _insp.stack()[1].function
+            return "reviewed" if caller == "build_batch" else _orig_rs(rep)
+        _ec.review_state = _rs
+    if INJECT == "noacct":
+        en.accounting = lambda *a, **k: []
+    if INJECT == "selfemail":
+        _orig_rv = en.reviewers
+        en.reviewers = lambda engine, exclude_username=None, **k: _orig_rv(engine, None, **k)
     with app.app_context():
         eng = get_engine()
         for u, role in people.items():
-            create_user(u, "pw-" + u, role=role)
+            create_user(u, "pw-" + u, role=role,
+                        email=None if u == "mgr" else u + "@example.invalid")
         with eng.begin() as c:
             c.execute(text('CREATE TABLE IF NOT EXISTS gl_accounts ("ACCTNUM" TEXT, "ACCTNAME" TEXT, "TYPE" TEXT)'))
             for a, n in (("MR53000004", "Other Expense: Meals & Entertainment"),
@@ -140,6 +166,48 @@ def main():
         call("GET", "/api/expense-coding/lines", "ana")[0] == 403)
     chk("accounting can", call("GET", "/api/expense-coding/lines", "acct")[0] == 200)
 
+    # THE COLUMN RACE (found Oct 7 2026): the coding screen loads lines and settings at
+    # once; both found the review columns missing and the second ALTER failed "duplicate
+    # column" -- a 500 and an empty grid. Reproduced: the first read of er_reports' columns
+    # inside expense_coding.ensure_tables is made STALE, as if another request added them
+    # in between.
+    import sqlalchemy
+    from flask_app.services import expense_coding as ec_mod
+    with app.app_context():
+        eng2 = get_engine()
+        ec_mod.ensure_tables(eng2)                    # the columns now exist
+        ec_mod._DONE.clear()
+        real_inspect = sqlalchemy.inspect
+        seen = {"n": 0}
+
+        class _Stale:
+            def __init__(self, e):
+                self._i = real_inspect(e)
+
+            def get_columns(self, table):
+                import inspect as _pyinspect
+                cols = self._i.get_columns(table)
+                caller = _pyinspect.stack()[1]
+                if table == "er_reports" and caller.function == "ensure_tables" \
+                        and caller.filename.endswith("expense_coding.py"):
+                    seen["n"] += 1
+                    if seen["n"] == 1:
+                        return [c for c in cols if not str(c["name"]).startswith("coding_")]
+                return cols
+
+            def __getattr__(self, a):
+                return getattr(self._i, a)
+        sqlalchemy.inspect = _Stale
+        try:
+            ec_mod.ensure_tables(eng2)
+            raced = None
+        except Exception as e:
+            raced = e
+        finally:
+            sqlalchemy.inspect = real_inspect
+        chk("a request racing another to add the review columns does not fail",
+            raced is None and seen["n"] >= 1, raced)
+
     print("\n2. Who owns the expense: the real build_chain, walked to the intercompany entity")
     with app.app_context():
         g = ec.propose_interco(get_engine(), "P0000040")
@@ -178,12 +246,30 @@ def main():
         {**base, "category_account": "MR53000011", "deal_code": "P0000003",
          "comment": "Apple Site Visit - Airfare", "amount": "712.98"}):
         call("POST", "/api/expenses/reports/%d/lines" % rid, "emp", body)
+    sent.clear()
     call("POST", "/api/expenses/reports/%d/submit" % rid, "emp")
+
+    print("\n2b. The workflow emails (the CFO's ask, Oct 7 2026)")
+    hist = lambda: call("GET", "/api/expenses/reports/%d" % rid, "emp")[1]["events"]
+    chk("submitting emails no one when the approver has no address -- and SAYS so in the history",
+        not sent and any(e["action"] == "email not sent" and "no email address" in (e["note"] or "")
+                         for e in hist()), [(e["action"], e["basis"]) for e in hist()])
 
     print("\n3. Only an approved report reaches accounting")
     st, b, _ = call("GET", "/api/expense-coding/lines", "acct")
     chk("a submitted report is not on the grid", not b["rows"])
+    sent.clear()
     call("POST", "/api/expenses/reports/%d/decide" % rid, "mgr", {"action": "approve"})
+    to = sorted(m["to"] for m in sent)
+    chk("approval emails accounting -- accountant, accounting manager, CFO -- and the employee",
+        to == sorted(["acct@example.invalid", "amgr@example.invalid", "cfo1@example.invalid",
+                      "emp@example.invalid"]), to)
+    chk("...not the analyst or the admin role", not any(t.startswith(("ana@", "admin@")) for t in to))
+    chk("...accounting's links to Expense Coding, the employee's to their report",
+        all("/expense-coding" in m["html"] for m in sent if m["to"] != "emp@example.invalid")
+        and any("/expenses?report=%d" % rid in m["html"] for m in sent if m["to"] == "emp@example.invalid"))
+    chk("...and each send is in the report's history",
+        sum(1 for e in hist() if e["action"] == "emailed") == 4)
     st, b, _ = call("GET", "/api/expense-coding/lines", "acct")
     rows = {r["comment"]: r for r in b["rows"]}
     chk("once approved, every line is on the grid", len(b["rows"]) == 5, len(b["rows"]))
@@ -236,6 +322,68 @@ def main():
     chk("shares that do not total 100% are refused",
         call("PUT", "/api/expense-coding/lines/%d/0" % din["line_id"], "acct",
              {"interco": [{"entity": "PSC3", "pct": 60}]})[0] == 400)
+
+    print("\n4b. The coding review: accounting submits, the CFO reviews, only reviewed is batched")
+    rv = {"report_ids": [rid], "payroll_date": "2026-09-24", "credit_suffix": "End of Month",
+          "fx": {"PPI2": 1.41344}}
+    st, pv, _ = call("POST", "/api/expense-coding/batches", "acct", rv)
+    chk("before review the batch is REFUSED, saying why",
+        any("has not been submitted for review" in e for e in pv["errors"]), pv["errors"])
+    chk("an analyst cannot submit coding",
+        call("POST", "/api/expense-coding/review/submit", "ana", {"report_ids": [rid]})[0] == 403)
+    sent.clear()
+    st, out, _ = call("POST", "/api/expense-coding/review/submit", "acct", {"report_ids": [rid]})
+    chk("the accountant submits it for review", st == 200 and out["submitted"] == [rid], out)
+    chk("...which emails the reviewers, CFO and accounting manager, and not the submitter",
+        sorted(m["to"] for m in sent) == ["amgr@example.invalid", "cfo1@example.invalid"],
+        [m["to"] for m in sent])
+    state = lambda: {r["review_state"] for r in call("GET", "/api/expense-coding/lines", "acct")[1]["rows"]}
+    chk("...and the grid says it is waiting", state() == {"submitted"}, state())
+    chk("the accountant cannot review", call("POST", "/api/expense-coding/review/decide", "acct",
+                                             {"report_ids": [rid], "action": "approve"})[0] == 403)
+    chk("a return needs a reason", call("POST", "/api/expense-coding/review/decide", "cfo1",
+                                        {"report_ids": [rid], "action": "return"})[0] == 400)
+    sent.clear()
+    st, _, _ = call("POST", "/api/expense-coding/review/decide", "cfo1",
+                    {"report_ids": [rid], "action": "return", "note": "Dinner is Meals, not Travel"})
+    chk("the CFO returns it with a reason; it is not submitted any more", st == 200 and state() == {""})
+    chk("...and the accountant who submitted it is emailed, with the reason",
+        [m["to"] for m in sent] == ["acct@example.invalid"]
+        and "Dinner is Meals" in sent[0]["html"], [m["to"] for m in sent])
+    # The CFO is in accounting too, and may submit; she is then not emailed about her
+    # own submission -- only the other reviewer is.
+    sent.clear()
+    call("POST", "/api/expense-coding/review/submit", "cfo1", {"report_ids": [rid]})
+    chk("a reviewer who submits is not emailed about her own submission",
+        [m["to"] for m in sent] == ["amgr@example.invalid"], [m["to"] for m in sent])
+    st, _, _ = call("POST", "/api/expense-coding/review/decide", "cfo1",
+                    {"report_ids": [rid], "action": "approve"})
+    chk("resubmitted and approved: reviewed", st == 200 and state() == {"reviewed"}, state())
+    st, sv, _ = call("PUT", "/api/expense-coding/lines/%d/0" % din["line_id"], "acct",
+                     {"expense_account": "MR53000004",
+                      "description": "Interco - ER - Fred Kurz - Pontchartrain Site Visit - Dinner at Arnaud's!"})
+    chk("coding changed AFTER review goes back for review", sv.get("back_for_review") is True
+        and state() == {"submitted"}, (sv, state()))
+    st, pv, _ = call("POST", "/api/expense-coding/batches", "acct", rv)
+    chk("...and the batch refuses it again until it is re-reviewed",
+        any("is waiting for review" in e for e in pv["errors"]), pv["errors"])
+    call("POST", "/api/expense-coding/review/decide", "amgr", {"report_ids": [rid], "action": "approve"})
+    chk("the accounting manager may review too", state() == {"reviewed"}, state())
+    # NOBODY TO EMAIL is said, not silent: with no reviewer on file, submitting coding
+    # leaves "email not sent -- no reviewer to email" in the history.
+    if INJECT == "silentnobody":
+        en._nobody = lambda *a, **k: None
+    real_rv = en.reviewers
+    en.reviewers = lambda *a, **k: []
+    try:
+        with app.app_context():
+            en.coding_event(get_engine(), [rid], "coding_submitted", "http://check/",
+                            {"id": ids["acct"], "username": "acct"})
+    finally:
+        en.reviewers = real_rv
+    chk("with no reviewer to email, the history SAYS no email was sent",
+        any(e["action"] == "email not sent" and e["basis"] == "no reviewer to email" for e in hist()),
+        [(e["action"], e["basis"]) for e in hist()][-3:])
 
     print("\n5. The batch")
     call("PUT", "/api/expense-coding/currency", "acct", {"entity_id": "PPI2", "currency": "CAD"})
@@ -396,6 +544,9 @@ def acceptance(call, app, ids, people, H, client):
         else:
             body.update({"booking": "expense", "expense_account": r["AcctNum"]})
         call("PUT", "/api/expense-coding/lines/%d/0" % lid, "acct", body)
+    call("POST", "/api/expense-coding/review/submit", "acct", {"report_ids": list(reports.values())})
+    call("POST", "/api/expense-coding/review/decide", "cfo1",
+         {"report_ids": list(reports.values()), "action": "approve"})
     st, pv, _ = call("POST", "/api/expense-coding/batches", "acct", {
         "report_ids": list(reports.values()), "payroll_date": "2026-09-24",
         "credit_suffix": "End of Month", "fx": {"PPI2": 1.41344}})

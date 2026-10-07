@@ -41,6 +41,7 @@ from flask_app.db import get_engine
 from flask_app.serializers import safe_json
 from flask_app.services import expense_service as ex
 from flask_app.services import expense_receipts as rc
+from flask_app.services import expense_notify as en
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,15 @@ def _run(name, fn, *a, **k):
 
 def _body() -> dict:
     return request.get_json(silent=True) or {}
+
+
+def _notify(fn) -> None:
+    """Queue the emails an action calls for, AFTER it has committed. An email that
+    cannot be queued is logged and never undoes, or fails, the action itself."""
+    try:
+        fn()
+    except Exception as e:
+        logger.warning("expense email not queued: %s", e, exc_info=True)
 
 
 @expenses_bp.route("/me", methods=["GET"])
@@ -160,7 +170,12 @@ def delete_line(report_id, line_id):
 @expenses_bp.route("/reports/<int:report_id>/submit", methods=["POST"])
 @login_required
 def post_submit(report_id):
-    return _run("submit", ex.submit, get_engine(), _actor(), report_id)
+    def go():
+        out = ex.submit(get_engine(), _actor(), report_id)
+        _notify(lambda: en.report_event(get_engine(), report_id, "submitted",
+                                        request.url_root, _actor()))
+        return out
+    return _run("submit", go)
 
 
 @expenses_bp.route("/reports/<int:report_id>/recall", methods=["POST"])
@@ -173,8 +188,14 @@ def post_recall(report_id):
 @login_required
 def post_decide(report_id):
     b = _body()
-    return _run("decide", ex.decide, get_engine(), _actor(), report_id,
-                b.get("action"), b.get("note"))
+
+    def go():
+        out = ex.decide(get_engine(), _actor(), report_id, b.get("action"), b.get("note"))
+        event = "approved" if b.get("action") == "approve" else "returned"
+        _notify(lambda: en.report_event(get_engine(), report_id, event, request.url_root,
+                                        _actor(), note=(b.get("note") or "").strip() or None))
+        return out
+    return _run("decide", go)
 
 
 @expenses_bp.route("/reports/<int:report_id>/receipts", methods=["POST"])
@@ -229,8 +250,14 @@ def post_copy_recurring(report_id):
 @roles_exactly(*ACCOUNTING_ROLES)
 @accounting_authority_required
 def post_accounting_return(report_id):
-    return _run("accounting return", ex.accounting_return, get_engine(), _actor(), report_id,
-                _body().get("note"))
+    note = _body().get("note")
+
+    def go():
+        out = ex.accounting_return(get_engine(), _actor(), report_id, note)
+        _notify(lambda: en.report_event(get_engine(), report_id, "returned", request.url_root,
+                                        _actor(), note=(note or "").strip() or None))
+        return out
+    return _run("accounting return", go)
 
 
 @expenses_bp.route("/distance", methods=["POST"])

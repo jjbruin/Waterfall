@@ -10,7 +10,7 @@
  * One batch per payroll date produces the MRI GL upload.
  * Design: .claude/memory/expense_reporting.md.
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api/client'
 import { useDataStore } from '@/stores/data'
 import ReceiptViewer from '@/components/expenses/ReceiptViewer.vue'
@@ -42,6 +42,10 @@ const currencies = ref<Record<string, string>>({})
 const recurringItems = ref<any[]>([])
 const employees = ref<any[]>([])
 const loading = ref(false)
+// The coding review (Oct 7 2026): accounting submits, the CFO / accounting manager
+// reviews, and only reviewed reports can be batched. Whether THIS user reviews comes from
+// the server (`expense_coding.can_review`), so the buttons agree with what it allows.
+const canReview = ref(false)
 
 const fmt = (v: any) => v == null ? '' :
   Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -59,6 +63,7 @@ async function load() {
       api.get('/api/expense-coding/lines'), api.get('/api/expense-coding/settings'),
       api.get('/api/expenses/options')])
     rows.value = l.data.rows
+    canReview.value = !!l.data.can_review
     currencies.value = s.data.currencies
     recurringItems.value = s.data.recurring
     categories.value = o.data.categories
@@ -70,7 +75,9 @@ async function load() {
 const reportsOnGrid = computed(() => {
   const m = new Map<number, any>()
   for (const r of rows.value) {
-    const x = m.get(r.report_id) || { id: r.report_id, employee: r.employee, total: 0, lines: 0, problems: 0 }
+    const x = m.get(r.report_id) || { id: r.report_id, employee: r.employee, total: 0, lines: 0, problems: 0,
+      review: r.review_state || '', submittedBy: r.coding_submitted_by, submittedAt: r.coding_submitted_at,
+      reviewedBy: r.coding_reviewed_by, reviewedAt: r.coding_reviewed_at }
     x.total += Number(r.amount || 0); x.lines += 1; x.problems += r.problems.length
     m.set(r.report_id, x)
   }
@@ -151,6 +158,37 @@ const recPick = ref<Record<number, boolean>>({})
 const preview = ref<any>(null)
 const busy = ref(false)
 const pickedIds = computed(() => Object.entries(pick.value).filter(([, v]) => v).map(([k]) => Number(k)))
+// Only reviewed reports can be batched: a pick on one that is not (any more) is dropped.
+watch(reportsOnGrid, g => {
+  const ok = new Set(g.filter(r => r.review === 'reviewed').map(r => r.id))
+  pick.value = Object.fromEntries(Object.entries(pick.value).filter(([k, v]) => v && ok.has(Number(k))))
+})
+const readyToSubmit = computed(() => reportsOnGrid.value.filter(r => !r.review && !r.problems))
+const waitingReview = computed(() => reportsOnGrid.value.filter(r => r.review === 'submitted'))
+const reviewReturning = ref<number | null>(null)
+const reviewNote = ref('')
+async function submitForReview(ids: number[]) {
+  busy.value = true
+  try {
+    await api.post('/api/expense-coding/review/submit', { report_ids: ids })
+    dataStore.addToast(`${ids.length} report(s) submitted for review — the reviewers are emailed.`, 'success')
+    await load()
+  } catch (e) { fail(e, 'Could not submit for review') }
+  finally { busy.value = false }
+}
+async function decideReview(ids: number[], action: 'approve' | 'return') {
+  busy.value = true
+  try {
+    await api.post('/api/expense-coding/review/decide',
+      { report_ids: ids, action, note: action === 'return' ? reviewNote.value : null })
+    dataStore.addToast(action === 'approve' ? `${ids.length} report(s) reviewed — ready to batch.`
+      : 'Coding returned — whoever submitted it is emailed.', 'success')
+    reviewReturning.value = null; reviewNote.value = ''
+    await load()
+  } catch (e) { fail(e, action === 'approve' ? 'Could not approve the coding' : 'Could not return the coding') }
+  finally { busy.value = false }
+}
+const shortDate = (iso: string) => (iso || '').slice(0, 10)
 const nonUsd = computed(() => Object.keys(currencies.value))
 
 function batchBody(commit: boolean) {
@@ -392,14 +430,50 @@ onMounted(async () => { await load(); loadBatches() })
     <template v-else-if="tab === 'batch'">
       <p class="muted">One batch per payroll date. The credit is one line to MR20000001, reimbursed
         through TriNet payroll. A batched report is locked; voiding the batch releases it.</p>
+      <p class="muted">Coding is submitted for review, the CFO or accounting manager reviews it, and only
+        reviewed reports can be batched. Changing the coding after review sends it back for review.</p>
+      <div class="row review-bulk">
+        <button v-if="readyToSubmit.length" class="btn-secondary" :disabled="busy"
+                @click="submitForReview(readyToSubmit.map(r => r.id))">
+          Submit {{ readyToSubmit.length }} report(s) for review</button>
+        <button v-if="canReview && waitingReview.length" class="btn-secondary" :disabled="busy"
+                @click="decideReview(waitingReview.map(r => r.id), 'approve')">
+          Approve the coding on {{ waitingReview.length }} report(s)</button>
+      </div>
       <table class="data-table narrow">
-        <thead><tr><th></th><th>Employee</th><th class="num">Lines</th><th class="num">Total</th><th>Problems</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Employee</th><th class="num">Lines</th><th class="num">Total</th><th>Problems</th>
+          <th>Coding review</th><th></th></tr></thead>
         <tbody>
           <tr v-for="r in reportsOnGrid" :key="r.id">
-            <td><input type="checkbox" v-model="pick[r.id]" /></td>
+            <td><input type="checkbox" v-model="pick[r.id]" :disabled="r.review !== 'reviewed'"
+                       :title="r.review === 'reviewed' ? '' : 'Only reviewed coding can be batched'" /></td>
             <td>{{ r.employee }} <span class="muted">#{{ r.id }}</span></td>
             <td class="num">{{ r.lines }}</td><td class="num">{{ fmt(r.total) }}</td>
             <td :class="{ 'err-text': r.problems }">{{ r.problems || '' }}</td>
+            <td class="review-cell">
+              <template v-if="r.review === 'reviewed'">
+                <span class="ok-text">✓ Reviewed</span>
+                <span class="muted"> by {{ r.reviewedBy }} {{ shortDate(r.reviewedAt) }}</span>
+              </template>
+              <template v-else-if="r.review === 'submitted'">
+                <span class="warn-text">Waiting for review</span>
+                <span class="muted"> — {{ r.submittedBy }} {{ shortDate(r.submittedAt) }}</span>
+                <template v-if="canReview">
+                  <button class="link" :disabled="busy" @click="decideReview([r.id], 'approve')">Approve</button>
+                  <button v-if="reviewReturning !== r.id" class="link" @click="reviewReturning = r.id; reviewNote = ''">Return…</button>
+                  <span v-else class="row">
+                    <input v-model="reviewNote" placeholder="what to change — required" class="note-in" />
+                    <button class="link" :disabled="!reviewNote.trim() || busy" @click="decideReview([r.id], 'return')">Return the coding</button>
+                    <button class="link" @click="reviewReturning = null">cancel</button>
+                  </span>
+                </template>
+              </template>
+              <template v-else>
+                <span class="muted">Not submitted</span>
+                <button class="link" :disabled="busy || !!r.problems" :title="r.problems ? 'Fix the problems first' : ''"
+                        @click="submitForReview([r.id])">Submit for review</button>
+              </template>
+            </td>
             <td>
               <button v-if="returning !== r.id" class="link" @click="returning = r.id; returnNote = ''">Return…</button>
               <span v-else class="row">
@@ -409,7 +483,7 @@ onMounted(async () => { await load(); loadBatches() })
               </span>
             </td>
           </tr>
-          <tr v-if="!reportsOnGrid.length"><td colspan="6" class="muted">No approved reports.</td></tr>
+          <tr v-if="!reportsOnGrid.length"><td colspan="7" class="muted">No approved reports.</td></tr>
         </tbody>
         <!-- The CFO, Oct 7 2026: "Are we able to add totals for all employees, and then
              total of selected?" Selected is what Generate & download batches. -->
@@ -417,12 +491,12 @@ onMounted(async () => { await load(); loadBatches() })
           <tr class="tot">
             <td></td><td>All {{ reportsOnGrid.length }} report{{ reportsOnGrid.length === 1 ? '' : 's' }}</td>
             <td class="num">{{ gridTotals.all.lines }}</td><td class="num">{{ fmt(gridTotals.all.total) }}</td>
-            <td colspan="2"></td>
+            <td colspan="3"></td>
           </tr>
           <tr class="tot sel">
             <td></td><td>Selected ({{ gridTotals.sel.count }})</td>
             <td class="num">{{ gridTotals.sel.lines }}</td><td class="num">{{ fmt(gridTotals.sel.total) }}</td>
-            <td colspan="2"></td>
+            <td colspan="3"></td>
           </tr>
         </tfoot>
       </table>
@@ -549,12 +623,18 @@ input, select { border: 1px solid var(--color-border); border-radius: 4px; paddi
 .num-in { width: 90px; text-align: right; }
 .acct { width: 120px; }
 .acct-sel { max-width: 340px; }
+.review-cell { white-space: nowrap; }
+.review-cell .link { margin-left: 8px; }
+.review-bulk { gap: 8px; margin: 4px 0 8px; }
 tfoot tr.tot td { font-weight: 600; border-top: 1px solid var(--color-border); }
 tfoot tr.tot.sel td { border-top: none; color: var(--color-primary, #1F4E79); }
 .note-in { width: 240px; }
 .code-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 6px 0; }
 .interco { width: 100%; border-top: 1px dashed var(--color-border); padding-top: 6px; }
 .link { background: none; border: none; color: var(--color-primary, #2f6f4f); cursor: pointer; padding: 0 4px; font-size: 12px; }
+.ok-text { color: #23613a; font-weight: 600; font-size: 12.5px; }
+.btn-secondary { padding: 5px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid var(--color-primary, #1F4E79); background: var(--color-surface, #fff); color: var(--color-primary, #1F4E79); }
+.btn-secondary:disabled { opacity: .55; cursor: default; }
 .row-actions { white-space: nowrap; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 1000; background: rgba(15, 20, 30, .45);
   display: flex; align-items: flex-start; justify-content: center; padding: 3vh 2vw; overflow: auto; }
