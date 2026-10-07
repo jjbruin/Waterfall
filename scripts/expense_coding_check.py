@@ -438,6 +438,32 @@ def acceptance(call, app, ids, people, H, client):
     head = raw.get_json()["csv"].splitlines()[0]
     chk("the file carries MRI's own header row",
         head == raw_header(ACCEPTED), (head, raw_header(ACCEPTED)))
+    # The CFO, Oct 7 2026: "journal entry credits need to be negative amounts in the
+    # file ... most likely only for Accounts Payable - MR20000001 and MR15000002 Due
+    # To/From PSC Manager". Asserted on the file itself, both directions: every line on
+    # those two accounts is negative, and the expense debits are positive.
+    import csv as _csv, io as _io
+    body = list(_csv.reader(_io.StringIO(raw.get_json()["csv"])))[1:]
+    cr = [float(r[2]) for r in body if r[1] in ("MR20000001", "MR15000002")]
+    dr = [float(r[2]) for r in body if r[1].startswith("MR53")]
+    chk("credits to MR20000001 / MR15000002 are NEGATIVE in the file",
+        cr and all(a < 0 for a in cr), cr[:6])
+    chk("...and the expense debits are positive", dr and all(a > 0 for a in dr), dr[:6])
+    chk("...and the file balances to the cent", abs(sum(float(r[2]) for r in body)) < 0.005)
+
+    # The coding screen (the CFO's other three asks, Oct 7 2026).
+    v = open(os.path.join(ROOT, "vue_app", "src", "views", "ExpenseCodingView.vue"),
+             encoding="utf-8").read()
+    chk("the Account column shows the account NAME, the number on hover",
+        "{{ acctName(rowAccount(r)) }}" in v)
+    chk("the expense account is a real dropdown (name -- number), not a typed box",
+        '<select v-model="draft.expense_account"' in v and 'list="ec-accounts"' not in v
+        and "{{ c.name }} — {{ c.account }}" in v)
+    chk("...which keeps a current account that is not a category, rather than changing it",
+        "(not an expense category)" in v)
+    chk("the payroll grid totals all reports AND the selected ones",
+        "gridTotals.all.total" in v and "gridTotals.sel.total" in v
+        and "reportsOnGrid.value.filter(r => pick.value[r.id])" in v)
 
 
 def raw_header(path):

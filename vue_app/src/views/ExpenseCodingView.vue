@@ -21,6 +21,23 @@ const tab = ref<Tab>('code')
 
 const rows = ref<any[]>([])
 const categories = ref<any[]>([])
+// THE ACCOUNT BY ITS NAME (the CFO, Oct 7 2026: "Modify the Account column to bring in the
+// Account Name, instead of the Account Number"). The names are the expense categories'
+// own; the number stays on hover, since it is what MRI receives.
+const DEAL_COST = { account: 'MR11000012', name: 'Deal Cost Receivable' }
+const rowAccount = (r: any) => r.booking === 'deal_cost' ? DEAL_COST.account : r.expense_account
+function acctName(a: string) {
+  if (!a) return ''
+  if (a === DEAL_COST.account) return DEAL_COST.name
+  return categories.value.find((c: any) => c.account === a)?.name || a
+}
+// The dropdown's choices: every category account, by name, plus the row's current account
+// if it is not one of them -- so opening the form never silently changes a coding.
+function accountChoices(current: string) {
+  const list = [...categories.value].sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)))
+  return current && !list.some((c: any) => c.account === current)
+    ? [{ account: current, name: current + ' (not an expense category)' }, ...list] : list
+}
 const currencies = ref<Record<string, string>>({})
 const recurringItems = ref<any[]>([])
 const employees = ref<any[]>([])
@@ -120,6 +137,13 @@ async function openLine(r: any) {
 
 // ---- the batch ----
 const pick = ref<Record<number, boolean>>({})
+// Totals under the payroll grid: every report on it, and the ticked ones -- the batch.
+// Summed in cents so 0.1 + 0.2 does not show as a stray cent.
+const gridTotals = computed(() => {
+  const sum = (rs: any[]) => ({ count: rs.length, lines: rs.reduce((t, r) => t + r.lines, 0),
+    total: rs.reduce((t, r) => t + Math.round(r.total * 100), 0) / 100 })
+  return { all: sum(reportsOnGrid.value), sel: sum(reportsOnGrid.value.filter(r => pick.value[r.id])) }
+})
 const payrollDate = ref('')
 const suffix = ref('End of Month')
 const fx = ref<Record<string, string>>({})
@@ -256,7 +280,7 @@ onMounted(async () => { await load(); loadBatches() })
                   <div v-if="r.booking === 'interco'" class="muted">
                     <span v-for="a in r.interco || []" :key="a.entity">{{ a.entity }} {{ Number(a.pct).toFixed(2) }}% </span>
                     <span v-if="r.interco_changed" class="chg">*</span></div></td>
-                <td :title="r.employee_category">{{ r.booking === 'deal_cost' ? 'MR11000012' : r.expense_account }}
+                <td :title="rowAccount(r) + (r.employee_category ? ' -- employee chose ' + r.employee_category : '')">{{ acctName(rowAccount(r)) }}
                   <span v-if="r.expense_account_changed" class="chg" :title="`Employee chose ${r.employee_account}`">*</span></td>
                 <td class="clip wide" :title="r.description">{{ r.description }}
                   <span v-if="r.description !== r.description_proposed" class="chg">*</span></td>
@@ -274,8 +298,13 @@ onMounted(async () => { await load(); loadBatches() })
                     <select v-model="draft.booking">
                       <option v-for="(v, k) in BOOK" :key="k" :value="k">{{ v }}</option>
                     </select></label>
+                  <!-- A real dropdown: the free-typed box with a suggestion list did not open on
+                       click in most browsers, so the number had to be known (the CFO, Oct 7 2026). -->
                   <label v-if="draft.booking !== 'deal_cost'">Expense account
-                    <input v-model="draft.expense_account" list="ec-accounts" class="acct" /></label>
+                    <select v-model="draft.expense_account" class="acct-sel">
+                      <option v-for="c in accountChoices(draft.expense_account)" :key="c.account" :value="c.account">
+                        {{ c.name }} — {{ c.account }}</option>
+                    </select></label>
                   <span v-if="draft.booking !== 'deal_cost'" class="muted">employee chose {{ r.employee_category || r.employee_account }}</span>
                   <label class="grow">JE description
                     <span class="muted">— MRI: 80 characters, letters, digits and spaces only
@@ -332,7 +361,7 @@ onMounted(async () => { await load(); loadBatches() })
                   <dt>Route</dt><dd>{{ viewing.line.route.summary }}</dd>
                 </template>
                 <dt>Booking</dt><dd>{{ BOOK[viewing.row.booking] }}</dd>
-                <dt>Account</dt><dd>{{ viewing.row.booking === 'deal_cost' ? 'MR11000012' : viewing.row.expense_account }}
+                <dt>Account</dt><dd>{{ acctName(rowAccount(viewing.row)) }} <span class="muted">{{ rowAccount(viewing.row) }}</span>
                   <span v-if="viewing.row.expense_account_changed" class="muted">(employee chose {{ viewing.row.employee_account }})</span></dd>
                 <template v-if="viewing.row.booking === 'interco'">
                   <dt>Entities</dt>
@@ -356,9 +385,6 @@ onMounted(async () => { await load(); loadBatches() })
           </div>
          </div>
         </div>
-        <datalist id="ec-accounts">
-          <option v-for="c in categories" :key="c.account" :value="c.account">{{ c.name }}</option>
-        </datalist>
       </div>
     </template>
 
@@ -385,6 +411,20 @@ onMounted(async () => { await load(); loadBatches() })
           </tr>
           <tr v-if="!reportsOnGrid.length"><td colspan="6" class="muted">No approved reports.</td></tr>
         </tbody>
+        <!-- The CFO, Oct 7 2026: "Are we able to add totals for all employees, and then
+             total of selected?" Selected is what Generate & download batches. -->
+        <tfoot v-if="reportsOnGrid.length">
+          <tr class="tot">
+            <td></td><td>All {{ reportsOnGrid.length }} report{{ reportsOnGrid.length === 1 ? '' : 's' }}</td>
+            <td class="num">{{ gridTotals.all.lines }}</td><td class="num">{{ fmt(gridTotals.all.total) }}</td>
+            <td colspan="2"></td>
+          </tr>
+          <tr class="tot sel">
+            <td></td><td>Selected ({{ gridTotals.sel.count }})</td>
+            <td class="num">{{ gridTotals.sel.lines }}</td><td class="num">{{ fmt(gridTotals.sel.total) }}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
       </table>
       <div class="row">
         <label>Payroll date <input type="date" v-model="payrollDate" /></label>
@@ -508,6 +548,9 @@ label.grow { flex: 1; min-width: 260px; }
 input, select { border: 1px solid var(--color-border); border-radius: 4px; padding: 4px 6px; font-size: 12.5px; background: var(--color-surface); color: var(--color-text); }
 .num-in { width: 90px; text-align: right; }
 .acct { width: 120px; }
+.acct-sel { max-width: 340px; }
+tfoot tr.tot td { font-weight: 600; border-top: 1px solid var(--color-border); }
+tfoot tr.tot.sel td { border-top: none; color: var(--color-primary, #1F4E79); }
 .note-in { width: 240px; }
 .code-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; padding: 6px 0; }
 .interco { width: 100%; border-top: 1px dashed var(--color-border); padding-top: 6px; }
