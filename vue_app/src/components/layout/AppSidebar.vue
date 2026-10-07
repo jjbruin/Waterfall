@@ -473,13 +473,29 @@ async function resolveFeedback() {
 // Sidebar collapse toggle
 const collapsed = ref(false)
 
+// ON A PHONE the sidebar starts folded to its 40px rail and, opened, slides OVER the
+// page instead of pushing it: at 375px wide a 200px sidebar left the expense screen
+// 175px and made the whole page scroll sideways (Jim, Oct 7 2026: employees opening
+// the expense app on an iPhone). Desktop and tablet behaviour is unchanged.
+const PHONE = '(max-width: 600px)'
+const isPhone = () => typeof window !== 'undefined' && window.matchMedia?.(PHONE).matches
+
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
   document.documentElement.style.setProperty(
     '--sidebar-width',
-    collapsed.value ? '40px' : '240px'
+    // on a phone the page always keeps the rail's width; the open sidebar overlays it
+    isPhone() || collapsed.value ? '40px' : '240px'
   )
 }
+
+onMounted(() => {
+  if (isPhone() && !collapsed.value) toggleCollapsed()
+})
+// Picking a screen from the open sidebar on a phone folds it away again.
+watch(() => route.fullPath, () => {
+  if (isPhone() && !collapsed.value) toggleCollapsed()
+})
 </script>
 
 <template>
@@ -1036,6 +1052,15 @@ function toggleCollapsed() {
 
 .sidebar.collapsed {
   width: 40px;
+}
+
+/* Phone: opened, the sidebar is its full width and floats over the page, which
+   keeps its 40px margin (toggleCollapsed). */
+@media (max-width: 600px) {
+  .sidebar:not(.collapsed) {
+    width: 240px;
+    box-shadow: 4px 0 18px rgba(0, 0, 0, 0.25);
+  }
 }
 
 .sidebar-header {

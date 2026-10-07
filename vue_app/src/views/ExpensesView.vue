@@ -327,6 +327,29 @@ const RSTATUS: Record<string, string> = {
 }
 const progress = ref('')
 const RECEIPT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.gif,.webp,.heic,.heif,.tif,.tiff,.bmp'
+// The file picker's list: the extensions plus the MIME types, because iOS decides
+// whether to offer Photo Library and the camera from `image/*`, not from ".jpg".
+const RECEIPT_PICK = RECEIPT_ACCEPT + ',image/*,application/pdf'
+
+// A phone or tablet (Jim, Oct 7 2026: "If someone chooses to open the expense app from
+// an iphone or ipad, I'd like them to be able to load receipts from their photos").
+// A coarse pointer, not the screen width: an iPad is wide and still has no folders.
+const touch = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches
+
+// iOS names nearly every photo it hands a web page "image.jpg" (and "image.jpeg",
+// "image.png"), so five receipts would list as five identical names. Such a file is
+// renamed to when it was taken, so the receipts list and the line's receipt picker
+// can tell them apart. A real name (IMG_4417.HEIC, a PDF's own name) is kept.
+const GENERIC_NAME = /^(image|photo)(\s*\(\d+\))?\.(jpe?g|png|heic|heif)$/i
+function friendlyName(f: File, i: number): File {
+  if (!GENERIC_NAME.test(f.name)) return f
+  const d = new Date(f.lastModified || Date.now())
+  const p = (n: number) => String(n).padStart(2, '0')
+  const ext = f.name.split('.').pop()!.toLowerCase()
+  const name = `Photo ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+    + `${p(d.getHours())}.${p(d.getMinutes())}.${p(d.getSeconds())}${i ? ' (' + (i + 1) + ')' : ''}.${ext}`
+  return new File([f], name, { type: f.type, lastModified: f.lastModified })
+}
 
 // ONE FILE PER REQUEST: a folder of phone photos runs past the server's
 // request-size limit in one go, and counting through them is the progress.
@@ -338,7 +361,8 @@ async function uploadFiles(ev: Event) {
 }
 
 // The one path a receipt takes, from disk or from SharePoint alike.
-async function uploadFileList(files: File[]) {
+async function uploadFileList(picked: File[]) {
+  const files = picked.map(friendlyName)
   if (!files.length || !report.value) return
   const problems: string[] = []
   const stored: number[] = []
@@ -749,9 +773,14 @@ onMounted(async () => {
         <div class="row">
           <strong>Receipts</strong>
           <template v-if="report.permissions.edit">
-            <label class="btn-primary file-btn">Upload files
-              <input type="file" multiple :accept="RECEIPT_ACCEPT" hidden @change="uploadFiles" /></label>
-            <label class="btn-primary file-btn">Upload a folder
+            <!-- On an iPhone or iPad this one offers Photo Library, the camera and Files:
+                 iOS reads the MIME types in `accept` (image/*), not only the extensions. -->
+            <label class="btn-primary file-btn">{{ touch ? 'Photos or files' : 'Upload files' }}
+              <input type="file" multiple :accept="RECEIPT_PICK" hidden @change="uploadFiles" /></label>
+            <label v-if="touch" class="btn-primary file-btn">Take a photo
+              <input type="file" accept="image/*" capture="environment" hidden @change="uploadFiles" /></label>
+            <!-- iOS and Android cannot pick a folder, so the button is not offered there. -->
+            <label v-if="!touch" class="btn-primary file-btn">Upload a folder
               <input type="file" webkitdirectory hidden @change="uploadFiles" /></label>
             <SharePointPicker :accept="RECEIPT_ACCEPT" multiple folders remember-as="expense-receipts"
                               :disabled="!!progress" @picked="uploadFileList" />
@@ -1034,9 +1063,9 @@ input, select, textarea {
 .details dd { margin: 0; }
 td.row-actions.first { white-space: nowrap; width: 1%; }
 .link.danger { color: #a33; }
-/* On a narrow window the receipt goes UNDER the entry, not off to the right. */
+/* On a narrow window the receipt goes UNDER the entry, not off to the right -- the
+   stacking itself is in the 900px block further down, after the rule it overrides. */
 @media (max-width: 900px) {
-  .line-form.with-receipt { grid-template-columns: 1fr; }
   .modal .receipt-col { min-height: 60vh; }
 }
 .line-form.with-receipt { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(360px, 1fr); gap: 16px; }
@@ -1045,6 +1074,29 @@ td.row-actions.first { white-space: nowrap; width: 1%; }
 .receipt-col > * { flex: 1; }
 .receipts { margin: 10px 0; }
 .data-table.compact td { padding: 3px 8px; }
+/* The narrow-window stacking promised above, AFTER the side-by-side rule so it wins.
+   Above it, `.line-form.with-receipt` came later in the sheet and always applied: on a
+   phone the form and the receipt sat at 420px + 360px inside a 360px dialog, the
+   receipt off-screen and the Deal and Comment boxes past the edge (found Oct 7 2026). */
+@media (max-width: 900px) {
+  .line-form.with-receipt { grid-template-columns: 1fr; }
+  /* An iPad held upright (768px, less the sidebar) or a narrow window: the lines
+     table needs ~900px, so it scrolls inside itself instead of widening the page. */
+  .data-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+/* Phone: a wide table scrolls inside itself rather than dragging the page sideways,
+   and the buttons wrap. */
+@media (max-width: 600px) {
+  .modal { padding: 10px 12px 14px; }
+  .modal .row { flex-wrap: wrap; }
+  .modal label.grow { flex: 1 1 100%; }
+  .modal label { max-width: 100%; min-width: 0; }
+  .modal select { width: 100%; }
+  .modal select, .modal input:not([type="checkbox"]):not([type="radio"]) { max-width: 100%; }
+  .modal .receipt-col { min-height: 55vh; }
+  .receipts .row, .actions, .new-report, .period, .tabs { flex-wrap: wrap; }
+  .file-btn { padding: 9px 14px; font-size: 14px; }
+}
 .file-btn { display: inline-flex; flex-direction: row; align-items: center; }
 /* The page used these two classes without ever styling them, so the key actions
    rendered as plain text (Jim, Oct 5 2026: "the upload files and upload folder
