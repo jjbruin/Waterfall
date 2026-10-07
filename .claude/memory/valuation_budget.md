@@ -56,15 +56,32 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **Guardrail**: `scripts/budget_import_mapping_check.py` (25), on fixtures of all
   three real file shapes plus the negative case for block re-basing; proved
   non-vacuous against nine injected defects including both opposite failures.
-- **Unmapped lines never block.** Spreadsheets carry subtotals and skipping them is
-  correct; `reconcile()` shows stated-vs-computed revenue, expense and NOI so the analyst
-  can tell a skipped subtotal from a missed line. Anything announcing itself as a total
-  is flagged and never pre-filled — "Total Capital Expenditures" matched the Argus
-  keyword rules and would have double-counted capex.
+- **ONLY A ROW WITH A 4-DIGIT ACCOUNT IS IMPORTED** (Jack, Oct 7 2026, superseding the
+  subtotal reading): `budget_import_service.file_account` -- the account the parser read,
+  else one leading/ending the label. Every such row is pre-filled from it, INCLUDING one
+  whose label reads like a total (tagged "reads like a total" on screen, since it can
+  double-count); a row without one is not offered, and `validate` refuses it by name
+  (`no_file_account`). The account stays EDITABLE: measured on production's 9 stored
+  mappings, 8 lines were deliberately mapped off the file's account (partner 7076 TI ->
+  our 7050; 4045 -> 4060) and 7076/5019/5180 are not on our chart. Clearing an accounted
+  row is allowed and recorded (`left_out` in the mapping) and listed beside the tie-out.
+  **A draft saved before the rule** is read by it on load: rows with no account drop
+  (said), accounted rows with no decision are filled from the file (said) -- Camp Creek's
+  saved budget took interest from unnumbered "CIBC" rows and left "5190 Total Interest"
+  out, so applying it as saved would have imported no interest. 3 of 4 stored Argus
+  files (P0000069, P0000075, P0000081) carry NO account column and import nothing now.
+  `reconcile()` still shows stated-vs-computed revenue, expense and NOI. The "as mapped
+  before" pre-fill and the "not a subtotal" toggle are gone (both only ever served rows
+  with no account). Guardrail: `scripts/am_import_rules_check.py`.
 - **Commit REPLACES, scoped to (vcode, the periods in THIS file)** — a budget is
   re-imported until final and appending would stack every revision.
-- **Debt service is MODELED, Budget and Valuation columns only**
-  (`valuation_debt_service.py`). An Argus download is unlevered, so those columns showed
+- **Debt service: the Budget column is the BUDGET'S OWN by default** (5190 / 7060; Jack,
+  Oct 7 2026 -- `valuation_budget_inputs.DEBT_BASES = ("budget", "modeled",
+  "underwriting")`, default "budget"; all 162 production records were on the default). A
+  budget carrying neither is BLANK with a note, never $0. A chosen basis with nothing for
+  the year falls back to the budget's own, else modeled, else blank, and says which.
+  The payload's `debt_service.budget_from` says what the column holds.
+- **The Valuation column's debt service is MODELED** (`valuation_debt_service.py`). An Argus download is unlevered, so those columns showed
   0 interest, 0 principal and a blank DSCR. Same strip-and-replace `compute.py` applies
   to the AM forecast. **The Estimate column is never substituted** — it means actuals,
   and its interest was actually paid. Levered only when an Argus forecast exists:
@@ -76,7 +93,14 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
   source, Interest/Principal are blank and Total Debt Service is 7010, read through
   `one_pager.uw_debt_service_for_year` (shared with One Pager's UW DSCR). Never split it.
 - **The Budget column's debt service may be UW's** (`valuation_records.debt_service_basis`).
-  Chosen but unavailable -> not applied, and said so; never blanked.
+  Chosen but unavailable -> not applied, and said so.
+- **LOSS TO LEASE (4042) NETS INTO RENTAL INCOME on the Budget Review** (Jack, Oct 7 2026),
+  in all three columns, via `budget_import_service.review_is_accounts()` -- config's
+  grouping with `_REVIEW_MOVES`. The review, the import's category lookup and the tie-out
+  read it; `config.IS_ACCOUNTS` (Financials, One Pager) keeps 4042 under Vacancy. On
+  production 15 deals' 2026 actuals and 10 MRI budgets carry 4042; total revenue does
+  not move. Argus signs 4042 as contra-revenue (a debit), whichever sign the file shows.
+  P0000081's Argus "Loss to lease" is coded 4043, not 4042.
 - **An Estimate line may be overridden** (`valuation_estimate_overrides`); LINE ITEMS ONLY,
   totals recompute and are marked. The computed figure is kept beside it.
 - **Budgeted occupancy is read off the budget file** by label, only if its figures read as
@@ -115,8 +139,6 @@ columns are loaded from somebody else's spreadsheet, and the debt rows are ours.
 - **An account column to the RIGHT of the description is read** (`_account_column_beside`),
   by membership of our chart, headed or not. Before this only the account-on-the-left
   layout was read, and AM's Argus layout is description then account.
-- **A line read as a subtotal can be overturned** ("not a subtotal" on the row, stored as
-  `not_subtotal` in the mapping; it pre-fills the file's account).
 - **The Partnership costs proposal now WRITES.** From `v502` the tick box never left the
   browser. It rides on the parsed file (`accepted_proposals`) and
   `with_accepted_proposals` turns it into a line; only offered accounts, Argus only.

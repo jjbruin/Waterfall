@@ -109,6 +109,7 @@ def get_draft(engine, record_id: int, source: str) -> Optional[Dict[str, Any]]:
     # out, so the analyst does not have to upload it again to lose them.
     if parsed.get('lines'):
         parsed, mapping = budget.without_zero_lines(parsed, mapping)
+        budget.with_file_accounts(parsed)       # stored before the 4-digit rule: read by it
     return {
         'filename': row[0], 'parsed': parsed, 'mapping': mapping,
         'status': row[3] or 'draft', 'committed_at': str(row[4]) if row[4] else None,
@@ -229,72 +230,6 @@ def with_accepted_proposals(parsed: Dict[str, Any], mapping: Dict[str, Any],
     return {**parsed, "lines": lines}, mapping
 
 
-def _norm_label(label: str) -> str:
-    """Compare line names on their words alone.
-
-    EXACT text after case and spacing, never fuzzy. A near-match is a guess, and the
-    whole point of showing history is that it is a decision somebody actually made.
-    """
-    return ' '.join(str(label or '').strip().lower().split())
-
-
-def _mapping_history(engine, labels: List[str], vcode: str) -> Dict[str, Dict[str, Any]]:
-    """How each of these line names was mapped before, and where.
-
-    Asset management: "it's hard to select by category and then see which GL codes are
-    available, and we end up guessing which category maps to which account code... we
-    want to line it up with how they've been mapped in the past."
-
-    That is not a request to guess. A prior mapping is a recorded human decision, so it
-    is evidence: shown with the deal it came from and when, and preferred from THIS
-    deal's own history before anyone else's.
-
-    Read from `argus_cashflows`, where every mapped Argus line already carries
-    (line_item, coa_account, category, vcode), and from mappings committed through this
-    screen. A name nobody has mapped simply gets nothing.
-    """
-    from sqlalchemy import bindparam
-
-    wanted = {_norm_label(l) for l in labels if str(l or '').strip()}
-    if not wanted:
-        return {}
-
-    out: Dict[str, Dict[str, Any]] = {}
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(text("""
-                SELECT line_item, coa_account, category, vcode, MAX(created_at) AS seen,
-                       COUNT(*) AS n
-                  FROM argus_cashflows
-                 WHERE coa_account IS NOT NULL
-                 GROUP BY line_item, coa_account, category, vcode
-            """)).fetchall()
-    except Exception as e:
-        logger.info("No mapping history available: %s", e)
-        return {}
-
-    for line_item, acct, cat, rv, seen, n in rows:
-        key = _norm_label(line_item)
-        if key not in wanted:
-            continue
-        cand = {
-            'account': str(int(acct)) if acct is not None else None,
-            'category': cat,
-            'vcode': rv,
-            'last_seen': str(seen) if seen else None,
-            'times': int(n or 0),
-            'same_deal': (rv or '').upper() == (vcode or '').upper(),
-        }
-        prev = out.get(key)
-        # This deal's own history wins; otherwise the most recently used mapping.
-        if (prev is None
-                or (cand['same_deal'] and not prev['same_deal'])
-                or (cand['same_deal'] == prev['same_deal']
-                    and (cand['last_seen'] or '') > (prev['last_seen'] or ''))):
-            out[key] = cand
-    return out
-
-
 def record_vcode(engine, record_id: int) -> str:
     with engine.connect() as conn:
         row = conn.execute(
@@ -330,22 +265,27 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
         raise ValueError(f"Unknown source '{source}'. Expected one of {SOURCES}.")
 
     vcode = record_vcode(engine, record_id)
-    parsed = budget.parse_budget_workbook(file_bytes, filename)
+    parsed = budget.with_file_accounts(budget.parse_budget_workbook(file_bytes, filename))
     cats = budget.category_choices(vcode, data.get("isbs_raw"))
     by_cat = {c["category"]: c for c in cats}
 
     suggested: Dict[str, Dict[str, Any]] = {}
     unknown_accounts: List[Dict[str, Any]] = []
-    # A budget line that STATES our account number is pre-filled from it. This is not
-    # the guess the flow refuses to make: 4090 in the partner's own "Account Number"
-    # column, or on the end of "CAM Reimb - 4090", is our code written down, and
-    # reading it is reading, not inferring. The screen marks where each pre-fill came
-    # from so the analyst can see the difference.
+    # EVERY ROW WITH A 4-DIGIT ACCOUNT IS PRE-FILLED FROM IT, AND ONLY THOSE (Jack, Oct 7
+    # 2026: "if a row has a 4-digit account number, bring it in and map it by that
+    # account"). A row that reads like a total is no exception -- it used to be left
+    # unticked here, which was the app guessing what a row is. A row with no account is
+    # not offered at all; `validate` refuses one if a payload maps it anyway.
+    #
+    # The account stays the analyst's to change. Measured on production's nine stored
+    # mappings: eight lines were deliberately mapped away from the file's account
+    # (the partner's 7076 Tenant Improvements to our 7050, 4045 to 4060), and 7076,
+    # 5019 and 5180 are not on our chart at all.
     for line in parsed["lines"]:
         key = str(line["row"])
-        if key in suggested or line["looks_like_total"]:
+        if key in suggested:
             continue
-        acct = line.get("stated_account")
+        acct = line.get("file_account")
         if not acct:
             continue
         owning = budget.category_for_account(acct)
@@ -368,30 +308,8 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
             "from_file": True,
         }
 
-    # How this exact line name was mapped before. A recorded human decision, not a
-    # keyword rule — which is what asset management actually asked for when they said
-    # they were struggling to identify the right account numbers.
-    history = _mapping_history(engine, [l["label"] for l in parsed["lines"]], vcode)
-    for line in parsed["lines"]:
-        key = str(line["row"])
-        prior = history.get(_norm_label(line["label"]))
-        if not prior:
-            continue
-        if key not in suggested and not line["looks_like_total"]:
-            owning = budget.category_for_account(prior["account"])
-            if owning:
-                default_sign = next(
-                    (a["mri_sign"] for a in by_cat.get(owning, {}).get("accounts", [])
-                     if a["account"] == prior["account"]), 1)
-                suggested[key] = {
-                    "category": owning,
-                    "account": prior["account"],
-                    "flip": source == "budget" and bool(line["total"]) and (
-                        (line["total"] > 0) != (default_sign > 0)),
-                    "from_history": True,
-                }
-        line["prior_mapping"] = prior
-
+    # (The "as mapped before" pre-fill is gone: it only ever filled rows the file gave no
+    # account, and those rows are no longer imported.)
     return {
         "source": source,
         "vcode": vcode,
@@ -399,7 +317,6 @@ def parse(engine, record_id: int, source: str, file_bytes: bytes, filename: str,
         "suggested": suggested,
         "suggested_count": len(suggested),
         "unknown_accounts": unknown_accounts,
-        "history_count": sum(1 for l in parsed["lines"] if l.get("prior_mapping")),
         "proposed_lines": proposed_lines(engine, record_id, source, parsed),
         "categories": cats,
     }
@@ -489,7 +406,7 @@ def export_workbook(engine, record_id: int, source: str, data: dict) -> tuple:
     Every figure comes from `validate_mod.imported_amounts`, the function the import
     writes with -- an export computed any other way would be a second answer to "what
     did I import", and could disagree with the Budget column it is meant to explain.
-    Lines not imported are listed too (subtotal, not mapped, $0 for the year), so a
+    Lines not imported are listed too (no 4-digit account, left out, $0 for the year), so a
     missing line shows as missing rather than as absent.
     """
     import io
@@ -550,10 +467,10 @@ def export_workbook(engine, record_id: int, source: str, data: dict) -> tuple:
         written = validate_mod.imported_amounts(line, m, source) if acct else {}
         if acct:
             status = "Imported"
-        elif line.get("looks_like_total") and not m.get("not_subtotal"):
-            status = "Not imported — read as a subtotal"
+        elif not budget.file_account(line):
+            status = "Not imported — no 4-digit account in the file"
         else:
-            status = "Not imported — no account"
+            status = "Not imported — left out"
         info = accounts.get(acct, {})
         row = [line["row"] + 1 if line["row"] >= 0 else "added", line["label"], status,
                int(acct) if acct.isdigit() else (acct or None),

@@ -148,6 +148,42 @@ def main() -> int:
         with_loans = {c.strip().lower() for c in ml[col].astype(str)}
         pick = next((r for r in rec if str(r[1]).strip().lower() in with_loans), rec[0])
         rid, rvcode = int(pick[0]), str(pick[1])
+
+        # THE BUDGET COLUMN'S BASIS. Since Oct 7 2026 the default is the budget's OWN debt
+        # service (Jack: "we want debt service to come from the partner's submitted budget
+        # ... not from our MRI/loan calculation"). The default is asserted first; the
+        # modeled substitution this check was written for is then exercised by CHOOSING
+        # "modeled", and the record's own basis is put back at the end.
+        with engine.connect() as conn:
+            orig_basis = conn.execute(text("SELECT debt_service_basis FROM valuation_records "
+                                           "WHERE id = :i"), {"i": rid}).scalar()
+
+        def _basis(b):
+            with engine.begin() as conn:
+                conn.execute(text("UPDATE valuation_records SET debt_service_basis = :b "
+                                  "WHERE id = :i"), {"b": b, "i": rid})
+
+        print("\n5a. By default the Budget column's debt service is the budget's own")
+        _basis(None)
+        dflt = vs.get_budget_review(engine, rid, data)
+        dd = dflt["debt_service"]
+        drows = {r["account"]: r for r in dflt["rows"]}
+        chk("the default basis is 'budget'", dd["budget_basis"] == "budget", dd["budget_basis"])
+        if dd["budget_from"] == "budget":
+            chk("...and Budget interest is the budget's 5190, untouched by the model",
+                abs((drows["Interest Expense"]["budget"] or 0)
+                    - dd["as_stated_in_source"]["interest_budget"]) < 0.01,
+                f"{drows['Interest Expense']['budget']} vs {dd['as_stated_in_source']}")
+        else:
+            chk("...a budget with no 5190/7060 shows BLANK, not $0 debt service",
+                drows["Interest Expense"]["budget"] is None
+                and drows["Total Debt Service"]["budget"] is None, f"{drows['Total Debt Service']}")
+            chk("...and says so", any("carries no debt service" in n for n in dd["basis_notes"]),
+                f"{dd['basis_notes']}")
+        chk("'budget' is not reported as a modeled column", "budget" not in dd["applies_to"],
+            f"{dd['applies_to']}")
+
+        _basis("modeled")
         br = vs.get_budget_review(engine, rid, data)
         dsinfo = br["debt_service"]
         print(f"        record {rid} = {rvcode}, source={dsinfo['source']}, "
@@ -284,6 +320,11 @@ def main() -> int:
             left = conn.execute(text("SELECT argus_import_id FROM valuation_records "
                                      "WHERE id = :i"), {"i": rid}).scalar()
         chk("the record was put back the way it was found", left is None, f"{left}")
+        _basis(orig_basis)
+        with engine.connect() as conn:
+            back = conn.execute(text("SELECT debt_service_basis FROM valuation_records "
+                                     "WHERE id = :i"), {"i": rid}).scalar()
+        chk("...its debt-service basis too", back == orig_basis, f"{back} vs {orig_basis}")
 
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

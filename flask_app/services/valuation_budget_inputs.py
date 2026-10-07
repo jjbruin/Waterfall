@@ -6,12 +6,13 @@ calculations:
 * Override a 2026 Estimate cell, visibly -- "if the 2026 estimate is substantially
   off from reality, we don't have to show a number that we know is not going to be
   achieved and therefore don't have a large variance when comparing 2026 to 2027."
-* Take the Budget column's debt service from underwriting instead of the model.
+* Take the Budget column's debt service from underwriting instead of the model
+  (and, Oct 7 2026, from the budget itself -- now the default).
 * Budgeted occupancy, read off a row the team adds to the budget import.
 
 None of these is a second engine. An override REPLACES a figure the engine
 computed and keeps the computed one beside it; the debt-service basis chooses
-between two existing sources; occupancy is a stored input. The arithmetic that
+between three existing sources; occupancy is a stored input. The arithmetic that
 turns them into totals, NOI and DSCR stays in `valuation_service.get_budget_review`.
 """
 from __future__ import annotations
@@ -25,7 +26,13 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-DEBT_BASES = ("modeled", "underwriting")
+#: Where the Budget column's interest and principal come from. "budget" -- the figures
+#: in the budget itself, 5190 and 7060 -- is the default (Jack, Oct 7 2026: "For the
+#: 2027 Budget column, we want debt service to come from the partner's submitted budget
+#: that we are uploading, not from our MRI/loan calculation"). "modeled" (the deal's
+#: loans through `valuation_debt_service`) and "underwriting" (UW's 7010) stay choosable.
+DEBT_BASES = ("budget", "modeled", "underwriting")
+DEFAULT_DEBT_BASIS = "budget"
 
 
 def _now():
@@ -108,8 +115,8 @@ def get_debt_basis(engine, record_id: int) -> str:
     with engine.connect() as conn:
         row = conn.execute(text("SELECT debt_service_basis FROM valuation_records "
                                 "WHERE id = :i"), {"i": record_id}).fetchone()
-    basis = (row[0] if row else None) or "modeled"
-    return basis if basis in DEBT_BASES else "modeled"
+    basis = (row[0] if row else None) or DEFAULT_DEBT_BASIS
+    return basis if basis in DEBT_BASES else DEFAULT_DEBT_BASIS
 
 
 def set_debt_basis(engine, record_id: int, basis: str, username: str) -> Dict[str, Any]:

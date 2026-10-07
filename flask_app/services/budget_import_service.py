@@ -64,13 +64,46 @@ _BELOW_THE_LINE = {"5190", "7030", "7060", "7050"}
 #: would change what the ACTUALS column displays for every deal, to fix an import screen.
 _CATEGORY_ACCOUNTS_FOR_BUDGET = {"Principal": ["7060"]}
 
+#: LOSS TO LEASE NETS AGAINST RENTAL INCOME on the Budget Review. Jack, Oct 7 2026:
+#: "can we code loss to lease to 4042 and have it automatically reduce rental income
+#: (4010)? It shouldn't count as vacancy or show up as its own row on the budget review
+#: form." Budgets usually report rent net of loss to lease already; an Argus download
+#: carries it as its own line. Moved in EVERY column of the review, so the three columns
+#: still compare like with like -- the Estimate's actuals carry 4042 for 15 deals in 2026
+#: and MRI's own budgets for 10. Total revenue does not change; Vacancy and Rental
+#: Income each move by the 4042 amount.
+#:
+#: Scoped to the review. `config.IS_ACCOUNTS` keeps 4042 under Vacancy, because the
+#: Financials page and the One Pager read it and nobody asked for those to change.
+_REVIEW_MOVES = {"4042": ("Vacancy", "Rental Income")}
+
+
+def review_is_accounts() -> Dict[str, Dict[str, List[str]]]:
+    """`config.IS_ACCOUNTS` as the Budget Review groups it -- see `_REVIEW_MOVES`.
+
+    A new dict each call, so no caller can mutate config's by accident. The review
+    (`valuation_service.get_budget_review`) and the import's category lookup both read
+    THIS, so the category the mapping screen shows for an account is the row the account
+    lands on in the review.
+    """
+    import copy
+    import config
+    out = copy.deepcopy(config.IS_ACCOUNTS)
+    for acct, (src, dst) in _REVIEW_MOVES.items():
+        for cats in out.values():
+            if src in cats and acct in cats[src]:
+                cats[src] = [a for a in cats[src] if a != acct]
+            if dst in cats and acct not in cats[dst]:
+                cats[dst] = cats[dst] + [acct]
+    return out
+
 
 def category_accounts() -> Dict[str, List[str]]:
-    """{category: [accounts]} as the IMPORT should see it — config, plus the overrides
-    above. One definition, so the dropdown and the not-in-category check cannot drift."""
-    import config
+    """{category: [accounts]} as the IMPORT should see it — the review's grouping, plus
+    the overrides above. One definition, so the dropdown and the not-in-category check
+    cannot drift."""
     out: Dict[str, List[str]] = {}
-    for cats in config.IS_ACCOUNTS.values():
+    for cats in review_is_accounts().values():
         for cat, accts in cats.items():
             out[cat] = list(_CATEGORY_ACCOUNTS_FOR_BUDGET.get(cat, accts))
     return out
@@ -333,6 +366,48 @@ _ACCT_IN_LABEL_RE = re.compile(r'[-–—:]\s*(\d{3,6})\s*$')
 #: the app read none of them.
 _ACCT_LEADS_LABEL_RE = re.compile(r'^\s*(\d{3,6})\s*[-–—:]')
 _ACCT_VALUE_RE = re.compile(r'^\s*(\d{3,6})(\.0+)?\s*$')
+
+#: WHAT GETS IMPORTED: a row with a 4-digit account beside it, and nothing else.
+#: Jack, Oct 7 2026: "the app should only bring in rows that have a 4-digit account
+#: number next to them. No guessing whether a row is a subtotal, and no importing rows
+#: without an account number." A row that reads like a total but carries an account IS
+#: imported -- that is his rule, and his own example -- and a row with no account is
+#: not, whatever its label. Detection above still accepts 3-6 digits, because a column
+#: is found by membership of our chart; this is the narrower rule for what comes in.
+_IMPORT_ACCOUNT_RE = re.compile(r'^\d{4}$')
+
+
+def file_account(line: Dict[str, Any]) -> Optional[str]:
+    """The 4-digit account this row of the file carries, or None if it carries none.
+
+    From the account the parser read (`stated_account`), else from the label itself --
+    a mapping stored before the parser read leading accounts ("4010 - Rental Income")
+    has `stated_account` empty on lines that plainly state one, and re-reading the label
+    keeps those lines importable without uploading the file again.
+    """
+    acct = str(line.get("stated_account") or "").strip()
+    if _IMPORT_ACCOUNT_RE.match(acct):
+        return acct
+    if acct:
+        return None                     # the file states an account, and not a 4-digit one
+    label = str(line.get("label") or "")
+    for pat in (_ACCT_LEADS_LABEL_RE, _ACCT_IN_LABEL_RE):
+        mm = pat.search(label)
+        if mm and _IMPORT_ACCOUNT_RE.match(mm.group(1)):
+            return mm.group(1)
+    return None
+
+
+def with_file_accounts(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """`parsed` with every line carrying `file_account`, for the screen to show and count.
+
+    Applied on the way out of a parse AND of a stored draft, so a mapping saved before
+    this rule existed is read by it too. The server never trusts the field coming back
+    in: every check recomputes it with `file_account`.
+    """
+    for line in parsed.get("lines") or []:
+        line["file_account"] = file_account(line)
+    return parsed
 
 
 def _find_account_column(body: List[list], date_row: int, label_col: int,

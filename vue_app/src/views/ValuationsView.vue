@@ -299,10 +299,10 @@ function estTitle(row: any): string {
 const hasEstOverrides = computed(() =>
   (budgetReview.value?.rows || []).some((r: any) => r.estimate_overridden))
 
-// Where the Budget column's debt service comes from: modeled from the deal's loan
-// terms, or underwriting's own 7010 for the year.
+// Where the Budget column's debt service comes from: the budget's own 5190/7060 (the
+// default, Jack Oct 7 2026), modeled from the deal's loan terms, or underwriting's 7010.
 const basisSaving = ref(false)
-async function setDebtBasis(basis: 'modeled' | 'underwriting') {
+async function setDebtBasis(basis: 'budget' | 'modeled' | 'underwriting') {
   basisSaving.value = true
   try {
     await api.put(`/api/valuations/records/${selectedRecordId.value}/debt-service-basis`, { basis })
@@ -1807,27 +1807,33 @@ watch(selectedCycleId, () => {
                   {{ budgetReview.compare.note }}
                 </span>
               </p>
-              <!-- The debt rows are OURS, not the file's. Saying so is not optional:
-                   an appraiser's Argus download is unlevered and a partner's budget may
-                   carry its own assumption, so a reader who is not told will assume the
-                   figures came from the spreadsheet in front of them. -->
-              <p class="panel-note" v-if="budgetReview.debt_service?.source === 'modeled'">
-                <strong>Interest and Principal are modeled</strong> from this deal's
-                {{ budgetReview.debt_service.loan_count }} loan(s) — the same debt service
-                engine Deal Analysis and the waterfall use — and applied to the
-                {{ budgetReview.debt_service.applies_to.join(' and ') }}
-                column{{ budgetReview.debt_service.applies_to.length > 1 ? 's' : '' }}.
-                The Estimate column is left as reported.
-                <template v-if="budgetReview.debt_service.as_stated_in_source.interest_valuation === 0">
-                  The Argus download is unlevered, as Argus exports always are.
+              <!-- WHERE EACH COLUMN'S DEBT ROWS COME FROM, said per column. The Budget
+                   column is the budget's own by default (Jack, Oct 7 2026) and may be
+                   modeled or UW's; the Valuation column is always modeled, because an
+                   Argus download is unlevered. A reader who is not told will assume every
+                   figure came from the spreadsheet in front of them. -->
+              <p class="panel-note" v-if="budgetReview.debt_service">
+                <template v-if="budgetReview.debt_service.budget_from === 'budget'">
+                  <strong>Budget column:</strong> Interest and Principal are as the {{ budgetReview.budget_year }}
+                  budget states them (5190 and 7060).
                 </template>
+                <template v-else-if="budgetReview.debt_service.budget_from === 'modeled'">
+                  <strong>Budget column:</strong> Interest and Principal are modeled from this deal's
+                  {{ budgetReview.debt_service.loan_count }} loan(s) — the same debt service engine Deal
+                  Analysis and the waterfall use.
+                </template>
+                <template v-else-if="budgetReview.debt_service.budget_from === 'underwriting'">
+                  <strong>Budget column:</strong> debt service is underwriting's.
+                </template>
+                <template v-if="budgetReview.debt_service.applies_to.includes('valuation')">
+                  <strong>Valuation column:</strong> modeled from this deal's
+                  {{ budgetReview.debt_service.loan_count }} loan(s)<template
+                    v-if="budgetReview.debt_service.as_stated_in_source.interest_valuation === 0">
+                  — the Argus download is unlevered, as Argus exports always are</template>.
+                </template>
+                The Estimate column is left as reported.
                 <span v-for="(n, i) in budgetReview.debt_service.notes" :key="i"
                       class="warn-note"> {{ n }}</span>
-              </p>
-              <p class="panel-note warn-note"
-                 v-else-if="budgetReview.debt_service?.notes?.length">
-                Debt service is as stated in the source files —
-                {{ budgetReview.debt_service.notes.join(' ') }}
               </p>
               <!-- AM, Sep 25 2026: "if we're not happy with what's being populated in the
                    budget column for debt service, there is a toggle that we can switch to
@@ -1835,7 +1841,12 @@ watch(selectedCycleId, () => {
               <div class="ds-basis no-print" v-if="budgetReview.debt_service">
                 <span class="ds-basis-label">Budget debt service:</span>
                 <label>
-                  <input type="radio" name="ds-basis" :checked="budgetReview.debt_service.budget_basis !== 'underwriting'"
+                  <input type="radio" name="ds-basis" :checked="budgetReview.debt_service.budget_basis === 'budget'"
+                         :disabled="!commentsEditable || basisSaving" @change="setDebtBasis('budget')" />
+                  As budgeted
+                </label>
+                <label>
+                  <input type="radio" name="ds-basis" :checked="budgetReview.debt_service.budget_basis === 'modeled'"
                          :disabled="!commentsEditable || basisSaving" @change="setDebtBasis('modeled')" />
                   Modeled from loan terms
                 </label>
