@@ -360,6 +360,17 @@ MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
 #: The DSCR side reuses the One Pager's own ``dscr.actual_ye``, which is already
 #: "Projected YE NOI over debt service" — the same ratio the author asked for,
 #: rather than a second opinion about what Giant 7's debt service is.
+#:
+#: RETIREMENT (Charlene, Oct 8 2026). Kept as a list on purpose: Giant 7 is the
+#: only deal still owned, about to be sold, and without recent financials. When
+#: it is marked SOLD this entry is DELETED and P0000019 is added to
+#: portfolio_snapshot_service.KEEP_DESPITE_SOLD, so it renders as a sold deal
+#: (Debt n/a, Loan ratios dashed, capital read at the last held quarter) like
+#: East Manchester. Enforced, not remembered:
+#: scripts/projected_ye_fallback_retirement_check.py runs in the pre-commit hook
+#: and fails while a listed deal is SOLD, while a sold Giant 7 is missing from
+#: KEEP_DESPITE_SOLD, or while its Sale_Date is earlier than the 26Q2 report it
+#: was still held in (MRI carried a stale 3/31/2026).
 PROJECTED_YE_NOI_FALLBACK: frozenset = frozenset({"P0000019"})   # Giant 7
 
 #: The Debt Yield basis every row reports unless the fallback above fired.
@@ -1147,9 +1158,18 @@ def assemble_loan(investor_code: str, quarter: str, *,
         dscr_ytd = None if dev else _num((perf.get("dscr") or {}).get("ytd_actual"))
         if dev:
             diag["dscr_dev"] += 1
-        # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK.
-        _ye_fallback = (str(vcode or "").strip().upper()
-                        in PROJECTED_YE_NOI_FALLBACK)
+        # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK. Never on a
+        # sold row: a sold deal's ratios are dashes like every other sold deal,
+        # and the entry is then overdue for retirement (see the note there).
+        _listed = (str(vcode or "").strip().upper()
+                   in PROJECTED_YE_NOI_FALLBACK)
+        _ye_fallback = _listed and not sold
+        if _listed and sold:
+            diag["ye_fallback_retire"] = diag.get("ye_fallback_retire", 0) + 1
+            flags.append(
+                "RETIRE: this deal is sold — delete it from "
+                "PROJECTED_YE_NOI_FALLBACK (scripts/"
+                "projected_ye_fallback_retirement_check.py fails until then)")
         if dscr_ytd is None and _ye_fallback and not dev:
             _ye_dscr = _num((perf.get("dscr") or {}).get("actual_ye"))
             if _ye_dscr is not None:
