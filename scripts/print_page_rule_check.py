@@ -115,7 +115,7 @@ def main() -> int:
         for r in named:
             nm = r.split("{", 1)[0][len("@page"):].strip()
             names.add(nm)
-            chk("named box '%s' pins the page size" % nm, "letter" in r,
+            chk("named box '%s' pins the page size" % nm, "size:" in r.replace(" ", ""),
                 " ".join(r.split()))
         for path in glob.glob(os.path.join(SRC, "**", "*.vue"), recursive=True):
             styles = "".join(re.findall(r"<style[^>]*>(.*?)</style>",
@@ -173,6 +173,18 @@ def main() -> int:
                 all("margin:0" in r.replace(" ", "") for r in allr
                     if not _is_named(r)),
                 "; ".join(" ".join(r.split()) for r in allr))
+
+    print("\n4. No global print rule hides the page unless its document is there")
+    # A lazy chunk's stylesheet outlives its route, so `body > *:not(.x)
+    # {display:none}` under @media print, left ungated, blanked EVERY later
+    # print in the session (BoardDeck, v605). It must be gated on the element
+    # it keeps -- `body:has(> .x) > *:not(.x)` -- so it acts only while that
+    # document is actually on the page.
+    for path in sorted(glob.glob(os.path.join(DIST, "*.css"))):
+        css = _strip_comments(open(path, encoding="utf-8").read())
+        for sel in re.findall(r"([^{}]*body\s*>\s*\*\s*:not\([^{}]*)\{[^}]*display\s*:\s*none", css):
+            chk("%s: `%s` is gated with :has()" % (os.path.basename(path), sel.strip()[-60:]),
+                ":has(" in sel)
 
     passed = sum(CHECKS)
     print("\n  {}/{} checks passed".format(passed, len(CHECKS)))

@@ -186,6 +186,13 @@ body {
     margin: 1in 1in 0.75in 1in;
   }
 
+  /* The Board package: one slide per sheet, at the slide's own size. Opt-in
+     by `page: board-deck` (BoardDeck's .bd-page). */
+  @page board-deck {
+    size: 1100px 825px;
+    margin: 0;
+  }
+
   .sidebar {
     display: none !important;
   }
