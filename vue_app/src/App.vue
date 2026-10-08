@@ -192,6 +192,12 @@ body {
   .app-header {
     display: none !important;
   }
+  /* Paper is white. The app's grey canvas (--color-bg) otherwise prints into
+     the margins and below a short sheet, because views force
+     print-color-adjust: exact so their own shading survives. */
+  html, body, .app-layout, .main-content, .page-content {
+    background: #fff !important;
+  }
   .main-content {
     margin-left: 0 !important;
   }

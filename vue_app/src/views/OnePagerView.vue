@@ -766,13 +766,90 @@ const activeChartResult = computed(() => viewingSnapshot.value ? snapshotChart.v
  * padding stands in for the margin, and the title is blanked below so a header
  * drawn anyway could not say "Waterfall XIRR".
  */
+// ---- fit each sheet to its own page --------------------------------------
+// The printable column is 7.5in = 720px. A sheet laid out W px wide and zoomed
+// by 720/W fills it exactly, so a NARROWER layout prints LARGER type. Each sheet
+// takes the narrowest width at which it still fits one page, so a short deal
+// uses its empty space for bigger type and a long one keeps every word on its
+// one page. The chart prints at the same size on every deal; only text grows.
+const PRINT_COLUMN_PX = 720
+const PRINT_PAGE_PX = 1056 - 0.8 * 96 - 12   // letter height - padding - safety
+const PRINT_CHART_PX = 260                   // printed chart height, every deal (a plain Ctrl+P prints 225)
+const PRINT_WIDTHS = [740, 760, 780, 800, 820, 840, 860, 880, 900, 920, 940, 960]
+//                    ^ 8pt table text, the legibility floor  ^ the screen sheet
+// Whatever the page still has spare once the type size is chosen goes, in
+// order, to a taller chart and then to air above each section header, so a
+// short deal fills its page instead of ending in a white band.
+const PRINT_CHART_MAX_PX = 320               // tallest printed chart
+const PRINT_CHART_SHARE = 0.6                // of the spare space, to the chart
+const PRINT_GAP_MAX_PX = 14                  // most extra space per section
+
+function setPrintVars(el: HTMLElement, w: number, chartPx: number, gapPx: number) {
+  const z = PRINT_COLUMN_PX / w
+  el.style.setProperty('--op-print-w', `${w}px`)
+  el.style.setProperty('--op-print-zoom', String(z))
+  // both are given in PRINTED px and laid out before the zoom, hence / z
+  el.style.setProperty('--op-chart-h', `${Math.round(chartPx / z)}px`)
+  el.style.setProperty('--op-section-gap', `${(gapPx / z).toFixed(2)}px`)
+}
+
+function fitSheetsForPrint() {
+  for (const el of document.querySelectorAll<HTMLElement>('.op-sheet')) {
+    // 1. the largest type that fits, at the base chart and no extra spacing.
+    //    offsetHeight forces layout at this width (screen box, unzoomed).
+    let w = PRINT_WIDTHS[PRINT_WIDTHS.length - 1]
+    for (const cand of PRINT_WIDTHS) {
+      setPrintVars(el, cand, PRINT_CHART_PX, 0)
+      if (el.offsetHeight * (PRINT_COLUMN_PX / cand) <= PRINT_PAGE_PX) { w = cand; break }
+    }
+    // Falling through leaves 960px: the screen sheet, which fits every deal
+    // measured (61/61), and which is also what Ctrl+P gets with no fit run.
+    const z = PRINT_COLUMN_PX / w
+    const spare = () => PRINT_PAGE_PX - el.offsetHeight * z
+    setPrintVars(el, w, PRINT_CHART_PX, 0)
+
+    // 2. a share of what is left to the chart
+    const grow = Math.min(Math.max(spare() * PRINT_CHART_SHARE, 0),
+                          PRINT_CHART_MAX_PX - PRINT_CHART_PX)
+    const chart = PRINT_CHART_PX + grow
+    setPrintVars(el, w, chart, 0)
+
+    // 3. the rest, evenly above the section headers
+    const n = el.querySelectorAll('.section-header').length || 1
+    let gap = Math.min(Math.max(spare() / n, 0), PRINT_GAP_MAX_PX)
+    setPrintVars(el, w, chart, gap)
+    // rounding can overshoot by a pixel or two; never let spacing cost a page
+    while (gap > 0 && spare() < 0) { gap = Math.max(gap - 1, 0); setPrintVars(el, w, chart, gap) }
+  }
+}
+
+function clearPrintFit() {
+  for (const el of document.querySelectorAll<HTMLElement>('.op-sheet')) {
+    for (const v of ['--op-print-w', '--op-print-zoom', '--op-chart-h', '--op-section-gap']) el.style.removeProperty(v)
+  }
+}
+
 function printOnePager() {
   // Blank the page title so browser doesn't print "Waterfall XIRR" in the header
   const origTitle = document.title
   document.title = ' '
-  nextTick(() => {
-    window.print()
+  // `op-printing` lays the sheet out as it prints (print twins in place of the
+  // textareas) so it can be measured, and so ECharts -- which sizes its canvas
+  // from the container it measures ON SCREEN, which no print CSS can change --
+  // redraws at the printed size. Autoresize is throttled, hence the wait.
+  // Undone after the dialog closes.
+  const root = document.documentElement
+  root.classList.add('op-printing')
+  const restore = () => {
+    root.classList.remove('op-printing')
+    clearPrintFit()
     document.title = origTitle
+    window.removeEventListener('afterprint', restore)
+  }
+  window.addEventListener('afterprint', restore)
+  nextTick(() => {
+    fitSheetsForPrint()
+    setTimeout(() => window.print(), 300)
   })
 }
 </script>
@@ -945,7 +1022,7 @@ function printOnePager() {
               <td class="val right">{{ fmtPct(cap.pe_exposure_on_cap) }}</td>
             </tr>
             <tr>
-              <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
+              <td class="lbl">Pref Equity capitalization:</td><td class="val"><textarea v-model="peCapComment" class="inline-comment print-hide" rows="1" placeholder="" spellcheck="true" lang="en" :readonly="commentsLocked"></textarea><div class="comment-print inline print-only">{{ peCapComment }}</div></td>
               <td class="lbl">P.E. Expos. on {{ cap.valuation_year ? cap.valuation_year.slice(-2) : '' }} Value:</td>
               <td></td><td class="val right">{{ fmtPct(cap.pe_exposure_on_value) }}</td>
             </tr>
@@ -983,7 +1060,8 @@ function printOnePager() {
           <tbody><tr>
             <td class="lbl" style="vertical-align: top; width: 80px;">Comments:</td>
             <td>
-              <textarea v-model="econComments" class="comment-input" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+              <textarea v-model="econComments" class="comment-input print-hide" rows="3" placeholder="Property performance comments..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea>
+              <div class="comment-print print-only">{{ econComments }}</div>
               <div class="char-counter no-print">{{ charCount(econComments) }}</div>
             </td>
           </tr></tbody>
@@ -1014,7 +1092,7 @@ function printOnePager() {
             <tr>
               <td class="lbl">Current Pref Equity Balance:</td><td class="val">{{ fmtMil0(pe.current_pe_balance) }}</td>
               <td class="lbl">Accrued Balance:</td><td class="val">{{ fmtMil0(pe.accrued_balance) }}</td>
-              <td colspan="2"><textarea v-model="accruedPrefComment" class="comment-input small" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea></td>
+              <td colspan="2"><textarea v-model="accruedPrefComment" class="comment-input small print-hide" rows="2" placeholder="Accrued pref comment..." spellcheck="true" lang="en" :readonly="commentsLocked"></textarea><div class="comment-print small print-only">{{ accruedPrefComment }}</div></td>
             </tr>
           </tbody>
         </table>
@@ -1032,7 +1110,7 @@ function printOnePager() {
           <!-- No v-if / no "no data" fallback: buildChartOption always returns
                a frame, and a deal with nothing to plot shows empty axes rather
                than a message where the chart should be. -->
-          <v-chart :option="chartOption" style="width: 100%; height: 300px;" autoresize />
+          <v-chart :option="chartOption" class="op-chart" autoresize />
         </div>
       </div>
       </template>
@@ -1185,7 +1263,7 @@ function printOnePager() {
               <tr>
                 <td class="lbl">Current Pref Equity Balance:</td><td class="val">{{ fmtMil0(pg.data.pe_performance?.current_pe_balance) }}</td>
                 <td class="lbl">Accrued Balance:</td><td class="val">{{ fmtMil0(pg.data.pe_performance?.accrued_balance) }}</td>
-                <td colspan="2" class="comment-text" style="font-size: 9px;">{{ pg.data.comments?.accrued_pref_comment || '' }}</td>
+                <td colspan="2" class="comment-text small">{{ pg.data.comments?.accrued_pref_comment || '' }}</td>
               </tr>
             </tbody>
           </table>
@@ -1200,7 +1278,7 @@ function printOnePager() {
           <!-- CHART -->
           <div class="chart-section">
             <!-- Same as single mode: always a frame, never a message. -->
-            <v-chart :option="buildChartOption(pg.chart)" style="width: 100%; height: 300px;" autoresize />
+            <v-chart :option="buildChartOption(pg.chart)" class="op-chart" autoresize />
           </div>
         </div>
 
@@ -1315,7 +1393,8 @@ function printOnePager() {
   font-size: 11px;
   border-bottom: 1px solid #000;
   padding: 5px 0 2px 0;
-  margin: 2px 0 2px 0;
+  /* --op-section-gap is set only while printing (fitSheetsForPrint) */
+  margin: calc(2px + var(--op-section-gap, 0px)) 0 2px 0;
 }
 
 /* Generic info table */
@@ -1424,6 +1503,7 @@ function printOnePager() {
   min-height: 2.8em;
   border-bottom: 1px solid #eee;
 }
+.comment-text.small { font-size: 9px; }
 .comment-text.bp-text {
   min-height: 5.5em;
 }
@@ -1456,6 +1536,29 @@ function printOnePager() {
 .bp-print-text {
   display: none;
 }
+/* Print twins' type, declared outside @media print so the fit-to-page
+   measurement (html.op-printing, on screen) lays them out exactly as print
+   does. Hidden on screen by .print-only. */
+.comment-print,
+.bp-print-text {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #000;
+  padding: 5px 7px;
+}
+.comment-print.small { font-size: 9px; }
+.comment-print.inline { padding: 0; }
+/* Printed comments are set a size above the screen's 10px editing type: the
+   narrative is what an investor reads, and it should not be the smallest text
+   on the sheet. Applies to the measurement layout and to print alike. */
+:global(html.op-printing .op-sheet .comment-print),
+:global(html.op-printing .op-sheet .bp-print-text),
+:global(html.op-printing .op-sheet .comment-text) { font-size: 12px; }
+:global(html.op-printing .op-sheet .comment-print.small),
+:global(html.op-printing .op-sheet .comment-text.small),
+:global(html.op-printing .op-sheet .comment-print.inline) { font-size: 11px; }
 .print-only {
   display: none;
 }
@@ -1470,10 +1573,32 @@ function printOnePager() {
 }
 
 /* Chart */
+.op-chart {
+  width: 100%;
+  height: 300px;
+}
 .chart-section {
   margin-top: 6px;
   border-top: 1px solid #ccc;
   padding-top: 4px;
+}
+
+/* Set by printOnePager() while the print dialog is open: the sheet laid out
+   as it prints, at the width fitSheetsForPrint() chose, so it can be measured
+   and the chart canvas is drawn at the size it prints. */
+:global(html.op-printing .op-sheet) {
+  width: var(--op-print-w, 960px);
+  max-width: none;
+}
+:global(html.op-printing .op-sheet .op-chart) {
+  height: var(--op-chart-h, 300px);
+}
+:global(html.op-printing .op-sheet .print-hide),
+:global(html.op-printing .op-sheet .char-counter) {
+  display: none !important;
+}
+:global(html.op-printing .op-sheet .print-only) {
+  display: block !important;
 }
 
 /* ============================================================
@@ -1496,114 +1621,56 @@ function printOnePager() {
 
   /* The page box (letter portrait, zero margin) is set ONCE globally in
      App.vue — see the note there. The 0.4in/0.5in padding below is this view's
-     real margin. */
+     real margin.
 
-  body, html {
-    margin: 0 !important;
-    padding: 0 !important;
-    font-size: 10px !important;
-  }
+     PRINT IS THE SCREEN, SCALED. The printed sheet is the on-screen sheet laid
+     out at its own screen width (960px, the .one-pager-page max-width) and
+     zoomed to the 7.5in printable column: 960px x 0.75 = 720px = 7.5in. Every
+     font, column, wrap point and the chart keep the proportions the author saw
+     while typing, so what is on screen is what prints.
 
-  /* Content padding replaces @page margin (keeps headers/footers off the page) */
+     What this replaces: print-only font sizes (12.5-13px against 10-11px on
+     screen) on a column 20% narrower than the screen's, inside a fixed-height
+     `overflow: hidden` sheet. Text wrapped onto more lines than the screen
+     showed, and the Business Plan and comment boxes — the only parts that could
+     give — were cut off with no marker. Do not reintroduce per-element print
+     font sizes: they are the defect. */
   .one-pager-page {
     max-width: none;
     margin: 0;
     padding: 0.4in 0.5in !important;
+    background: #fff;
   }
 
+  /* Width and zoom come from fitSheetsForPrint(); the fallbacks are the
+     screen sheet at 0.75, which is what a plain Ctrl+P prints. */
   .op-sheet {
+    width: var(--op-print-w, 960px);
+    zoom: var(--op-print-zoom, 0.75);
     border: none;
-    padding: 0;
     box-shadow: none;
-    margin-bottom: 0;
-    display: flex;
-    flex-direction: column;
-    height: calc(100vh - 0.8in); /* exactly one page minus top+bottom padding */
-    overflow: hidden;
+    margin: 0;
   }
 
   .op-sheet.page-break {
-    page-break-after: always;
+    break-after: page;
   }
 
-  /* Print-only date/time in upper left */
-  .op-title { font-size: 20px; margin-bottom: 1px !important; padding-bottom: 2px !important; }
-
-  /* Uniform tight spacing between all sections */
-  .section-header {
-    font-size: 13px;
-    padding: 2px 0 1px 0 !important;
-    margin: 1px 0 1px 0 !important;
-  }
-
-  /* Tighten comments row between Property Performance and PE section */
-  .comments-row-table { margin: 0 !important; }
-  .comments-row-table td { padding: 1px 4px !important; }
-
-  /* Remove internal spacer row in PE table */
-  .pe-table tr td[style*="height"] { height: 0px !important; padding: 0 !important; }
-
-  .info-table td, .cap-table td, .perf-table th, .perf-table td, .pe-table td {
-    font-size: 12.5px;
-    padding: 0.5px 3px 0.5px 0;
-  }
-  .info-table, .pe-table { margin-bottom: 0 !important; }
-  .perf-table { margin-bottom: 0 !important; }
-
-  /* Tighten label widths to prevent wrapping at larger font */
-  .info-table .lbl { width: 20% !important; }
-  .info-table .val { width: 30% !important; }
-  .cap-table .lbl { width: 16% !important; }
-  .cap-table .val { width: 16% !important; }
-  .cap-table td:nth-child(3) { padding-left: 12px !important; }
-  .pe-table td { padding: 1px 4px 1px 0 !important; }
-  .perf-table .spacer-col { width: 12px !important; }
-  .perf-table .row-label { padding-right: 6px !important; }
-
-  /* Make textareas and comment text look like plain text in print */
-  .comment-input,
-  .comment-text {
-    border: none !important;
-    border-bottom: none !important;
-    padding: 0 !important;
-    resize: none !important;
-    background: transparent !important;
-    font-size: 12.5px !important;
-    overflow: visible !important;
-    height: auto !important;
-    min-height: 0 !important;
-  }
-
-  /* Business plan: fill remaining space, clip if too long */
-  .bp-section {
-    overflow: hidden !important;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
+  /* A <textarea> prints its box, not its text: whatever is scrolled out of
+     view on screen is not on paper. Each one prints through a plain-text twin
+     instead, in the textarea's own font and at its own text position (1px
+     border + padding), so the wording lands where it sits on screen and none
+     of it is lost. */
+  .comment-print,
   .bp-print-text {
     display: block !important;
-    font-size: 13px !important;
-    font-family: inherit;
-    white-space: pre-wrap;
-    overflow: hidden !important;
-    height: 100%;
-  }
-  .comment-text.bp-text {
-    overflow: visible !important;
-    max-height: none !important;
-    min-height: 0 !important;
   }
 
-  /* Chart anchored to bottom of page */
+  /* Batch pages already render comments as text; drop only the editing rule. */
+  .comment-text { border-bottom: none !important; }
+
   .chart-section {
     break-inside: avoid;
-    flex-shrink: 0;
-    margin-top: auto;
-  }
-
-  /* Force chart to print */
-  .chart-section canvas {
-    max-width: 100% !important;
   }
 }
 </style>
