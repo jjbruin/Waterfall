@@ -133,7 +133,19 @@ item it changes what the Snapshot prints, so it should not wait with the others.
 
 ---
 
-## 20. Board package section -- planned, not started (Oct 5 2026)
+## 20. Board package section -- IN PROGRESS (Oct 8 2026: live at `v612`)
+
+**Built and live (Oct 8 2026):** pp. 5, 9, 23, 24, 26, 27, 28, 29-31 and the results package
+(full / abbreviated, cover, contents, part dividers, printed page numbers, narrative attachments
+and pagination, footnotes / disclosures, Print / PDF with fills). Details in `board.md`.
+**Waiting on Jim -- p. 4 decisions** (asked Oct 8; he closed the questions without answering):
+what "$181.5M returned" counts (return of capital only, or plus realized gains); which deals are
+"fully repaid" (held with nothing outstanding, or a list he keeps); the pies' basis (gross IM pref
+as the deck says, or net incl. unfunded as p. 23); the state -> region mapping (proposed: NE = NY
+CT MA RI; Mid-Atlantic = PA NJ DE MD; SE = FL GA AL LA; SW = TX; Midwest = IL MO OH MI IA; West = NV
+CO UT; Canada). Then p. 4 can be built. **Buildable without input:** pp. 20-21 projected sales
+(Deal Analysis per deal). **Needs data:** p. 10 (new vs repeat sponsors), pp. 11-12 (originations
+spreadsheet), p. 25 (Jim's OK to geocode addresses externally), pp. 17-19 (new platform engine).
 
 **Oct 7 2026: Phase 1 pp.26, 27, 29-31 live at `v598`** (
 reconciliation in `board.md`). Open from it:

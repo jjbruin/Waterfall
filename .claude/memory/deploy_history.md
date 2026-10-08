@@ -351,8 +351,8 @@ entry pointing at it. Nothing here was summarised.
     still uploading, locked 423, or wait / close / Choose Files). Not a symptom repair. Span vs live
     `925c3fc` (v612): this + the v612 docs. Jim pushed main. Build `caps`, Succeeded; tag locked; P1 re-run
     (v612); deployed from PowerShell; Healthy at 100%; `SSO_REDIRECT_URL` read back `/login`. SERVED:
-    `main-DptRmrvW.js` carries the /content fallback and the reasons; the old message is gone. NOT YET
-    VERIFIED against the real file (needs Jim's SharePoint sign-in). Guardrails: sharepoint_picker 39 -> 44
+    `main-DptRmrvW.js` carries the /content fallback and the reasons; the old message is gone. VERIFIED
+    by Jim the same evening: `investment_map.csv` imported from SharePoint. Guardrails: sharepoint_picker 39 -> 44
     (2 injections), sso_redirect 10, board_views 113, section_access 274. **Rollback** FORWARD: `--image
     acrwaterfalldev.azurecr.io/waterfall-xirr:925c3fc --revision-suffix v614` (keep SSO_REDIRECT_URL).)
   - `v612` = `925c3fc` (BOARD P.5: THE YEAR IN REVIEW. Merge of `feat/board-p5-year-in-review` (`02eb864`):

@@ -1,4 +1,61 @@
-# Session Handoff — through Oct 7 2026 (v600 live)
+# Session Handoff — through Oct 8 2026 (v613 live)
+
+## Oct 8 2026 — v601-v613: THE BOARD PACKAGE, PDF FILLS, MICROSOFT SIGN-IN, SHAREPOINT DOWNLOADS
+
+**Live: `v613` = `7b93298`. `main` = origin, level with live + docs.** Every revision has an entry in
+`deploy_history.md`; this is the map.
+
+### What shipped (mine unless marked)
+| Rev | What |
+|---|---|
+| v601-v604 | (Charlene) Portfolio Snapshot / ROE Summary: Donald Lynch reported under P0000073 (`REPORT_VCODE_PROMOTE` -- a per-deal one-off, flagged to Jim) |
+| v605 | Board pp. 9, 23, 24, 28 + the RESULTS PACKAGE: cover (official logo), contents with printed page numbers, parts I-V, full / abbreviated, narrative attachments (images; PDFs per page) and measured pagination, footnotes and disclosures on every page, Print / PDF. NEW `loan_caps.cap_terms` (rate-cap reader; one-engine row) |
+| v606 | (Charlene) Print rules gated: my global Board print CSS had blanked every later print in the session |
+| v607 | (Charlene) Sold Total realized IRR = pooled XIRR; Reports counts each investment once |
+| v608 | (Charlene) Snapshot Loan: at-close ratios for new deals; Giant 7 label and retirement guard |
+| v609 | Board PDF keeps its fills (`print-color-adjust: exact`) -- Save as PDF dropped every background |
+| v610 | CONFIG: `SSO_REDIRECT_URL` corrected to `/login` -- Microsoft sign-in had NEVER worked in production (Git Bash had stored `C:/Program Files/Git/login` since v580). Accountants confirmed it works |
+| v611 | SSO guard: the callback only redirects to an app path or a web address |
+| v612 | Board p. 5 year in review (+ Charlene's local pull-script backup pruning, Jim approved) |
+| v613 | SharePoint picker: a file with no download link is read through Graph's /content -- Jim verified `investment_map.csv` |
+
+### Decisions and facts recorded today
+- MRI moved overnight: Burton now `Retail - Grocery`; Merle Hay and 5-15 Broad `Retail - Non-Grocery` (a
+  second spelling -- both mapped). `Property_Count` still NOT fixed. `Investment_Strategy` still blank.
+- The official logo is in `docs/brand/` (`brand.md`); never re-extract one.
+- Board page numbers are POSITIONS in the printed package; one as-of per schedule; Brainerd one deal.
+
+### Waiting on someone else
+- **Jim -- Board p. 4**: four decisions, listed in `open_items` section 20 (he closed the question box).
+- **AM / Jack** -- p. 24 partner assignments; p. 28 maturity buckets, JB Fair / Town Fair Tire floating
+  vs swapped, Mount Prospect's partial cap, Middle Island's spread (open_items 20).
+- **MRI** -- `Property_Count` (Apple 16, PMAT Midwest 3, Prestige 12); one spelling per asset type.
+- **Accounting** -- the five future-funding questions (from Oct 7).
+
+### Next, in the Board plan
+p. 4 once Jim answers; pp. 20-21 projected sales (no input needed); p. 25 map on Jim's OK to geocode.
+Narrative sections are ready for text and attachments in the Narrative tab.
+
+### Lessons today
+1. **Git Bash rewrites `/path` arguments** -- an `az --set-env-vars X=/login` stored a Windows path and
+   broke Microsoft sign-in for two days unnoticed. PowerShell, or `MSYS_NO_PATHCONV=1`; read the value back.
+2. **A global stylesheet outlives its route** (Charlene's v606 catch): Vite leaves a lazy chunk's CSS in
+   the page, so a print rule in it acts on every later print. Gate print rules on the element being present.
+3. **Browsers drop backgrounds when printing** unless asked: `print-color-adjust: exact`. Proved by
+   printing through Edge's DevTools protocol with `printBackground` off (scratchpad `cdp_print.py`).
+4. **Wait for the other deployer's MERGE, not just their revision.** Charlene deploys from a branch and
+   merges after; building before her merge means merging her branch yourself and pushing twice.
+5. **Investment Metrics' "proceeds to date" exclude returned capital** -- never infer a loss from them;
+   realized losses come from `noncash_by_holding`, and only at the deal's own investment (the same
+   write-off is booked again at each upstream fund).
+6. **Pushes to main are refused for me here** -- commit, ask Jim to push, deploy from the pushed SHA.
+
+### Local state
+- The local test meeting has seeded narrative text and attachments (Strategy, Year in review) -- LOCAL only.
+- The flask-api / vue-dev preview servers may still be running.
+
+---
+
 
 ## Oct 7 2026 — v589-v600: EXPENSES, VALUATION IMPORT RULES, BOARD PHASE 1 AND THE DECK VIEWER
 

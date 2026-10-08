@@ -61,12 +61,28 @@ locally against the real Entra app. Two lessons from getting there:
   flow at all; use a real Chrome/Edge window on `localhost:5173`. MSAL 5 itself opens
   synchronously (`navigatePopups` defaults to true -> `about:blank` inside the call).
 
+### A file with no download link (`v613`, Oct 8 2026)
+Graph leaves `@microsoft.graph.downloadUrl` off a file that is checked out, still uploading or
+syncing, or label-restricted -- `investment_map.csv`, saved that day, failed "SharePoint did not
+provide a download link." `download()` in `services/sharepoint.ts` now falls back to Graph's
+`/drives/{d}/items/{i}/content` with the read-only token (sent ONLY to graph.microsoft.com), and
+otherwise names the reason (checked out from `publication.level`, still uploading, locked 423, or
+wait / close / Choose Files). Jim verified: the file imported. Guardrail: `sharepoint_picker_check.py`
+section 6 (`--inject=nofallback`, `--inject=leak`).
+
 ## Microsoft sign-in (same branch)
 `sso.py` matches the EXISTING account by the `users.email` column, never opens the
 `admin` username, creates no account (`no_account` / `ambiguous` refused). ProxyFix
 makes `url_for(_external=True)` say https behind the Azure ingress. Guardrail:
 `scripts/sso_email_match_check.py`. Needs the client secret as a Container App
 secret plus `SSO_PROVIDER/SSO_CLIENT_ID/SSO_TENANT_ID/SSO_CLIENT_SECRET`.
+
+**It did not work in production until `v610` (Oct 8 2026).** `SSO_REDIRECT_URL` had been set from
+Git Bash, which rewrote `/login` to `C:/Program Files/Git/login`; every Microsoft sign-in from `v580`
+was redirected there and Chrome refused it (ERR_UNSAFE_REDIRECT). Corrected to `/login` from
+PowerShell at `v610`; `v611` makes the code refuse such a value (`sso._frontend_url`, falls back to
+`/login`; `scripts/sso_redirect_check.py`). The accountants (regolf, kherrmann, nle) confirmed
+Microsoft sign-in works. **Set `/path` env vars from PowerShell, and read them back.**
 
 ## Phase 2 -- scheduled folder pulls (not started)
 Needs per-user refresh tokens stored server-side (encrypted, a PROTECTED table) or an
