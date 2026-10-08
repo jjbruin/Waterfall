@@ -1243,9 +1243,9 @@ def act_year_one_coc_roe(
     )
 
 
-def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
-                 cutoff: Optional[_dt.date] = None) -> Optional[float]:
-    """XIRR over PSC's contributions and distributions. ONE ENGINE: ``metrics.xirr``.
+def realized_flows(ident: DealIdentity, acct: pd.DataFrame,
+                   cutoff: Optional[_dt.date] = None) -> List[Tuple[_dt.date, float]]:
+    """PSC's contributions and distributions for one investment, dated.
 
     ``cutoff`` is the quarter's as-of: flows dated after it are not in this
     quarter's figure.
@@ -1255,7 +1255,7 @@ def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
     """
     rows = _deal_accounting(acct, ident.investment_id)
     if rows.empty:
-        return None
+        return []
     rows = rows[rows["InvestorID"].map(is_psc_side)]
     if "is_commitment" in rows.columns:
         rows = rows[~rows["is_commitment"].fillna(False)]
@@ -1268,6 +1268,37 @@ def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
         if cutoff is not None and d > cutoff:
             continue
         flows.append((d, a))
+    return flows
+
+
+def realized_irr(ident: DealIdentity, acct: pd.DataFrame,
+                 cutoff: Optional[_dt.date] = None) -> Optional[float]:
+    """XIRR over PSC's contributions and distributions. ONE ENGINE: ``metrics.xirr``."""
+    flows = realized_flows(ident, acct, cutoff)
+    if len(flows) < 2:
+        return None
+    return xirr(flows)
+
+
+def pooled_realized_irr(idents: List[DealIdentity], acct: pd.DataFrame,
+                        cutoff: Optional[_dt.date] = None) -> Optional[float]:
+    """ONE XIRR over every listed investment's PSC flows, pooled.
+
+    This is the method of Reports > Sold Portfolio's "Portfolio Total" IRR
+    (``sold_service.compute_all_sold_returns``), and of the reference workbook's
+    Sold Total (18.2254% at 6/30/26 is exactly this over its 26 deals). It is NOT
+    an average of the deals' IRRs, which weights a deal by its pref and gives a
+    different number: the Sold Total used to be that average (20.15% at 26Q2
+    against the pooled 18.14%).
+
+    Every investment in the table goes in, including the ones whose own IRR
+    cell is a dash (City West, lost to foreclosure; Adirondack, whose flows do
+    not solve): footnote (2) says the foreclosure is "included in IRR
+    calculations", and the pooled flows solve even where a single deal's do not.
+    """
+    flows: List[Tuple[_dt.date, float]] = []
+    for ident in idents:
+        flows.extend(realized_flows(ident, acct, cutoff))
     if len(flows) < 2:
         return None
     return xirr(flows)
@@ -1418,10 +1449,19 @@ def build_investment_metrics(
             r["markers"] = row_markers(ident_by_vcode[r["vcode"]], table, as_of)
             _apply_young_deal_substitution(r, diag)
         _check_config_population(rows, table, footnotes, diag, other_vcodes)
+        total = _total_row(rows)
+        if table == SOLD:
+            # The Sold Total's realized IRR is the POOLED XIRR (the Reports
+            # method), not the pref-weighted average `_total_row` computed.
+            total["realized_irr"] = pooled_realized_irr(
+                [ident_by_vcode[r["vcode"]] for r in rows], acct, as_of)
+            diag["sold_total_realized_irr"] = {
+                "method": "pooled XIRR over the Sold table's PSC flows (Reports > Sold Portfolio method)",
+                "deals": len(rows)}
         out[table] = {
             "title": title,
             "rows": rows,
-            "total": _total_row(rows),
+            "total": total,
             "footnotes": [{"n": n, "text": t} for n, t in footnotes],
             # The view draws the table from this, so the headings, the column
             # widths, the alignment and the vertical rules all come off the
