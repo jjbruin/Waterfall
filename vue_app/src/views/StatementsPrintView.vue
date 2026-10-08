@@ -377,12 +377,16 @@ table.fs.fs-wide .fs-line { padding-left: 0; }
   .sp { background: none; padding: 0; }
   .sheet {
     width: auto; min-height: 0; margin: 0; box-shadow: none;
-    /* The reference's own margins for a statement page. `@page` supplies the
-       physical margin; this keeps the content box matching it. */
+    /* The reference's own margins for a statement page come from the NAMED
+       page box `statement-sheet` in App.vue (1in 1in 0.75in), which applies to
+       every physical page a statement runs onto; this keeps the content box
+       matching it. Named, not a bare `@page` here: a bare one in this lazy
+       route chunk stayed loaded after visiting Statements and re-margined
+       every other print in the app, the One Pager included. */
+    page: statement-sheet;
     padding: 0 0 0 0;
   }
   .sheet.page-break { page-break-after: always; }
   .fs-foot { position: fixed; bottom: 0.25in; }
 }
-@page { size: letter portrait; margin: 1in 1in 0.75in 1in; }
 </style>

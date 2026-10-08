@@ -107,11 +107,24 @@ def main() -> int:
             chk("it zeroes the margin, which is what suppresses the browser's "
                 "own header/footer", "margin:0" in d0.replace(" ", ""), d0)
             chk("and pins the page size", "letter" in d0, d0)
-        # Named boxes are additive and safe — reported, not restricted.
+        # Named boxes are additive and safe — reported, not restricted. One
+        # may carry a margin (statement-sheet: a multi-page statement needs
+        # its margin on every physical page, which padding cannot give); the
+        # check that matters is that a view opts in to every name it uses.
+        names = set()
         for r in named:
             nm = r.split("{", 1)[0][len("@page"):].strip()
-            chk("named box '%s' also zeroes its margin" % nm,
-                "margin:0" in r.replace(" ", ""), " ".join(r.split()))
+            names.add(nm)
+            chk("named box '%s' pins the page size" % nm, "size:" in r.replace(" ", ""),
+                " ".join(r.split()))
+        for path in glob.glob(os.path.join(SRC, "**", "*.vue"), recursive=True):
+            styles = "".join(re.findall(r"<style[^>]*>(.*?)</style>",
+                                        open(path, encoding="utf-8").read(), re.S))
+            # a CSS declaration only: `page: name;` inside a rule body
+            for nm in re.findall(r"[{;]\s*page\s*:\s*([A-Za-z_-][\w-]*)\s*[;}]",
+                                 _strip_comments(styles)):
+                chk("%s opts into a declared page box '%s'"
+                    % (os.path.basename(path), nm), nm in names)
 
     print("\n2. Every print view supplies its own margin as padding")
     # Without this, removing a view's @page would print it edge-to-edge.
@@ -148,13 +161,30 @@ def main() -> int:
             sum(1 for r in allr if not _is_named(r)) == 1,
             "; ".join(" ".join(r.split()) for r in allr))
         chk("in the always-loaded index chunk, not a lazy route chunk",
-            list(built) and list(built)[0].startswith("index-"),
+            # Vite names the entry after its input: `index-` before the msal
+            # redirect entry was added, `main-` since.
+            list(built) and list(built)[0].startswith(("index-", "main-")),
             str(list(built)) + " — a route chunk's rule applies only after "
             "that route is visited, which is what made this order-dependent")
         if built:
-            chk("every page box in the bundle has a zero margin",
-                all("margin:0" in r.replace(" ", "") for r in allr),
+            # The DEFAULT box must be zero (header/footer suppression); a named
+            # box may carry a margin because only an opt-in element gets it.
+            chk("the bundle's DEFAULT page box has a zero margin",
+                all("margin:0" in r.replace(" ", "") for r in allr
+                    if not _is_named(r)),
                 "; ".join(" ".join(r.split()) for r in allr))
+
+    print("\n4. No global print rule hides the page unless its document is there")
+    # A lazy chunk's stylesheet outlives its route, so `body > *:not(.x)
+    # {display:none}` under @media print, left ungated, blanked EVERY later
+    # print in the session (BoardDeck, v605). It must be gated on the element
+    # it keeps -- `body:has(> .x) > *:not(.x)` -- so it acts only while that
+    # document is actually on the page.
+    for path in sorted(glob.glob(os.path.join(DIST, "*.css"))):
+        css = _strip_comments(open(path, encoding="utf-8").read())
+        for sel in re.findall(r"([^{}]*body\s*>\s*\*\s*:not\([^{}]*)\{[^}]*display\s*:\s*none", css):
+            chk("%s: `%s` is gated with :has()" % (os.path.basename(path), sel.strip()[-60:]),
+                ":has(" in sel)
 
     passed = sum(CHECKS)
     print("\n  {}/{} checks passed".format(passed, len(CHECKS)))
