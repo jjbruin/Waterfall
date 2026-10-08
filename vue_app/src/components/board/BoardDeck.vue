@@ -24,6 +24,7 @@ import PerformanceSlide from './PerformanceSlide.vue'
 import InvestmentSummarySlide from './InvestmentSummarySlide.vue'
 import NarrativeSlide from './NarrativeSlide.vue'
 import PartnerSlide from './PartnerSlide.vue'
+import PrefByYearSlide from './PrefByYearSlide.vue'
 import PortfolioMetricsSlide from './PortfolioMetricsSlide.vue'
 import { firstPage } from './slideFormat'
 
@@ -202,7 +203,8 @@ const notes = computed<string[]>(() => currentView.value?.notes || [])
               <NarrativeSlide :title="current.narrative.title" :body="current.narrative.body" :page="current.label" />
             </template>
             <template v-else-if="currentStatus === 'ready' && currentView">
-              <AssetClassSlide v-if="current.kind === 'exposure_asset_class'" :view="currentView" :page="current.label" />
+              <PrefByYearSlide v-if="current.kind === 'pref_by_year'" :view="currentView" :page="current.label" />
+              <AssetClassSlide v-else-if="current.kind === 'exposure_asset_class'" :view="currentView" :page="current.label" />
               <PartnerSlide v-else-if="current.kind === 'exposure_partner'" :view="currentView" :page="current.label" />
               <CapitalizationSlide v-else-if="current.kind === 'capitalization'" :view="currentView" :page="current.label" />
               <PerformanceSlide v-else-if="current.kind === 'performance'" :view="currentView" :page="current.label" />

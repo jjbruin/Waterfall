@@ -21,6 +21,8 @@ already owns, at the schedule's own as-of date (ONE NUMBER, ONE ENGINE):
   |      |                                          |   NOI-weighted, DSCR debt-weighted, dev out  |
   | 28   | Fixed / floating debt, maturities, rates | dashboard_service.get_loan_maturity_data     |
   |      | Rate caps, max interest                  | loan_caps.cap_terms                          |
+  | 9    | Pref invested by year, new + cumulative  | Investment Metrics' PSC pref per deal (Current|
+  |      |                                          |   + Sold), in its PSC Invest. Date's year    |
   | 24   | The same, by operating partner           | as p. 23, grouped by deals.Operating_Partner |
   |      |                                          |   through PARTNER_NAMES                      |
   | 23   | Net pref incl. unfunded by asset class,  | pe_exposure_service: funded Cost + remaining |
@@ -51,7 +53,7 @@ THIRD_PARTY = ("TIAA", "KOC", "Clarion", "F&F", "Declaration", "Ambassadors")
 GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Clarion": "Clarion",
                 "F&F": "Friends & Family", "Declaration": "Declaration", "Ambassadors": "Ambassadors"}
 
-VIEW_KEYS = ("exposure_asset_class", "exposure_partner", "capitalization", "performance", "debt",
+VIEW_KEYS = ("pref_by_year", "exposure_asset_class", "exposure_partner", "capitalization", "performance", "debt",
              "investment_summaries")
 
 # ------------------------------------------------------------------ the deck's layout
@@ -617,6 +619,38 @@ def compose_debt(loans: List[dict], as_of: date) -> dict:
     }
 
 
+# ------------------------------------------------------------------ page 9
+
+def compose_pref_by_year(im: dict) -> dict:
+    """Page 9: preferred equity invested, new each year and cumulative.
+
+    Every deal Investment Metrics carries -- Current and Sold -- at its PSC pref
+    (funded or committed, return of capital not deducted: the figure its tables
+    print) in the year of its PSC Invest. Date. The total IS the engine's Grand
+    Total pref. A deal with no pref or no invest date is left out and named.
+    """
+    by_year: Dict[int, float] = {}
+    left_out: List[str] = []
+    for t in ("current", "sold"):
+        for r in (im.get(t) or {}).get("rows") or []:
+            if r.get("pref") is None or not r.get("invest_date"):
+                left_out.append(r.get("name") or r.get("vcode"))
+                continue
+            y = int(str(r["invest_date"])[:4])
+            by_year[y] = by_year.get(y, 0.0) + r["pref"] * 1e6
+    years, cum = [], 0.0
+    for y in sorted(by_year):
+        years.append({"year": y, "new": by_year[y], "prior": cum, "cumulative": cum + by_year[y]})
+        cum += by_year[y]
+    gt = (im.get("grand_total") or {}).get("pref")
+    notes = []
+    if left_out:
+        notes.append("No pref or no invest date in Investment Metrics, so not in any year: " + ", ".join(left_out))
+    return {"years": years, "total": cum,
+            "reconciliation": {"im_grand_total_pref": None if gt is None else gt * 1e6, "page_total": cum},
+            "notes": notes}
+
+
 # ------------------------------------------------------------------ page 24
 
 def compose_partner_exposure(pe: dict, partners: Dict[str, Optional[str]],
@@ -831,6 +865,14 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
                 "footnotes": [f"*Preferred equity balance includes unfunded commitments. Portfolio "
                               f"data is updated through {when}."]}
     im = ims.get_report(as_of, data=data)
+    if key == "pref_by_year":
+        out = compose_pref_by_year(im)
+        first = out["years"][0]["year"] if out["years"] else None
+        return {"key": key, **out,
+                "slide_title": (f"${out['total'] / 1e6:,.0f}mm Total Preferred Equity Invested"
+                                + (f" Since {first}" if first else "")),
+                "footnotes": [f"* Funded or Committed Pref Equity as of {when}. Each deal's pref is in the "
+                              f"year it closed."]}
     if key == "debt":
         out = _portfolio_metrics(as_of, data, im)
         d = out["debt"]
