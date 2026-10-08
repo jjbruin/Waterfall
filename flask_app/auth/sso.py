@@ -107,6 +107,31 @@ def _match_user(email: str) -> tuple[dict | None, str | None]:
     return {"id": r["id"], "username": r["username"], "role": r["role"]}, None
 
 
+#: Where the browser goes after the callback when SSO_REDIRECT_URL is unset or unusable.
+DEFAULT_FRONTEND = "/login"
+
+
+def _frontend_url() -> str:
+    """``SSO_REDIRECT_URL``, but only if a browser can actually go there.
+
+    Allowed: an app path ("/login") or an http(s) address. Anything else is
+    refused, logged, and replaced by ``/login``. WHY (Oct 8 2026): the value was
+    set from Git Bash, whose path conversion silently turned ``/login`` into
+    ``C:/Program Files/Git/login``; every Microsoft sign-in since ``v580`` was
+    redirected there, and Chrome refused it (ERR_UNSAFE_REDIRECT) -- nobody could
+    sign in with Microsoft, and nothing in the app said why.
+    """
+    raw = (os.environ.get("SSO_REDIRECT_URL") or "").strip()
+    if not raw:
+        return DEFAULT_FRONTEND
+    low = raw.lower()
+    if (raw.startswith("/") and not raw.startswith("//")) or low.startswith("https://") or low.startswith("http://"):
+        return raw
+    current_app.logger.error("SSO_REDIRECT_URL %r is not an app path or a web address; using %s",
+                             raw, DEFAULT_FRONTEND)
+    return DEFAULT_FRONTEND
+
+
 # ── SSO Routes ──────────────────────────────────────────────────────
 
 @sso_bp.route("/login", methods=["GET"])
@@ -131,7 +156,7 @@ def sso_callback():
 
         email = userinfo.get("email") or userinfo.get("preferred_username", "")
 
-        frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
+        frontend_url = _frontend_url()
         user, reason = _match_user(email)
         if user is None:
             current_app.logger.info("SSO: sign-in for %r refused (%s)", email, reason)
@@ -145,7 +170,7 @@ def sso_callback():
 
     except Exception as e:
         current_app.logger.error(f"SSO callback error: {e}")
-        frontend_url = os.environ.get("SSO_REDIRECT_URL", "/")
+        frontend_url = _frontend_url()
         return redirect(f"{frontend_url}#sso_error=authentication_failed")
 
 
