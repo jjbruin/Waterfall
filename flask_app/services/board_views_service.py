@@ -21,6 +21,10 @@ already owns, at the schedule's own as-of date (ONE NUMBER, ONE ENGINE):
   |      |                                          |   NOI-weighted, DSCR debt-weighted, dev out  |
   | 28   | Fixed / floating debt, maturities, rates | dashboard_service.get_loan_maturity_data     |
   |      | Rate caps, max interest                  | loan_caps.cap_terms                          |
+  | 5    | 3rd-party AUM and its year-on-year growth| pe_exposure_service at the as-of AND a year  |
+  |      |   by investor                            |   earlier (funded cost; unfunded by group)   |
+  | 5    | Investment activity: new deals, new      | Investment Metrics rows (Current + Sold) by  |
+  |      |   partners, exits                        |   PSC Invest. Date / sale date in the year   |
   | 9    | Pref invested by year, new + cumulative  | Investment Metrics' PSC pref per deal (Current|
   |      |                                          |   + Sold), in its PSC Invest. Date's year    |
   | 24   | The same, by operating partner           | as p. 23, grouped by deals.Operating_Partner |
@@ -53,7 +57,7 @@ THIRD_PARTY = ("TIAA", "KOC", "Clarion", "F&F", "Declaration", "Ambassadors")
 GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Clarion": "Clarion",
                 "F&F": "Friends & Family", "Declaration": "Declaration", "Ambassadors": "Ambassadors"}
 
-VIEW_KEYS = ("pref_by_year", "exposure_asset_class", "exposure_partner", "capitalization", "performance", "debt",
+VIEW_KEYS = ("year_in_review", "pref_by_year", "exposure_asset_class", "exposure_partner", "capitalization", "performance", "debt",
              "investment_summaries")
 
 # ------------------------------------------------------------------ the deck's layout
@@ -619,6 +623,124 @@ def compose_debt(loans: List[dict], as_of: date) -> dict:
     }
 
 
+# ------------------------------------------------------------------ page 5
+
+def _year_label(as_of: date) -> str:
+    return str(as_of.year) if (as_of.month, as_of.day) == (12, 31) else f"Year to {_short_date(as_of.isoformat())}"
+
+
+def _m(v: float) -> str:
+    return f"${v / 1e6:,.1f}M"
+
+
+def compose_year_in_review(pe_now: dict, pe_prior: dict, im: dict, as_of: date, prior: date,
+                           losses_now: Optional[Dict[tuple, float]] = None,
+                           losses_prior: Optional[Dict[tuple, float]] = None,
+                           names: Optional[Dict[str, str]] = None) -> dict:
+    """Page 5's figures: 3rd-party AUM and its growth, and the year's investment activity.
+
+    AUM is the PE exposure engine's FUNDED cost by investor group (the tracker's
+    "Current AUM"), at the as-of and at the same date a year earlier; unfunded
+    commitments are stated beside it, never added in. The year's activity is
+    Investment Metrics' own rows -- every deal it carries, Current and Sold --
+    whose PSC Invest. Date (new deals, new partners) or sale date (exits) falls in
+    the twelve months to the as-of. The sentences are written here, once; the
+    numbers in them are the engines'.
+
+    Exits are listed by name, every one. A loss is NOT inferred from the row (its
+    "proceeds to date" exclude returned capital, so proceeds below pref says
+    nothing about a loss); the realized losses BOOKED in the year are their own
+    line, from ``pe_exposure_service.noncash_by_holding`` -- accounting's write-offs
+    -- at the as-of less a year earlier, by investment.
+    """
+    notes: List[str] = []
+    now_g = (pe_now.get("totals") or {}).get("cost_by_group") or {}
+    prev_g = (pe_prior.get("totals") or {}).get("cost_by_group") or {}
+    unf = (pe_now.get("totals") or {}).get("future_by_group") or {}
+    third_now = sum(now_g.get(g) or 0.0 for g in THIRD_PARTY)
+    third_prev = sum(prev_g.get(g) or 0.0 for g in THIRD_PARTY)
+
+    def growth(now, prev):
+        if not prev:
+            return ""
+        d = now - prev
+        return f", a YoY {'increase' if d >= 0 else 'decrease'} of {_m(abs(d))} ({d / prev:+.0%})"
+
+    aum = [f"Total 3rd party AUM is {_m(third_now)}{growth(third_now, third_prev)}"]
+    for g in sorted(THIRD_PARTY, key=lambda g: -(now_g.get(g) or 0.0)):
+        v = now_g.get(g) or 0.0
+        if v < 0.5:
+            continue
+        u = unf.get(g) or 0.0
+        aum.append(f"{GROUP_LABELS[g]} AUM is {_m(v)}" + (f" (excluding {_m(u)} unfunded)" if u >= 50_000 else "")
+                   + growth(v, prev_g.get(g) or 0.0))
+
+    lo, hi = prior, as_of
+    rows = [(t, r) for t in ("current", "sold") for r in (im.get(t) or {}).get("rows") or []]
+
+    def d(x):
+        try:
+            return date.fromisoformat(str(x)[:10]) if x else None
+        except ValueError:
+            return None
+
+    new = [r for _, r in rows if d(r.get("invest_date")) and lo < d(r.get("invest_date")) <= hi]
+    new_pref = sum((r.get("pref") or 0.0) for r in new) * 1e6
+    activity = []
+    if new:
+        activity.append(f"{_m(new_pref)} of Preferred Equity invested in {len(new)} new deal{'s' if len(new) != 1 else ''}")
+    # A NEW partner is one whose first deal Investment Metrics carries closed in the year.
+    first_by_partner: Dict[str, date] = {}
+    for _, r in rows:
+        nm, when = partner_name(r.get("partner")), d(r.get("invest_date"))
+        if when and nm != NO_PARTNER and (nm not in first_by_partner or when < first_by_partner[nm]):
+            first_by_partner[nm] = when
+    new_partners = sorted(n for n, w in first_by_partner.items() if lo < w <= hi)
+    if new_partners:
+        funded = sum((r.get("pref") or 0.0) for r in new if partner_name(r.get("partner")) in new_partners) * 1e6
+        who = " & ".join(new_partners) if len(new_partners) <= 2 else ", ".join(new_partners[:-1]) + " & " + new_partners[-1]
+        activity.append(f"Added {len(new_partners)} new operating partner{'s' if len(new_partners) != 1 else ''}, "
+                        f"{who}, funding {_m(funded)} preferred equity")
+    exits = [r for t, r in rows if t == "sold" and d(r.get("sale_date")) and lo < d(r.get("sale_date")) <= hi]
+    if exits:
+        activity.append(f"Exited {len(exits)} investment{'s' if len(exits) != 1 else ''} ("
+                        + ", ".join(r["name"] for r in sorted(exits, key=lambda r: r.get("sale_date") or "")) + ")")
+    # Realized losses booked in the year: accounting's write-offs, by investment.
+    year_loss: Dict[str, float] = {}
+    for (inv_id, _holder), v in (losses_now or {}).items():
+        year_loss[inv_id] = year_loss.get(inv_id, 0.0) + v
+    for (inv_id, _holder), v in (losses_prior or {}).items():
+        year_loss[inv_id] = year_loss.get(inv_id, 0.0) - v
+    # The DEAL's own investment only: accounting books the same write-off again at
+    # each fund up the chain (City West at PPICW, INVCW, TGACW...), so counting every
+    # investment id would count one loss three or four times.
+    deal_ids = set(names or {})
+    booked = sorted(((k, -v) for k, v in year_loss.items() if v <= -0.5 and k in deal_ids),
+                    key=lambda kv: -kv[1])
+    if booked:
+        activity.append("Realized losses booked in the year: "
+                        + ", ".join(f"{(names or {}).get(k, k)} {_m(v)}" for k, v in booked))
+    if not activity:
+        notes.append("No deal closed or sold in the year in Investment Metrics.")
+    missing = [r.get("name") for _, r in rows if not r.get("invest_date")]
+    if missing:
+        notes.append("No PSC invest date in Investment Metrics, so in no year: " + ", ".join(missing))
+    return {
+        "year": _year_label(as_of),
+        "sections": [{"heading": "3rd Party AUM Growth", "bullets": aum},
+                     {"heading": "Investment Activity", "bullets": activity}],
+        "figures": {"third_party_now": third_now, "third_party_prior": third_prev,
+                    "by_group_now": {g: now_g.get(g) for g in THIRD_PARTY},
+                    "by_group_prior": {g: prev_g.get(g) for g in THIRD_PARTY},
+                    "unfunded_by_group": {g: unf.get(g) for g in THIRD_PARTY},
+                    "new_deals": [r.get("name") for r in new], "new_pref": new_pref,
+                    "new_partners": new_partners, "exits": [r.get("name") for r in exits],
+                    "losses_booked": {k: v for k, v in booked}},
+        "prior_as_of": prior.isoformat(),
+        "notes": notes,
+    }
+
+
 # ------------------------------------------------------------------ page 9
 
 def compose_pref_by_year(im: dict) -> dict:
@@ -865,6 +987,23 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
                 "footnotes": [f"*Preferred equity balance includes unfunded commitments. Portfolio "
                               f"data is updated through {when}."]}
     im = ims.get_report(as_of, data=data)
+    if key == "year_in_review":
+        prior = _add_years(as_of, -1)
+        from flask_app.db import get_engine
+        db = engine or get_engine()
+        names = {}
+        inv = data.get("inv")
+        if inv is not None and "InvestmentID" in inv.columns:
+            for i, nm in zip(inv["InvestmentID"], inv["Investment_Name"]):
+                if i is not None and i == i:
+                    names.setdefault(pe_svc._norm(i), str(nm))
+        out = compose_year_in_review(pe_svc.get_report(as_of, data=data, engine=engine),
+                                     pe_svc.get_report(prior, data=data, engine=engine), im, as_of, prior,
+                                     pe_svc.noncash_by_holding(db, as_of)["realized_loss"],
+                                     pe_svc.noncash_by_holding(db, prior)["realized_loss"], names)
+        return {"key": key, **out, "slide_title": f"{out['year']} In Review",
+                "footnotes": [f"3rd party AUM is funded net preferred equity at {when}, against "
+                              f"{_short_date(prior.isoformat())}; activity is the twelve months to {when}."]}
     if key == "pref_by_year":
         out = compose_pref_by_year(im)
         first = out["years"][0]["year"] if out["years"] else None

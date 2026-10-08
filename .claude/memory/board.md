@@ -237,6 +237,22 @@ disclosures on every page.
 - Guardrails: `board_package_check` 28, `board_access_check` 217 (the five new routes, every role),
   `board_views_check` 101. All `board_*` tables are now PROTECTED.
 
+## p.5 year in review (Oct 8 2026; branch `feat/board-p5-year-in-review`)
+Two computed sections, then (FULL only) the editors' Year in review text and attachments, paginated as
+ONE section -- the narrative is absorbed (`ABSORBS` in BoardDeck), not printed twice.
+- 3rd Party AUM Growth: PE exposure FUNDED cost by group at the as-of vs the same date a year earlier;
+  unfunded stated beside, never added. Two PE builds -> ~90 s cold on production.
+- Investment Activity: Investment Metrics rows (Current + Sold) -- new deals by PSC Invest. Date in
+  (prior, as-of]; a NEW partner's first deal in the year (deck short names, so spellings merge); exits by
+  sale date; realized losses booked in the year from `noncash_by_holding` at the DEAL's own investment
+  (the same write-off is booked again at each upstream fund -- PPICW, INVCW, TGACW -- never sum those).
+  A loss is NOT inferred from proceeds < pref: IM proceeds exclude returned capital (Adirondack).
+- Production 12/31/25 vs deck: 3rd party 519.7 / +112.5 (+28%) vs 519.6 / +114.6 (+28%) -- prior-year
+  407.2 vs 405.0; TIAA 383.6 excl. 45.7 unfunded EXACT, YoY +90.9 vs +92.8; KoC 82.5 exact; 7 new deals
+  $108.9M vs $109.2M; Burton & Kempner $35.6M vs $35.7M; exits 4 (deck lists City West separately as
+  "lost to foreclosure; $5.2M" -- accounting's booked write-off is $5.9M; Adirondack $2.4M).
+- Organization, Compliance, TIAA's 2026 allocation, fund raises, anticipated exits: the editors' text.
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

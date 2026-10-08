@@ -125,6 +125,9 @@ function notesFor(sl: any): { footnotes: string[]; disclosure: string } {
 
 // ---------------------------------------------------------------- the package
 const fontsReady = ref(0)
+//: A schedule whose page is figures followed by a narrative: page 5's figures, then the
+//: editors' Year in review text (Full only), paginated together as one section.
+const ABSORBS: Record<string, string> = { year_in_review: 'year_in_review' }
 interface Slide { id: string; kind: string; title: string; noteKey: string; section: string; part?: string
   roman?: string; sched?: any; spec?: any; blocks?: any[]; showNotes?: boolean }
 
@@ -133,7 +136,11 @@ const sections = computed(() => {
   const byKey: Record<string, any> = Object.fromEntries(parts.map((p: any) => [p.key, p]))
   for (const s of views.value) byKey[s.part]?.items.push({ kind: 'sched', s, page: firstPage(s.pages) })
   if (version.value === 'full') {
+    // A narrative whose schedule carries it (page 5's text runs on under its figures)
+    // is not a section of its own.
+    const absorbed = new Set(views.value.filter((s: any) => ABSORBS[s.key]).map((s: any) => ABSORBS[s.key]))
     for (const n of props.meeting.narratives || []) {
+      if (absorbed.has(n.key)) continue
       if ((n.body || '').trim() || (n.attachments || []).length) byKey[n.part]?.items.push({ kind: 'narr', n, page: firstPage(n.pages) })
     }
   }
@@ -154,7 +161,19 @@ const slides = computed<Slide[]>(() => {
       if (it.kind === 'sched') {
         const s = it.s
         const v = viewOf(s)
-        if (s.key === 'investment_summaries' && v?.deck) {
+        if (ABSORBS[s.key] && v?.sections) {
+          const narr = (props.meeting.narratives || []).find((n: any) => n.key === ABSORBS[s.key])
+          const blocks = [
+            ...v.sections.flatMap((sec: any) => [{ type: 'h', text: sec.heading },
+              ...(sec.bullets.length ? [{ type: 'ul', items: sec.bullets }] : [])]),
+            ...(version.value === 'full' && narr ? [...parseBody(narr.body || ''), ...attachmentBlocks(narr.attachments || [])] : []),
+          ]
+          const n = notesFor({ sched: s, noteKey: s.key, kind: s.key })
+          const pages = paginate(blocks as any, measureNotes(n.footnotes, n.disclosure))
+          pages.forEach((b, i) => out.push({ id: `${s.key}:${i}`, kind: 'narrative',
+            title: i === 0 ? v.slide_title : `${v.slide_title} (cont\u2019d)`, noteKey: s.key, section: s.key,
+            part: p.key, sched: s, blocks: b, showNotes: i === pages.length - 1 }))
+        } else if (s.key === 'investment_summaries' && v?.deck) {
           v.deck.slides.forEach((spec: any, i: number) => out.push({ id: `${s.key}:${i}`, kind: s.key,
             title: spec.title.replace(/\*$/, ''), noteKey: `${s.key}:${i}`, section: s.key, part: p.key, sched: s, spec }))
         } else {
