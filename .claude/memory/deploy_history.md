@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v607** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v608** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v607 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v608 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,19 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v608` = `b88165e` (SNAPSHOT LOAN: AT CLOSE RATIOS FOR NEW DEALS; GIANT 7 LABEL AND RETIREMENT GUARD.
+    Oct 8 2026, Charlene. Branch `fix/giant7-debt-yield-basis` (02a4280, c294df8, b88165e on
+    e895603), NOT merged to main at deploy. (1) A non-dev, unsold deal with debt, acquired within 12
+    months of the quarter end and with no complete quarter of actual NOI since acquisition, shows
+    DSCR = One Pager noi.at_close / 12 months of valuation_debt_service.monthly_schedule, Debt Yield
+    = that / debt, LTV = debt / Acquisition_Price where no valuation. NOT deals.Close_Rev/Close_Exp
+    (investment_map.csv, after reserves). Portfolio-wide only Presidential Arms changes: 3.81x / - / -
+    -> 1.14x / 70.6% / 6.2% at 26Q2 and 26Q3; TIAA 26Q2 totals 1.79x / 63.1% / 10.5%. (2) Giant 7's
+    Debt Yield basis names the 2026 budget. (3) The stand-in never fires on a sold row, and
+    projected_ye_fallback_retirement_check.py in the pre-commit hook fails once Giant 7 is SOLD
+    until it leaves PROJECTED_YE_NOI_FALLBACK and joins KEEP_DESPITE_SOLD. Local checks green on the
+    rebased tree; LIVE NOT YET VERIFIED (token expired) -- verify, then replace this note. Known
+    divergence: Board p.28 DSCR reads One Pager ytd_actual directly, not the Snapshot row.)
   - `v607` = `97c0263` (SOLD TOTAL REALIZED IRR IS THE POOLED XIRR, AND REPORTS COUNTS EACH
     INVESTMENT ONCE. Charlene Oct 8 2026. TWO DEFECTS, ONE NUMBER. (1) Investment Metrics' Sold Total
     realized IRR was a pref-weighted AVERAGE of the deals' IRRs; Reports > Sold Portfolio's "Portfolio

@@ -167,6 +167,28 @@ MSG
     fi
 fi
 
+# ── Giant 7's stand-in retires the moment Giant 7 is sold ──────────────────
+# Charlene, Oct 8 2026: PROJECTED_YE_NOI_FALLBACK stays a vcode list until Giant
+# 7 sells; then the entry is deleted and the deal joins KEEP_DESPITE_SOLD, or it
+# silently vanishes from the Snapshot. Every commit, against the local
+# waterfall.db (a fresh pull is what reveals the sale). About a second; prints
+# SKIP, never blocks, when there is no database.
+PY=.venv/Scripts/python.exe
+[ -x "$PY" ] || PY=.venv/bin/python
+if [ -x "$PY" ]; then
+    if ! "$PY" scripts/projected_ye_fallback_retirement_check.py >/tmp/ye_fallback_retire.out 2>&1; then
+        cat /tmp/ye_fallback_retire.out
+        cat <<'MSG'
+
+Giant 7 is marked SOLD. Retire its stand-in before committing: delete it from
+PROJECTED_YE_NOI_FALLBACK (portfolio_snapshot_loan.py) and add P0000019 to
+KEEP_DESPITE_SOLD (portfolio_snapshot_service.py) -- and if its Sale_Date is the
+stale 3/31/2026, have it corrected first.
+MSG
+        exit 1
+    fi
+fi
+
 # ── CLAUDE.md stays a rule book, not an archive ─────────────────────────────
 # It is loaded into EVERY session, so every line is paid for whether or not the
 # work needs it. It reached 4,133 lines before Oct 5 2026 -- 2,790 of them a

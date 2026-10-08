@@ -360,7 +360,97 @@ MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
 #: The DSCR side reuses the One Pager's own ``dscr.actual_ye``, which is already
 #: "Projected YE NOI over debt service" — the same ratio the author asked for,
 #: rather than a second opinion about what Giant 7's debt service is.
+#:
+#: RETIREMENT (Charlene, Oct 8 2026). Kept as a list on purpose: Giant 7 is the
+#: only deal still owned, about to be sold, and without recent financials. When
+#: it is marked SOLD this entry is DELETED and P0000019 is added to
+#: portfolio_snapshot_service.KEEP_DESPITE_SOLD, so it renders as a sold deal
+#: (Debt n/a, Loan ratios dashed, capital read at the last held quarter) like
+#: East Manchester. Enforced, not remembered:
+#: scripts/projected_ye_fallback_retirement_check.py runs in the pre-commit hook
+#: and fails while a listed deal is SOLD, while a sold Giant 7 is missing from
+#: KEEP_DESPITE_SOLD, or while its Sale_Date is earlier than the 26Q2 report it
+#: was still held in (MRI carried a stale 3/31/2026).
 PROJECTED_YE_NOI_FALLBACK: frozenset = frozenset({"P0000019"})   # Giant 7
+
+#: The Debt Yield basis every row reports unless the fallback above fired.
+DY_BASIS_QUARTER = "single-quarter Interim IS NOI x 4 / debt"
+
+# ══════════════════════════════════════════════════════════════════════════
+# AT CLOSE — a new deal's ratios until its first complete quarter of actuals
+# ══════════════════════════════════════════════════════════════════════════
+#: Charlene, Oct 8 2026. A deal that has not yet had ONE complete calendar
+#: quarter of actual NOI — from its acquisition quarter through the report
+#: quarter — shows its Loan ratios AT CLOSE, then actuals from the first
+#: complete quarter on:
+#:
+#:   YTD DSCR    NOI at close / the first 12 months of modeled debt service
+#:   Debt Yield  NOI at close / quarter-end debt
+#:   LTV         quarter-end debt / purchase price, ONLY where no valuation exists
+#:
+#: WHY: the first statements of a new deal are partial and can mismatch — for
+#: Presidential Arms (closed 5/13/2026) the 6/30 statement carries ~49 days of
+#: NOI against ~21 days of booked interest, so YTD DSCR read 3.81x.
+#:
+#: ONE NUMBER, ONE ENGINE. NOI at close is the One Pager's `noi.at_close` — the
+#: figure the Operating tab prints as "NOI at close" (MRI Prop_Info_AtClose.sql,
+#: BEFORE replacement reserves). NOT `deals.Close_Rev` / `Close_Exp`: those come
+#: from the hand-kept investment_map.csv, are read by nothing, and run ~$250 a
+#: unit lower (after reserves). Debt service is valuation_debt_service.
+#: monthly_schedule. Purchase price is MRI's Acquisition_Price. A deal with no
+#: at-close NOI keeps its dashes — nothing is guessed onto the page.
+AT_CLOSE_LABEL = "at close — no complete quarter of actuals yet"
+
+#: NEW deals only: acquired within this many months before the report quarter's
+#: end. Measured Oct 8 2026: without it Crowne Plaza (acquired 2021, never an
+#: actuals feed, NOI at close 20,441) qualified and would have printed a ~0x
+#: "at close" DSCR. A deal that old with no actuals is a data gap, not a new
+#: acquisition, and keeps its dashes.
+AT_CLOSE_MAX_MONTHS = 12
+
+
+def _is_recent_acquisition(acquired, quarter: str) -> bool:
+    """True when ``acquired`` falls within AT_CLOSE_MAX_MONTHS of the quarter end."""
+    try:
+        y, q = int(str(quarter)[:4]), int(str(quarter).split("Q")[1])
+    except (ValueError, IndexError):
+        return False
+    q_end = pd.Timestamp(year=y, month=q * 3, day=1) + pd.offsets.MonthEnd(0)
+    return (q_end - pd.DateOffset(months=AT_CLOSE_MAX_MONTHS)
+            < pd.Timestamp(acquired) <= q_end)
+
+
+def _quarters_from(start, quarter: str) -> list:
+    """Every 'YYYY-QN' from the quarter containing ``start`` through ``quarter``."""
+    try:
+        y_end, q_end = int(str(quarter)[:4]), int(str(quarter).split("Q")[1])
+    except (ValueError, IndexError):
+        return []
+    y, q = start.year, (start.month - 1) // 3 + 1
+    out = []
+    while (y, q) <= (y_end, q_end):
+        out.append(f"{y}-Q{q}")
+        y, q = (y + 1, 1) if q == 4 else (y, q + 1)
+    return out
+
+
+def _deal_acquisition(inv: Optional[pd.DataFrame], vcode: str) -> tuple:
+    """(acquisition date, purchase price) from the deals frame, or Nones."""
+    if inv is None or getattr(inv, "empty", True):
+        return None, None
+    col = next((c for c in inv.columns if c.lower() == "vcode"), None)
+    if col is None:
+        return None, None
+    hit = inv[inv[col].astype(str).str.strip().str.upper()
+              == str(vcode).strip().upper()]
+    if hit.empty:
+        return None, None
+    r = hit.iloc[0]
+    acq = pd.to_datetime(r.get("Acquisition_Date"), errors="coerce")
+    price = pd.to_numeric(str(r.get("Acquisition_Price") or "")
+                          .replace(",", "").strip(), errors="coerce")
+    return (None if pd.isna(acq) else acq.date(),
+            None if pd.isna(price) or price <= 0 else float(price))
 
 
 MANUAL_RATIO_SEEDS: dict[str, dict] = {}
@@ -998,7 +1088,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
                   quarterly_noi_provider: Optional[Callable] = None,
                   comment_loader: Optional[Callable] = None,
                   manual_loader: Optional[Callable] = None,
-                  ltv_ceiling: float = LTV_REVIEW_CEILING) -> dict:
+                  ltv_ceiling: float = LTV_REVIEW_CEILING,
+                  atclose_debt_service_provider: Optional[Callable] = None,
+                  ) -> dict:
     """Build the Loan subtab for one investor and quarter."""
     from flask_app.services.portfolio_snapshot_operating import (
         is_dev_deal, resolve_strategy)
@@ -1144,9 +1236,18 @@ def assemble_loan(investor_code: str, quarter: str, *,
         dscr_ytd = None if dev else _num((perf.get("dscr") or {}).get("ytd_actual"))
         if dev:
             diag["dscr_dev"] += 1
-        # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK.
-        _ye_fallback = (str(vcode or "").strip().upper()
-                        in PROJECTED_YE_NOI_FALLBACK)
+        # TEMPORARY, Giant 7 only — see PROJECTED_YE_NOI_FALLBACK. Never on a
+        # sold row: a sold deal's ratios are dashes like every other sold deal,
+        # and the entry is then overdue for retirement (see the note there).
+        _listed = (str(vcode or "").strip().upper()
+                   in PROJECTED_YE_NOI_FALLBACK)
+        _ye_fallback = _listed and not sold
+        if _listed and sold:
+            diag["ye_fallback_retire"] = diag.get("ye_fallback_retire", 0) + 1
+            flags.append(
+                "RETIRE: this deal is sold — delete it from "
+                "PROJECTED_YE_NOI_FALLBACK (scripts/"
+                "projected_ye_fallback_retirement_check.py fails until then)")
         if dscr_ytd is None and _ye_fallback and not dev:
             _ye_dscr = _num((perf.get("dscr") or {}).get("actual_ye"))
             if _ye_dscr is not None:
@@ -1161,6 +1262,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
         q_noi = None if quarterly_noi_provider is None else _num(
             quarterly_noi_provider(vcode, quarter))
         annualised = dy = dy_ytd = None
+        dy_basis = DY_BASIS_QUARTER
         if dev:
             flags.append("ratios shown as 'Dev' — development deal")
             diag["dy_dev_suppressed"] += 1
@@ -1174,10 +1276,17 @@ def assemble_loan(investor_code: str, quarter: str, *,
             annualised = _num((perf.get("noi") or {}).get("actual_ye"))
             dy = annualised / debt
             diag["ye_fallback_dy"] = diag.get("ye_fallback_dy", 0) + 1
+            # Say what Projected YE actually was. With no actuals this year the
+            # One Pager makes it the full-year budget; otherwise YTD actual
+            # plus the rest-of-year budget (one_pager, "Projected YE").
+            _src = (f"the full-year {str(quarter)[:4]} budget, no "
+                    f"{str(quarter)[:4]} actuals" if ytd_noi is None
+                    else "YTD actual + rest-of-year budget")
+            dy_basis = f"Projected YE NOI ({_src}) / debt"
             flags.append(
                 f"TEMPORARY: Debt Yield from Projected YE NOI "
-                f"({annualised:,.0f}) over debt — no complete quarter of "
-                f"actual NOI (deal under PSA)")
+                f"({annualised:,.0f}; {_src}) over debt — no complete "
+                f"quarter of actual NOI (deal under PSA)")
         elif q_noi is None:
             flags.append("Debt Yield n/a — no complete quarter of actual NOI")
             diag["dy_no_ytd"] += 1
@@ -1188,6 +1297,53 @@ def assemble_loan(investor_code: str, quarter: str, *,
             if ytd_noi:
                 # comparison basis only; equals `dy` at Q1
                 dy_ytd = (ytd_noi / n_months * 12) / debt
+
+        # ---- AT CLOSE: until the first complete quarter of actuals ---------
+        # See AT_CLOSE_LABEL. Decided per deal from its own data; never on a
+        # dev, debt-free, sold or debtless row, nor Giant 7's stand-in.
+        at_close_info = None
+        if (not (dev or debt_free or sold or _ye_fallback) and debt
+                and quarterly_noi_provider is not None):
+            acq, price = _deal_acquisition(inv, vcode)
+            quarters = (_quarters_from(acq, quarter)
+                        if acq and _is_recent_acquisition(acq, quarter) else [])
+            in_window = bool(quarters) and all(
+                _num(quarterly_noi_provider(vcode, q)) is None for q in quarters)
+            noi_ac = _num((perf.get("noi") or {}).get("at_close"))
+            if in_window and noi_ac and noi_ac > 0:
+                ds12 = None
+                if atclose_debt_service_provider is not None:
+                    try:
+                        ds12 = _num(atclose_debt_service_provider(vcode, acq))
+                    except Exception as exc:     # a provider must not break a row
+                        flags.append(f"modeled debt service unavailable: "
+                                     f"{str(exc)[:60]}")
+                dscr_actual = dscr_ytd
+                dscr_ytd = (noi_ac / ds12) if ds12 and ds12 > 0 else None
+                annualised, dy, dy_ytd = noi_ac, noi_ac / debt, None
+                dy_basis = f"NOI at close / debt ({AT_CLOSE_LABEL})"
+                ltv_from_price = ltv is None and not val["value"] and price
+                if ltv_from_price:
+                    ltv = debt / price
+                flags[:] = [f for f in flags if f not in (
+                    "Debt Yield n/a — no complete quarter of actual NOI",
+                    "no valuation — LTV unavailable" if ltv_from_price else "")]
+                flags.append(
+                    f"AT CLOSE (acquired {acq:%m/%d/%Y}; {AT_CLOSE_LABEL}): "
+                    f"NOI at close {noi_ac:,.0f} / "
+                    + (f"12 months' modeled debt service {ds12:,.0f}"
+                       if ds12 else "no modeled debt service — DSCR n/a")
+                    + f"; Debt Yield on debt {debt:,.0f}"
+                    + (f"; LTV on purchase price {price:,.0f}"
+                       if ltv_from_price else ""))
+                at_close_info = {
+                    "acquired": acq.isoformat(), "noi_at_close": noi_ac,
+                    "debt_service_12m": ds12, "purchase_price": price,
+                    "ltv_from_price": bool(ltv_from_price),
+                    "ytd_dscr_actual": dscr_actual,
+                    "quarters_without_actuals": quarters,
+                }
+                diag["at_close"] = diag.get("at_close", 0) + 1
 
         comment = comments.get(vcode)
         if comment:
@@ -1252,7 +1408,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
             "debt_yield_display": (NA_DISPLAY if debt_free else
                                    DEV_DISPLAY if dev else dy),
             "debt_yield_ytd_annualised": dy_ytd,
-            "debt_yield_basis": "single-quarter Interim IS NOI x 4 / debt",
+            # What was divided. The single-quarter basis everywhere except the
+            # PROJECTED_YE_NOI_FALLBACK branch, which names its own source.
+            "debt_yield_basis": dy_basis,
             "kept_despite_sold": bool(sold),
             # The SAME field name and the SAME literal the Financial subtab
             # emits, so a sold deal cannot be labelled one way on one page and
@@ -1290,6 +1448,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
         #     so subtotals, totals and guardrails still see the computation;
         #   * the debt-free and dev literals still outrank a typed cell, so
         #     adding a seed to such a deal could not silently un-suppress it.
+        if at_close_info:                     # AT CLOSE rows only
+            row["at_close"] = at_close_info
+
         typed = manual_ratio_fields(vcode)
         if typed:
             diag["manual_deals"] += 1
@@ -1898,8 +2059,10 @@ def _selftest():                                    # pragma: no cover
     chk("a typed LTV leaves the computed figure in the raw field",
         all(r["ltv"] == r.get("ltv_computed")
             for r in flat.values() if r.get("ltv_is_manual")))
-    chk("Debt Yield basis is single-quarter x 4",
-        all(r["debt_yield_basis"].startswith("single-quarter")
+    chk("Debt Yield basis is single-quarter x 4, except where the YE fallback fired",
+        all(r["debt_yield_basis"] == DY_BASIS_QUARTER
+            or (r["vcode"] in PROJECTED_YE_NOI_FALLBACK
+                and r["debt_yield_basis"].startswith("Projected YE NOI"))
             for r in flat.values()))
     chk("at Q1 single-quarter x4 equals YTD-annualised",
         all(r["debt_yield_ytd_annualised"] is None
