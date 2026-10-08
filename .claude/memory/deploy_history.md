@@ -342,6 +342,31 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v606` = `7ce27f1` (PRINT: ONE PAGER FITTED TO ONE PAGE, AND TWO STYLESHEETS THAT
+    RE-PAGED EVERY LATER PRINT. Deployed Oct 8 2026 by Charlene, Jim told first. Build `capk`,
+    2m49s; tag locked; branch `fix/onepager-print-matches-screen` rebased onto `1950ce3`, span
+    from live `a75319a` = `1950ce3` (docs) + three commits. `bfaf44f`: StatementsPrintView's bare
+    `@page { margin: 1in 1in 0.75in }` (99ad158) outlived its route and gave every later print
+    1in margins and Chrome's header/footer -- now the NAMED box `statement-sheet` in App.vue.
+    `1b56d9b`: One Pager print was 12.5-13px type in a column 20% narrower than the screen,
+    fixed height, `overflow: hidden`; 48/61 deals silently dropped comment text (30 Bearfoot 10 of
+    2,033 BP characters). Now the screen layout scaled (W px x 720/W), textareas print through
+    text twins, and the Print button fits each deal to its own page (largest type that fits,
+    8pt floor at 740px; spare space to a 260-320px chart, then section spacing; comments a size
+    up). 61/61 one page, 61/61 every comment complete (116 non-empty fields compared). Plain
+    Ctrl+P skips the fit and prints the screen sheet at 0.75, which also fits 61/61.
+    `7ce27f1`: BoardDeck's GLOBAL print block (v605) -- bare `@page 1100x825` and an ungated
+    `body > *:not(.bd-print) {display:none}` -- made any print after opening Board ONE BLANK
+    slide-sized page. Now named box `board-deck` + `body:has(> .bd-print)` gate; the package's
+    own print is identical (stand-in deck through both builds' real CSS: 3/3 slides 1100x825 --
+    the Board API refuses Charlene's account, so the real deck was NOT printed). Guardrails:
+    NEW `onepager_print_matches_screen_check.py` (fails 23 on 7194275); `print_page_rule_check.py`
+    8/10 on main -> 20/20, new section 4 (ungated body>* hide). Verified on the SERVED bundle
+    (`main-BsFs54EA.js` -> `OnePagerView-C0uSWOPM.js`): Poplar Prairie, 30 Bearfoot, Flats one
+    page, every comment, no browser header, also after loading the Board and Statements CSS.
+    NOT done: the real Board deck print after this change -- someone with Board access should
+    print it once. `.dockerignore` does not exclude `vue_app/.chartcheck/` (380 harness PDFs
+    went up with the build context; the runtime image ships no vue_app source).)
   - `v605` = `a75319a` (BOARD: PAGES 9, 23, 24, 28 AND THE RESULTS PACKAGE. Merge of
     `feat/board-p23-asset-class`: p.23 exposure by asset class, p.24 by operating partner (deck short
     names, spelling variants only), p.28 occupancy / DSCR (One Pager per deal, Snapshot roll-up
