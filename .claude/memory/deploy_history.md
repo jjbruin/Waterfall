@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v608** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v610** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v608 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v610 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,29 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v610` = `d716715` + CONFIG (MICROSOFT SIGN-IN: `SSO_REDIRECT_URL` CORRECTED TO `/login`. Accounting
+    (regolf and two accountants) got ERR_UNSAFE_REDIRECT on `/auth/sso/callback`. The callback redirects
+    to `SSO_REDIRECT_URL`, which held `C:/Program Files/Git/login` on EVERY revision from `v580` (when SSO
+    was switched on) to `v609`: it was set from Git Bash, whose path conversion rewrites an argument that
+    looks like a Unix path. So Microsoft sign-in never worked in production. Fixed by `az containerapp
+    update --set-env-vars "SSO_REDIRECT_URL=/login" --revision-suffix v610` FROM POWERSHELL, same image;
+    P1 re-run first (v609). Verified: a dummy callback now answers `302 /login#sso_error=...`; the sign-in
+    start still goes to login.microsoftonline.com with our callback; regolf, kherrmann, nle and jstewart
+    each have their own email on exactly one account, so they match. The code guard that refuses such a
+    value (`_frontend_url`, `scripts/sso_redirect_check.py`) is on `fix/sso-redirect-guard` (`8af5657`),
+    NOT deployed. **Never set an env var that starts with "/" from Git Bash** -- use PowerShell, or
+    `MSYS_NO_PATHCONV=1`. **Rollback**: none wanted; the old value is the defect.)
+  - `v609` = `d716715` (BOARD PRINT: THE PDF KEEPS THE PAGE'S FILLS. `bfa647b` adds `print-color-adjust:
+    exact` on the package's printed elements -- browsers drop backgrounds unless "Background graphics" is
+    ticked, so Save as PDF lost the green rule, bands, shading, bars and banner. Reproduced and proved by
+    printing the captured package through Edge's DevTools protocol with printBackground off. Merged on top
+    of Charlene's v606 gated Board print rules (`7ce27f1`; the overlap resolved by hand, her rules kept),
+    then her v608 merge (`d716715`) carried it -- deployed after she finished, per Jim. Span vs live
+    `b88165e` (v608): runtime diff exactly the 13 lines of this fix; the rest merges and docs. Build `capp`,
+    Succeeded; tag locked; P1 re-run (v608); Healthy at 100%. board_views_check 102, print_page_rule_check
+    20/20 on the build. SERVED: `BoardView-BUX8p9X9.css` carries `print-color-adjust:exact` and
+    `body:has(>.bd-print)`. **Rollback** FORWARD: `--image acrwaterfalldev.azurecr.io/waterfall-xirr:b88165e
+    --revision-suffix v611`.)
   - `v608` = `b88165e` (SNAPSHOT LOAN: AT CLOSE RATIOS FOR NEW DEALS; GIANT 7 LABEL AND RETIREMENT GUARD.
     Oct 8 2026, Charlene. Branch `fix/giant7-debt-yield-basis` (02a4280, c294df8, b88165e on
     e895603), NOT merged to main at deploy. (1) A non-dev, unsold deal with debt, acquired within 12

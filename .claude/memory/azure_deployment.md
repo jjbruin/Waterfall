@@ -116,3 +116,10 @@ $env:DATABASE_URL = (az containerapp secret show -g rg-waterfall-dev -n app-wate
 - **The Database Tools "Export Database" button is NOT a substitute**: it reads a
   SQLite file, so on Azure it exports the container's empty local file, not
   PostgreSQL. See `open_items.md`.
+
+## Never set an env var that starts with "/" from Git Bash (Oct 8 2026)
+Git Bash's MSYS path conversion rewrites any argument that looks like a Unix path BEFORE `az` sees it:
+`--set-env-vars SSO_REDIRECT_URL=/login` stored `C:/Program Files/Git/login`, and Microsoft sign-in was
+broken from `v580` to `v609` (Chrome: ERR_UNSAFE_REDIRECT). Set such values from PowerShell, or prefix the
+Bash command with `MSYS_NO_PATHCONV=1`, and read the value back from the new revision afterwards:
+`az containerapp revision show ... --query "properties.template.containers[0].env[?name=='X'].value | [0]"`.
