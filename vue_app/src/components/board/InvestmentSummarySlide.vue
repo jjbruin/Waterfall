@@ -10,7 +10,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import BoardSlide from './BoardSlide.vue'
 import { cellText, totalText } from '@/utils/investmentMetricsFormat'
 
-const props = defineProps<{ view: any; slide: any; page: string | number }>()
+const props = defineProps<{ view: any; slide: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 
 const im = computed(() => props.view.investment_metrics)
 const table = computed(() => im.value[props.slide.table])
@@ -63,7 +63,7 @@ watch(() => [props.slide, props.view], fit)
 </script>
 
 <template>
-  <BoardSlide :title="slide.title" :page="page">
+  <BoardSlide :title="slide.title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <div class="head">
       <span class="b">{{ table.title }}</span><span class="units">{{ im.units_note }}</span>
     </div>
@@ -110,12 +110,6 @@ watch(() => [props.slide, props.view], fit)
       </tbody>
     </table>
     </div>
-    <div class="notes">
-      <div class="star">{{ slide.footnote }}</div>
-      <div v-if="slide.is_last" class="fn">
-        <span v-for="f in table.footnotes" :key="f.n">({{ f.n }}) {{ f.text }}&nbsp; </span>
-      </div>
-    </div>
   </BoardSlide>
 </template>
 
@@ -124,7 +118,7 @@ watch(() => [props.slide, props.view], fit)
   font-family: Garamond, 'EB Garamond', 'Times New Roman', serif; font-size: 12px; padding-bottom: 2px; }
 .head .b { font-weight: 700; }
 .head .units { font-style: italic; }
-.fit { position: absolute; left: 0; right: 0; top: 22px; bottom: 66px; overflow: hidden; }
+.fit { position: absolute; left: 0; right: 0; top: 22px; bottom: 0; overflow: hidden; }
 .ims { width: 100%; border-collapse: collapse; color: #000;
   font-family: Garamond, 'EB Garamond', 'Times New Roman', serif; margin-top: 6px; }
 .ims th { font-weight: 400; text-align: center; padding: 0 3px; line-height: 1.15; white-space: nowrap; }
@@ -138,8 +132,4 @@ watch(() => [props.slide, props.view], fit)
 .ims tr.grand td { border-top: none; }
 .ims .vr { border-left: 1px solid #000; }
 .ims .mk { font-size: .8em; }
-.notes { position: absolute; left: 0; right: 0; bottom: 4px; }
-.star { font-size: 13px; font-style: italic; }
-.fn { margin-top: 3px; font-size: 9.5px; color: #333; line-height: 1.3;
-  font-family: Garamond, 'EB Garamond', 'Times New Roman', serif; }
 </style>

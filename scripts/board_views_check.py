@@ -230,8 +230,16 @@ chk("a column the payload no longer carries is REPORTED, not silently dropped",
 print("\n7. The screen turns pages without asking the server again")
 deck_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "BoardDeck.vue"), encoding="utf-8").read()
 gets = [ln.strip() for ln in deck_src.splitlines() if "api.get(" in ln]
-chk("the deck asks the server for one thing only: a schedule's view",
-    len(gets) == 1 and "/schedules/${s.key}/view" in gets[0], gets)
+chk("the deck reads only a schedule's view and an attachment's page images -- no figure is fetched or computed elsewhere",
+    len(gets) == 2 and any("/schedules/${s.key}/view" in g for g in gets)
+    and any("/attachments/${a.id}/pages/${pg.n}" in g for g in gets), gets)
+chk("page numbers are positions in the package (index + 1), and the contents prints the same positions",
+    ':page="index + 1"' in deck_src and ':page="i + 1"' in deck_src
+    and "slides.value.findIndex((s) => s.section === sec) + 1" in deck_src)
+chk("the abbreviated package leaves the narrative sections out; the full one carries them",
+    "if (version.value === 'full') {" in deck_src)
+chk("the printed copy draws pages through the same component as the screen",
+    deck_src.count("<DeckPage") == 2 and 'class="bd-print"' in deck_src)
 chk("...and keeps it, keyed by meeting, schedule AND as-of date (a new date refetches)",
     "`${props.meeting.id}|${s.key}|${s.as_of}`" in deck_src and "CACHE.has(k)" in deck_src)
 slide_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "InvestmentSummarySlide.vue"),

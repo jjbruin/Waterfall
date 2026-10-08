@@ -9,7 +9,7 @@ import { computed } from 'vue'
 import BoardSlide from './BoardSlide.vue'
 import { money, pct } from './slideFormat'
 
-const props = defineProps<{ view: any; page: string | number }>()
+const props = defineProps<{ view: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 
 const m = computed(() => props.view.metrics)
 const fixed = computed(() => props.view.debt.fixed)
@@ -28,7 +28,7 @@ const asOf = computed(() => {
 </script>
 
 <template>
-  <BoardSlide :title="view.slide_title" :page="page">
+  <BoardSlide :title="view.slide_title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <div class="top">
       <table class="met">
         <thead><tr><th class="l units">(as of {{ asOf }})</th><th>Occupancy</th><th>DSCR</th></tr></thead>
@@ -82,7 +82,6 @@ const asOf = computed(() => {
       </div>
     </div>
     <div v-if="view.banner" class="banner">{{ view.banner }}</div>
-    <div class="fnote"><div v-for="(f, i) in view.footnotes" :key="i">{{ f }}</div></div>
   </BoardSlide>
 </template>
 
@@ -125,5 +124,4 @@ const asOf = computed(() => {
 .mxrow .d { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .banner { background: #217346; color: #fff; text-align: center; font-weight: 700; font-size: 16px; padding: 6px;
   margin-top: 4px; }
-.fnote { font-size: 10px; font-style: italic; margin-top: 3px; }
 </style>

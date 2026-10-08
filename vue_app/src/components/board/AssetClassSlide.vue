@@ -8,7 +8,7 @@ import { computed } from 'vue'
 import BoardSlide from './BoardSlide.vue'
 import { money, pct } from './slideFormat'
 
-const props = defineProps<{ view: any; page: string | number }>()
+const props = defineProps<{ view: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 
 // The deck's palette, by class -- one colour per class in the table, both pies and the legend.
 const PALETTE: Record<string, string> = {
@@ -48,7 +48,7 @@ const piePsc = computed(() => slices('psc_share'))
 </script>
 
 <template>
-  <BoardSlide :title="view.slide_title" :page="page">
+  <BoardSlide :title="view.slide_title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <table class="ac">
       <colgroup><col style="width: 40%" /><col style="width: 14%" /><col style="width: 9%" />
         <col style="width: 4%" /><col style="width: 14%" /><col style="width: 9%" /></colgroup>
@@ -75,7 +75,6 @@ const piePsc = computed(() => slices('psc_share'))
         </tr>
       </tbody>
     </table>
-    <div class="fnote"><div v-for="(f, i) in view.footnotes" :key="i">{{ f }}</div></div>
 
     <div class="pies">
       <figure v-for="pie in [{ t: 'Preferred Net Equity', s: pieTotal }, { t: 'PSC Net', s: piePsc }]" :key="pie.t">
@@ -112,8 +111,7 @@ const piePsc = computed(() => slices('psc_share'))
 .ac tr.tot td { border-top: 2px solid #000; font-weight: 700; }
 .ac tr.tot td.gapc { border-top: none; }
 .ac tbody tr:first-child td { padding-top: 10px; }
-.fnote { width: 620px; margin: 4px auto 0; font-size: 11px; font-style: italic; }
-.pies { display: flex; justify-content: center; gap: 90px; margin-top: 18px; }
+.pies { display: flex; justify-content: center; gap: 90px; margin-top: 26px; }
 figure { margin: 0; text-align: center; }
 figcaption { font-size: 18px; text-decoration: underline; margin-bottom: 2px; }
 text.in { font-size: 15px; font-weight: 700; fill: #fff; }

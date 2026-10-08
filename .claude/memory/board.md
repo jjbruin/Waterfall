@@ -211,6 +211,32 @@ deal to -- MRI vs deck: Brainerd / Crowne ("Bertram and DiMarco", "Bertram/Pyram
 "MFP"); and Pegasus 44.9 vs 12.5, JPI 99.9 vs 109.2, PMAT 6.1 vs 32.7, LBX PSC 5.5 vs 11.8 --
 redistribution, since the grand total ties. Not mapped; AM's call.
 
+## The package (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Jim asked for: page numbers that match what prints; a FULL and an ABBREVIATED package; attachments in
+narrative sections; narratives that run onto more pages at natural breaks; and editable footnotes and
+disclosures on every page.
+- **Structure** (`BoardDeck.vue`): cover, table of contents, then each PART (`board_service.PARTS`,
+  the January deck's I-V; every schedule and narrative names its `part`) -- a divider page, then its
+  pages in catalog order. ABBREVIATED = schedules with a view; FULL adds narratives with text or
+  attachments. A part with nothing in it is not printed.
+- **Page numbers are positions** (index + 1) after pagination; the contents prints the same numbers.
+- **Narratives** (`narrative.ts`): text syntax -- blank line = paragraph, "-" lines = bullets, "## " =
+  sub-heading; attachments follow the text. Blocks are MEASURED in a hidden copy of the page body
+  (global `bd-narr` styles) and packed; a paragraph breaks at a sentence end, a list between items; the
+  last page keeps room for the section's footnotes; continuation pages titled "(cont'd)".
+- **Attachments** (`board_package_service`): images, or PDFs rendered to one PNG per page at 150 dpi
+  (PyMuPDF), max 30 pages / 25 MB; type by the file's BYTES; unreadable files refused with the reason.
+  Tables `board_attachments`, `board_attachment_pages`.
+- **Footnotes / disclosures**: drawn by the frame (`BoardSlide`) on every page. Defaults come with the
+  view; `board_page_notes` row per (meeting, page key) -- `footnotes` NULL = defaults, a list REPLACES
+  them, [] = none; reset deletes the row. Editor panel under the page, live preview. Narrative notes show
+  on the section's last page.
+- **Print / PDF**: every page drawn at 1100 x 825 by the same `DeckPage` component, `@page` sized to the
+  canvas; the button waits for all figures and images.
+- Logo: the official file (`brand.md`).
+- Guardrails: `board_package_check` 28, `board_access_check` 217 (the five new routes, every role),
+  `board_views_check` 101. All `board_*` tables are now PROTECTED.
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

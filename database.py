@@ -1684,6 +1684,11 @@ PROTECTED_TABLES = {'ownership_overrides', 'ownership_override_lines', 'market_r
                     # The cell phone reimbursement: the CFO's rates, who is paid,
                     # and the ledger of months paid -- losing it would pay twice.
                     'er_phone_rates', 'er_phone_eligibility', 'er_phone_paid',
+                    # The Board package: meetings, their schedule dates, the
+                    # narrative text, each page's footnotes and disclosure, and
+                    # the attachments -- app-written, and the only copy.
+                    'board_meetings', 'board_meeting_schedules', 'board_narratives',
+                    'board_page_notes', 'board_attachments', 'board_attachment_pages',
                     # The analysts' reading of each tenant's exclusives and
                     # co-tenancy -- app-written, and the only copy of it.
                     'lease_clause_reviews',

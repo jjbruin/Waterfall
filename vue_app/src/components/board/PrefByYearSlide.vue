@@ -7,7 +7,7 @@
 import { computed } from 'vue'
 import BoardSlide from './BoardSlide.vue'
 
-const props = defineProps<{ view: any; page: string | number }>()
+const props = defineProps<{ view: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 
 const W = 820, H = 470, L = 80, B = 40, T = 70
 const years = computed<any[]>(() => props.view.years || [])
@@ -28,9 +28,9 @@ const m = (v: number) => '$' + Math.round(v / 1e6).toLocaleString('en-US')
 </script>
 
 <template>
-  <BoardSlide :title="view.slide_title" :page="page">
+  <BoardSlide :title="view.slide_title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <div class="frame">
-      <svg :viewBox="`0 0 ${W} ${H + 30}`" width="100%">
+      <svg :viewBox="`0 0 ${W} ${H + 30}`" width="100%" height="100%">
         <text :x="W / 2" y="26" text-anchor="middle" class="ttl">New &amp; Cumulative</text>
         <text :x="W / 2" y="50" text-anchor="middle" class="ttl">Preferred Equity Investments ($M)</text>
         <g v-for="t in ticks" :key="t">
@@ -56,12 +56,11 @@ const m = (v: number) => '$' + Math.round(v / 1e6).toLocaleString('en-US')
         </g>
       </svg>
     </div>
-    <div class="fnote"><div v-for="(f, i) in view.footnotes" :key="i">{{ f }}</div></div>
   </BoardSlide>
 </template>
 
 <style scoped>
-.frame { margin: 0 auto; width: 900px; border: 1px solid #d9d9d9; padding: 6px 10px; }
+.frame { margin: 0 auto; width: 900px; height: 100%; box-sizing: border-box; border: 1px solid #d9d9d9; padding: 6px 10px; }
 .ttl { font-family: 'Times New Roman', serif; font-weight: 700; font-size: 19px; }
 .grid { stroke: #d9d9d9; stroke-width: 1; }
 .ax { font-family: 'Times New Roman', serif; font-size: 14px; }
@@ -71,5 +70,4 @@ const m = (v: number) => '$' + Math.round(v / 1e6).toLocaleString('en-US')
 .new { fill: #00b050; }
 .lbl { font-family: 'Times New Roman', serif; font-size: 13px; font-weight: 700; }
 .lbl.w { fill: #fff; }
-.fnote { position: absolute; left: 0; bottom: 4px; font-size: 12px; font-style: italic; }
 </style>

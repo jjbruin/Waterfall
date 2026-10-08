@@ -9,7 +9,7 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import BoardSlide from './BoardSlide.vue'
 import { money, pct } from './slideFormat'
 
-const props = defineProps<{ view: any; page: string | number }>()
+const props = defineProps<{ view: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 
 const BASE = 15
 const fontPx = ref(BASE)
@@ -28,7 +28,7 @@ watch(() => props.view, fit)
 </script>
 
 <template>
-  <BoardSlide :title="view.slide_title" :page="page">
+  <BoardSlide :title="view.slide_title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <div ref="wrap" class="fit">
       <table ref="tbl" class="pt" :style="{ fontSize: fontPx + 'px' }">
         <colgroup><col style="width: 25%" /><col style="width: 10%" /><col style="width: 12%" />
@@ -55,12 +55,11 @@ watch(() => props.view, fit)
         </tbody>
       </table>
     </div>
-    <div class="fnote"><div v-for="(f, i) in view.footnotes" :key="i">{{ f }}</div></div>
   </BoardSlide>
 </template>
 
 <style scoped>
-.fit { position: absolute; left: 90px; right: 90px; top: 0; bottom: 34px; overflow: hidden; }
+.fit { position: absolute; left: 90px; right: 90px; top: 0; bottom: 0; overflow: hidden; }
 .pt { width: 100%; border-collapse: collapse; color: #000; border: 1.5px solid #000; }
 .pt th { background: #d9e1f2; font-weight: 700; padding: 3px 6px; text-align: center; vertical-align: bottom;
   border-bottom: 1.5px solid #000; line-height: 1.15; }
@@ -72,5 +71,4 @@ watch(() => props.view, fit)
 .pt .bl { border-left: 1.5px solid #000; }
 .pt tr.alt td { background: #f2f2f2; }
 .pt tr.tot td { background: #b4c6e7; font-weight: 700; border-top: 1.5px solid #000; padding: 4px 8px; }
-.fnote { position: absolute; left: 90px; bottom: 6px; font-size: 11px; font-style: italic; }
 </style>
