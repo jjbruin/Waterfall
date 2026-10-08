@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v605** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v607** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v605 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v607 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,60 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v607` = `97c0263` (SOLD TOTAL REALIZED IRR IS THE POOLED XIRR, AND REPORTS COUNTS EACH
+    INVESTMENT ONCE. Charlene Oct 8 2026. TWO DEFECTS, ONE NUMBER. (1) Investment Metrics' Sold Total
+    realized IRR was a pref-weighted AVERAGE of the deals' IRRs; Reports > Sold Portfolio's "Portfolio
+    Total" is ONE XIRR over all the deals' pooled cash flows, and so is the reference workbook's Sold
+    Total (18.2254% at 6/30/26, a typed constant equal to the pooled XIRR of its 26 deals to six
+    decimals). The methods differ by about 2 points: 20.15% against 18.14% on the same 23 deals at
+    26Q2. `investment_metrics.pooled_realized_irr` now builds the Total from the same per-deal flows
+    `realized_irr` uses (split out as `realized_flows`, per-deal figure unchanged), pooled across every
+    Sold-table row including City West and Adirondack, whose own cells stay dashes: footnote (2) says
+    the foreclosure is "included in IRR calculations". (2) Reports listed Donald Lynch TWICE: it is
+    MCCORD on P0000049 and on its twin P0000073, both SOLD, and both matched the same 117 accounting
+    rows (every date, amount and investor identical), so its $2.45M and $5.18M were counted twice and
+    the Portfolio Total read 18.2540%. `sold_service.get_sold_deals` keeps one row per InvestmentID,
+    preferring the row that carries the property; rows with no InvestmentID are never collapsed.
+    Not a symptom repair: one general rule each, the trigger is the thing itself (the method; a shared
+    InvestmentID), and the population was measured (27 sold rows, 26 distinct InvestmentIDs; only
+    MCCORD repeats). VERIFIED ON v607 WITH LIVE DATA: Investment Metrics 26Q2 Sold Total 18.1381% over
+    23 deals (was 20.15%); Reports 26 deals, Donald Lynch once (P0000049), Portfolio Total 18.2254%,
+    contributions $180,481,042, distributions $313,910,304: exactly the reference's figure. Per-deal
+    IRRs unchanged on both screens. NOT EQUAL TO EACH OTHER, ON PURPOSE: Investment Metrics pools its
+    23 deals, Reports pools 26, because 30 Bearfoot, Clima Secur and Donald Lynch sold after 6/30 and
+    sit in Current at 26Q2 (v585 rule) while Reports takes every deal marked sold. Their final realized
+    IRRs (28.17%, 15.29%, 20.97%) tie the reference to 4 decimals. Span vs live `7ce27f1`: `93a8283`,
+    `66ecdd9` (docs and the merge of v606's own branch) and this. Build `capm`, 2m42s, Succeeded; tag
+    locked; Healthy at 100% traffic. Guardrails: `investment_metrics_check.py` section 25 (7 checks;
+    re-injecting the average fails 2) and `scripts/sold_portfolio_dedupe_check.py` (9 checks; fails 6
+    without the fix, passes inside the v607 container). 247 Investment Metrics checks pass; one_engine
+    28, board_views 101. **Rollback** is FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:7ce27f1 --revision-suffix v608`.)
+  - `v606` = `7ce27f1` (PRINT: ONE PAGER FITTED TO ONE PAGE, AND TWO STYLESHEETS THAT
+    RE-PAGED EVERY LATER PRINT. Deployed Oct 8 2026 by Charlene, Jim told first. Build `capk`,
+    2m49s; tag locked; branch `fix/onepager-print-matches-screen` rebased onto `1950ce3`, span
+    from live `a75319a` = `1950ce3` (docs) + three commits. `bfaf44f`: StatementsPrintView's bare
+    `@page { margin: 1in 1in 0.75in }` (99ad158) outlived its route and gave every later print
+    1in margins and Chrome's header/footer -- now the NAMED box `statement-sheet` in App.vue.
+    `1b56d9b`: One Pager print was 12.5-13px type in a column 20% narrower than the screen,
+    fixed height, `overflow: hidden`; 48/61 deals silently dropped comment text (30 Bearfoot 10 of
+    2,033 BP characters). Now the screen layout scaled (W px x 720/W), textareas print through
+    text twins, and the Print button fits each deal to its own page (largest type that fits,
+    8pt floor at 740px; spare space to a 260-320px chart, then section spacing; comments a size
+    up). 61/61 one page, 61/61 every comment complete (116 non-empty fields compared). Plain
+    Ctrl+P skips the fit and prints the screen sheet at 0.75, which also fits 61/61.
+    `7ce27f1`: BoardDeck's GLOBAL print block (v605) -- bare `@page 1100x825` and an ungated
+    `body > *:not(.bd-print) {display:none}` -- made any print after opening Board ONE BLANK
+    slide-sized page. Now named box `board-deck` + `body:has(> .bd-print)` gate; the package's
+    own print is identical (stand-in deck through both builds' real CSS: 3/3 slides 1100x825 --
+    the Board API refuses Charlene's account, so the real deck was NOT printed). Guardrails:
+    NEW `onepager_print_matches_screen_check.py` (fails 23 on 7194275); `print_page_rule_check.py`
+    8/10 on main -> 20/20, new section 4 (ungated body>* hide). Verified on the SERVED bundle
+    (`main-BsFs54EA.js` -> `OnePagerView-C0uSWOPM.js`): Poplar Prairie, 30 Bearfoot, Flats one
+    page, every comment, no browser header, also after loading the Board and Statements CSS.
+    NOT done: the real Board deck print after this change -- someone with Board access should
+    print it once. `.dockerignore` does not exclude `vue_app/.chartcheck/` (380 harness PDFs
+    went up with the build context; the runtime image ships no vue_app source).)
   - `v605` = `a75319a` (BOARD: PAGES 9, 23, 24, 28 AND THE RESULTS PACKAGE. Merge of
     `feat/board-p23-asset-class`: p.23 exposure by asset class, p.24 by operating partner (deck short
     names, spelling variants only), p.28 occupancy / DSCR (One Pager per deal, Snapshot roll-up

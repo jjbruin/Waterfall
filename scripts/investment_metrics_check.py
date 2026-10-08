@@ -1625,6 +1625,37 @@ def main():
         "terms_from_twin" not in dd and "terms_twin_conflict" not in dd,
         f"got {[k for k in dd if k.startswith('terms_')]}")
 
+    # ── 25. Sold Total realized IRR is POOLED, as Reports > Sold Portfolio does ──
+    section("25. Sold Total realized IRR (pooled XIRR, not an average; both ways)")
+    from metrics import xirr as _xirr
+    o25 = build(as_of=dt.date(2026, 9, 30))               # BETA (sold 2024) and MCX (sold 9/4/2026) are both Sold
+    sold25 = o25["sold"]["rows"]
+    chk("two deals are in the Sold table at 9/30/26",
+        {r["vcode"] for r in sold25} >= {"P0000002", "P0000006"},
+        f"got {[r['vcode'] for r in sold25]}")
+    beta_flows = [(dt.date(2017, 1, 5), -1_000_000.0), (dt.date(2019, 1, 5), 120_000.0), (dt.date(2024, 6, 1), 1_400_000.0)]
+    mcx_flows = [(dt.date(2021, 6, 30), -2_500_000.0), (dt.date(2026, 9, 4), 5_200_000.0)]
+    pooled = _xirr(beta_flows + mcx_flows)
+    tot25 = o25["sold"]["total"]["realized_irr"]
+    chk("the total is ONE XIRR over the deals' pooled PSC flows",
+        tot25 is not None and abs(tot25 - pooled) < 1e-9, f"total {tot25} vs pooled {pooled}")
+    irrs = {r["vcode"]: r["realized_irr"] for r in sold25}
+    avg_simple = (irrs["P0000002"] + irrs["P0000006"]) / 2
+    chk("...and NOT the simple average of the two deals' IRRs (they differ here)",
+        abs(pooled - avg_simple) > 1e-3 and abs(tot25 - avg_simple) > 1e-3,
+        f"pooled {pooled:.5f}, average {avg_simple:.5f}")
+    pw = im.pref_weighted_average(sold25, "realized_irr")
+    chk("...and NOT the pref-weighted average the Total used to be",
+        pw is None or abs(tot25 - pw) > 1e-3, f"total {tot25:.5f}, pref-weighted {pw}")
+    chk("each deal's own IRR is unchanged by this (BETA still its own XIRR)",
+        abs(irrs["P0000002"] - _xirr(beta_flows)) < 1e-9)
+    chk("the pooling is named in diagnostics with the number of deals",
+        o25["diagnostics"].get("sold_total_realized_irr", {}).get("deals") == len(sold25),
+        f"got {o25['diagnostics'].get('sold_total_realized_irr')}")
+    # one table does not change the other: Current has no realized IRR total
+    chk("the Current table's Total carries no realized IRR",
+        o25["current"]["total"].get("realized_irr") in (None, 0, 0.0))
+
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAILURES:
         print("failed:")

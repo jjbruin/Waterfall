@@ -1803,4 +1803,19 @@ def get_sold_deals(inv: pd.DataFrame) -> pd.DataFrame:
         )
         inv_sold = inv_sold[~is_child].copy()
 
+    # ONE INVESTMENT, ONE ROW. A sold investment can sit on two SOLD vcodes that
+    # share an InvestmentID: Donald Lynch is MCCORD on P0000049 (the property)
+    # and on its twin P0000073 (Property_Count 0). Both match the same 117
+    # accounting rows, every date and amount identical, so the report listed the
+    # investment twice and "Portfolio Total" counted its $2.45M and $5.18M twice
+    # (IRR 18.2540% against 18.2254% with it once, which is the reference's
+    # figure). Keep the row that carries the property; the others add nothing.
+    if "InvestmentID" in inv_sold.columns and len(inv_sold) > 1:
+        pc = pd.to_numeric(inv_sold.get("Property_Count"), errors="coerce").fillna(0)
+        ordered = inv_sold.assign(_pc=pc).sort_values("_pc", ascending=False, kind="stable")
+        iid = ordered["InvestmentID"].fillna("").astype(str).str.strip()
+        has_id = (iid != "") & (iid.str.lower() != "nan")
+        keep = ~(has_id & iid.str.upper().duplicated(keep="first"))
+        inv_sold = ordered[keep].drop(columns="_pc").loc[lambda d: d.index.sort_values()]
+
     return inv_sold

@@ -176,11 +176,34 @@ body {
     margin: 0;
   }
 
+  /* Financial statements, at the reference's own margins. The one named box
+     with a margin: a statement can run onto a second physical page, and only
+     a page margin (not container padding) repeats on every page. Opt-in by
+     `page: statement-sheet` (StatementsPrintView), so it cannot reach any
+     other view's print. */
+  @page statement-sheet {
+    size: letter portrait;
+    margin: 1in 1in 0.75in 1in;
+  }
+
+  /* The Board package: one slide per sheet, at the slide's own size. Opt-in
+     by `page: board-deck` (BoardDeck's .bd-page). */
+  @page board-deck {
+    size: 1100px 825px;
+    margin: 0;
+  }
+
   .sidebar {
     display: none !important;
   }
   .app-header {
     display: none !important;
+  }
+  /* Paper is white. The app's grey canvas (--color-bg) otherwise prints into
+     the margins and below a short sheet, because views force
+     print-color-adjust: exact so their own shading survives. */
+  html, body, .app-layout, .main-content, .page-content {
+    background: #fff !important;
   }
   .main-content {
     margin-left: 0 !important;

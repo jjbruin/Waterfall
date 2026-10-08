@@ -455,17 +455,23 @@ const reviewNotes = computed<string[]>(() => (current.value?.sched ? viewOf(curr
    tables that size their type can measure themselves; alone on the page when printed. */
 @media screen { .bd-print { position: fixed; left: -40000px; top: 0; } }
 @media print {
-  @page { size: 1100px 825px; margin: 0; }
+  /* This block is global and outlives the route: Vite leaves a lazy chunk's
+     stylesheet in the document after navigating away. So nothing here may
+     act unless the package is actually on the page. The slide size is the
+     NAMED page box `board-deck` in App.vue (a bare @page here re-sized every
+     later print in the session), and the hide rule is gated on .bd-print
+     being present (ungated, every later print came out blank). */
+  body:has(> .bd-print) > *:not(.bd-print) { display: none !important; }
   /* The fills ARE the formatting -- the green rule, banded rows, header shading,
      the bars, the banner. Browsers drop backgrounds when printing unless the
      dialog's "Background graphics" is ticked (it is not, by default); this makes
      them print regardless. Measured Oct 8 2026: without it, Save as PDF lost all
-     of them. */
+     of them. Scoped to the package's own elements, so it cannot leak into
+     another screen's print. */
   .bd-print, .bd-print * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-  body > *:not(.bd-print) { display: none !important; }
   html, body { background: #fff !important; }
   .bd-print { position: static; }
-  .bd-print .bd-page { width: 1100px; height: 825px; overflow: hidden; break-after: page; page-break-after: always; }
+  .bd-print .bd-page { page: board-deck; width: 1100px; height: 825px; overflow: hidden; break-after: page; page-break-after: always; }
   .bd-print .bd-page:last-child { break-after: auto; page-break-after: auto; }
 }
 </style>
