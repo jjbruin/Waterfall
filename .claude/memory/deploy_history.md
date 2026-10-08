@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v612** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v613** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v612 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v613 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,19 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v613` = `7b93298` (SHAREPOINT PICKER: A FILE WITH NO DOWNLOAD LINK IS STILL READ. Merge of
+    `fix/sharepoint-download-fallback` (`daaca11`). Jim: picking `investment_map.csv` (saved that day) in
+    Data Explorer failed "SharePoint did not provide a download link." Graph omits
+    `@microsoft.graph.downloadUrl` for a file checked out, still uploading / syncing, or label-restricted.
+    `download()` now falls back to Graph's `/drives/{d}/items/{i}/content` with the read-only token (sent
+    only to graph.microsoft.com), and otherwise names the reason (checked out from `publication.level`,
+    still uploading, locked 423, or wait / close / Choose Files). Not a symptom repair. Span vs live
+    `925c3fc` (v612): this + the v612 docs. Jim pushed main. Build `caps`, Succeeded; tag locked; P1 re-run
+    (v612); deployed from PowerShell; Healthy at 100%; `SSO_REDIRECT_URL` read back `/login`. SERVED:
+    `main-DptRmrvW.js` carries the /content fallback and the reasons; the old message is gone. NOT YET
+    VERIFIED against the real file (needs Jim's SharePoint sign-in). Guardrails: sharepoint_picker 39 -> 44
+    (2 injections), sso_redirect 10, board_views 113, section_access 274. **Rollback** FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:925c3fc --revision-suffix v614` (keep SSO_REDIRECT_URL).)
   - `v612` = `925c3fc` (BOARD P.5: THE YEAR IN REVIEW. Merge of `feat/board-p5-year-in-review` (`02eb864`):
     3rd-party AUM growth (PE exposure funded cost at the as-of and a year earlier) and the year's investment
     activity (Investment Metrics rows; realized losses from `noncash_by_holding` at the deal's own
