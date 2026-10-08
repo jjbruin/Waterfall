@@ -19,13 +19,20 @@ own file input uses. What must stay true:
      function the screen's own file input feeds, so a SharePoint file is
      imported exactly as a dragged-in one -- never through a second importer.
 
-Usage: python scripts/sharepoint_picker_check.py [--inject=scope|token|entry|fork|open|popup]
+Usage: python scripts/sharepoint_picker_check.py [--inject=scope|token|entry|fork|open|popup|nofallback|leak]
   popup -- the sign-in popup opened from token(), after awaits (blocked by browsers)
   scope -- a write scope requested
   token -- the service posts to our API
   entry -- the return page dropped from the build
   fork  -- a host's picker wired to a different function than its input
   open  -- the config route without login_required
+  nofallback -- a file with no download link fails instead of reading /content
+  leak  -- the fallback sends the token somewhere other than Graph
+
+  6. A FILE GRAPH GIVES NO DOWNLOAD LINK FOR (checked out, still syncing, or
+     labelled -- Oct 8 2026, investment_map.csv) is read through Graph's /content
+     with the read-only token, and only from graph.microsoft.com; failing that, the
+     user is told why in words they can act on.
 """
 import os
 import re
@@ -112,6 +119,24 @@ def static_checks():
     chk("the dialog offers the button rather than opening a window itself",
         '@click="doSignIn"' in pick and "Sign in with Microsoft" in pick
         and "sp.ready" in pick)
+
+    print("6. A file with no download link is still read, from Graph only")
+    if INJECT == "nofallback":
+        svc = svc.replace("  } else {\n    if (!meta.file) throw new Error(whyNoDownload(item.name, meta))",
+                          "  } else {\n    throw new Error(`${item.name}: SharePoint did not provide a download link.`)")
+    if INJECT == "leak":
+        svc = svc.replace("fetch(`${GRAPH}/drives/${item.driveId}/items/${item.id}/content`",
+                          "fetch(`https://example.com/drives/${item.driveId}/items/${item.id}/content`")
+    dl = svc.split("export async function download(", 1)[1].split("\n}\n", 1)[0]
+    chk("no download link -> the file is read through Graph's /content",
+        "/content`" in dl and "else {" in dl and "did not provide a download link" not in dl)
+    authed = re.findall(r"fetch\((`[^`]*`|[A-Za-z_.]+)\s*,\s*\{\s*headers:\s*\{\s*Authorization", dl)
+    chk("the token is sent ONLY to Graph", authed and all(a.startswith("`${GRAPH}") for a in authed), authed)
+    chk("the pre-authenticated link is fetched WITHOUT the token", "const r = await fetch(url)\n" in dl)
+    chk("checked out / still uploading / locked each get a plain reason",
+        all(w in svc for w in ("is checked out in SharePoint", "is still uploading", "is locked")))
+    chk("the item is asked for its publication state, so 'checked out' can be said",
+        "publication,@microsoft.graph.downloadUrl" in dl)
 
     print("4. The popup return page is built and bridges")
     vite = read("vite.config.ts")
