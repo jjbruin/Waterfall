@@ -15,6 +15,12 @@ already owns, at the schedule's own as-of date (ONE NUMBER, ONE ENGINE):
   | 27   | Combined CoC                             | investment_metrics.pref_weighted_average --  |
   |      |                                          |   the engine's own Total / Average rule      |
   | 29-31| The investment summaries                 | Investment Metrics, the payload the tab shows|
+  | 28   | Occupancy, DSCR by asset class           | one_pager.get_property_performance per deal  |
+  |      |                                          |   (YTD economic occupancy, YTD DSCR), rolled |
+  |      |                                          |   up by the Snapshot's own rules: occupancy  |
+  |      |                                          |   NOI-weighted, DSCR debt-weighted, dev out  |
+  | 28   | Fixed / floating debt, maturities, rates | dashboard_service.get_loan_maturity_data     |
+  |      | Rate caps, max interest                  | loan_caps.cap_terms                          |
   | 23   | Net pref incl. unfunded by asset class,  | pe_exposure_service: funded Cost + remaining |
   |      |   total and PSC                          |   to fund per deal, PSC by its split; the    |
   |      |                                          |   class is MRI's deals.Asset_Type, grouped   |
@@ -43,7 +49,8 @@ THIRD_PARTY = ("TIAA", "KOC", "Clarion", "F&F", "Declaration", "Ambassadors")
 GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Clarion": "Clarion",
                 "F&F": "Friends & Family", "Declaration": "Declaration", "Ambassadors": "Ambassadors"}
 
-VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "investment_summaries")
+VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "debt",
+             "investment_summaries")
 
 # ------------------------------------------------------------------ the deck's layout
 #
@@ -54,7 +61,8 @@ VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "investmen
 #: The deck's slide titles (Jan 2026 deck, pp. 26-27).
 SLIDE_TITLES = {"exposure_asset_class": "Exposure: Asset Class",
                 "capitalization": "Current Portfolio Capitalization",
-                "performance": "Performance: Portfolio Level"}
+                "performance": "Performance: Portfolio Level",
+                "debt": "Portfolio Metrics"}
 
 #: The deck's asset classes (p. 23), in its order, from MRI's ``deals.Asset_Type``.
 #: A GROUPING, not a figure. The Portfolio Snapshot has its own rollup
@@ -406,6 +414,169 @@ def compose_asset_class(pe: dict, asset_types: Dict[str, Optional[str]]) -> dict
     }
 
 
+# ------------------------------------------------------------------ page 28
+
+#: p. 28's rows: the p. 23 classes, with "Other" shown by its own MRI type (the
+#: deck prints RV Park and Industrial separately here).
+def metrics_class(asset_type) -> str:
+    cls = asset_class(asset_type)
+    if cls == "Other":
+        return str(asset_type).strip()
+    return cls
+
+
+#: Fixed-rate maturity buckets, years from the as-of to maturity (deck p. 28).
+MATURITY_BUCKETS = (("0-3", 3.0), ("4-6", 6.0), ("6+", None))
+#: The deck's split of capped floating debt: index capped at or below 2.5%, or above.
+CAP_SPLIT = 0.025
+
+
+def compose_metrics_by_class(deal_rows: List[dict]) -> dict:
+    """Occupancy and DSCR by class, and for the portfolio, by the SNAPSHOT'S rules.
+
+    ``deal_rows``: {vcode, name, cls, is_dev, occ, noi, dscr, debt} per deal held.
+    Occupancy is NOI-weighted (``portfolio_snapshot_operating._weighted``), DSCR
+    debt-weighted (``portfolio_snapshot_loan._debt_weighted``) -- the functions
+    themselves, so the two pages cannot weigh differently. Development deals are
+    out, as on the Snapshot, and named.
+    """
+    from flask_app.services.portfolio_snapshot_loan import _debt_weighted
+    from flask_app.services.portfolio_snapshot_operating import _weighted
+
+    def shaped(rows):
+        return ([{"econ_occ": {"ytd_actual": r["occ"]}, "noi_display": {"ytd_actual": r["noi"]}} for r in rows],
+                [{"ytd_dscr": r["dscr"], "debt": r["debt"]} for r in rows])
+
+    live = [r for r in deal_rows if not r["is_dev"]]
+    order = [c for c in ("Multifamily", "Grocery-Anchored Retail", "Non-Grocery Retail", "Self Storage")]
+    order += sorted({r["cls"] for r in live} - set(order))
+    out = []
+    for c in order:
+        rows = [r for r in live if r["cls"] == c]
+        if not rows:
+            continue
+        o_rows, d_rows = shaped(rows)
+        out.append({"label": c, "occupancy": _weighted(o_rows, "ytd_actual", "ytd_actual"),
+                    "dscr": _debt_weighted(d_rows, "ytd_dscr"), "deals": sorted(r["name"] for r in rows)})
+    o_rows, d_rows = shaped(live)
+    portfolio = {"label": "Portfolio", "occupancy": _weighted(o_rows, "ytd_actual", "ytd_actual"),
+                 "dscr": _debt_weighted(d_rows, "ytd_dscr")}
+    notes = []
+    dev = sorted(r["name"] for r in deal_rows if r["is_dev"])
+    if dev:
+        notes.append("Development deals are left out of occupancy and DSCR, as on the Portfolio Snapshot: "
+                     + ", ".join(dev))
+    no_occ = sorted(r["name"] for r in live if r["occ"] is None or not r["noi"])
+    if no_occ:
+        notes.append("No YTD occupancy reading or NOI to weight it, so not in occupancy: " + ", ".join(no_occ))
+    no_dscr = sorted(r["name"] for r in live if r["dscr"] is None or not r["debt"])
+    if no_dscr:
+        notes.append("No YTD DSCR or no debt to weight it, so not in DSCR: " + ", ".join(no_dscr))
+    return {"rows": out, "portfolio": portfolio, "notes": notes}
+
+
+def _add_years(d: date, n: int) -> date:
+    """The same calendar day n years on; 29 Feb falls back to 28 Feb."""
+    try:
+        return d.replace(year=d.year + n)
+    except ValueError:
+        return d.replace(year=d.year + n, day=28)
+
+
+def compose_debt(loans: List[dict], as_of: date) -> dict:
+    """Fixed debt by years to maturity and floating debt by cap, from per-loan rows.
+
+    ``loans``: the Dashboard maturity engine's detail rows (amount = original
+    facility, rate_type, rate, maturity), each with its deal, and -- for floating
+    loans -- the loan's index, spread and ``loan_caps.cap_terms``. Amounts are the
+    facility (``mOrigLoanAmt``), unfunded development debt included, and averages
+    are weighted by it, as the Dashboard's maturity chart weights them.
+    """
+    notes: List[str] = []
+    fixed = [l for l in loans if l["rate_type"] == "Fixed"]
+    floating = [l for l in loans if l["rate_type"] != "Fixed"]
+    total_debt = sum(l["amount"] for l in loans)
+
+    def wavg(rows):
+        w = sum(l["amount"] for l in rows if l.get("rate") is not None)
+        return (sum(l["rate"] * l["amount"] for l in rows if l.get("rate") is not None) / w) if w else None
+
+    # Years counted on the CALENDAR: a loan maturing exactly three years after the
+    # as-of is in 0-3. (Days / 365.25 put 12/31/28 from 12/31/25 at 3.0007 -- a
+    # leap day pushed it into 4-6.)
+    buckets = []
+    for label, upper in MATURITY_BUCKETS:
+        lower = buckets and MATURITY_BUCKETS[len(buckets) - 1][1]
+        rows = []
+        for l in fixed:
+            m = date.fromisoformat(l["maturity"])
+            within_upper = upper is None or m <= _add_years(as_of, int(upper))
+            above_lower = not lower or m > _add_years(as_of, int(lower))
+            if within_upper and above_lower:
+                rows.append(l)
+        buckets.append({"label": label, "amount": sum(l["amount"] for l in rows), "avg_rate": wavg(rows),
+                        "loans": len(rows)})
+    matured = [l for l in fixed if date.fromisoformat(l["maturity"]) < as_of]
+    if matured:
+        notes.append("Fixed loans past maturity at the as-of, counted in 0-3: "
+                     + ", ".join(f"{l['deal_name']} ({l['maturity']})" for l in matured))
+    no_rate = [l for l in fixed if l.get("rate") is None]
+    if no_rate:
+        notes.append("Fixed loans with no rate in MRI, left out of the average rate: "
+                     + ", ".join(l["deal_name"] for l in no_rate))
+
+    groups = {"none": [], "low": [], "high": [], "unknown": []}
+    for l in floating:
+        cap = l.get("cap") or {}
+        if cap.get("capped") is None:
+            groups["unknown"].append(l)
+        elif not cap.get("capped"):
+            groups["none"].append(l)
+        else:
+            groups["low" if cap["strike"] <= CAP_SPLIT + 1e-9 else "high"].append(l)
+    labels = {"none": "No Cap (incl. unfunded dev. debt)", "low": "Index Capped at <=2.5% + Spread",
+              "high": "Index Capped at >2.5% + Spread", "unknown": "Cap terms not readable"}
+    float_rows = []
+    for k in ("none", "low", "high", "unknown"):
+        rows = groups[k]
+        if not rows and k == "unknown":
+            continue
+        float_rows.append({"key": k, "label": labels[k], "amount": sum(l["amount"] for l in rows),
+                           "share": (sum(l["amount"] for l in rows) / total_debt) if total_debt else None,
+                           "index": ", ".join(sorted({str(l.get("index") or "") for l in rows} - {""})),
+                           "deals": [l["deal_name"] for l in rows]})
+    float_total = sum(l["amount"] for l in floating)
+    exposure = []
+    for l in sorted(floating, key=lambda x: x["deal_name"].lower()):
+        cap = l.get("cap") or {}
+        mat = date.fromisoformat(l["maturity"])
+        through = cap.get("expiry") or f"{mat.month}/{mat.strftime('%y')}"
+        idx, spr = (l.get("index") or "Index"), l.get("spread")
+        if cap.get("capped") and cap.get("max_rate") is not None:
+            line = f"{cap['strike']:.2%} + {spr:.2%} = {cap['max_rate']:.2%}, through {through}"
+        elif cap.get("capped") is False:
+            line = (f"{idx} + {spr:.2%} uncapped, through {through}" if spr is not None
+                    else f"{idx}, spread not in MRI, uncapped, through {through}")
+        else:
+            line = f"cap terms: \"{cap.get('text') or 'hedge recorded, no terms'}\""
+        exposure.append({"deal": l["deal_name"], "index": l.get("index"), "spread": spr,
+                         "capped": cap.get("capped"), "strike": cap.get("strike"), "max_rate": cap.get("max_rate"),
+                         "expiry": cap.get("expiry"), "maturity": l["maturity"], "text": cap.get("text"),
+                         "line": line})
+        if cap.get("problem"):
+            notes.append(f"{l['deal_name']}: {cap['problem']}" + (f" -- \"{cap['text']}\"" if cap.get("text") else ""))
+    capped_or_fixed = sum(l["amount"] for l in fixed) + sum(l["amount"] for l in groups["low"] + groups["high"])
+    return {
+        "fixed": {"total": sum(l["amount"] for l in fixed), "avg_rate": wavg(fixed), "buckets": buckets},
+        "floating": {"rows": float_rows, "total": float_total,
+                     "share": (float_total / total_debt) if total_debt else None},
+        "exposure": exposure,
+        "total_debt": total_debt,
+        "fixed_or_capped_share": (capped_or_fixed / total_debt) if total_debt else None,
+        "notes": notes,
+    }
+
+
 # ------------------------------------------------------------------ the views
 
 def _asset_types(inv) -> Dict[str, Optional[str]]:
@@ -413,6 +584,96 @@ def _asset_types(inv) -> Dict[str, Optional[str]]:
         return {}
     return {str(v).strip().upper(): (None if t is None or t != t else str(t))
             for v, t in zip(inv["vcode"], inv["Asset_Type"])}
+
+
+def _quarter_of(d: date) -> str:
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+
+
+def _portfolio_metrics(as_of: date, data: dict, im: dict) -> dict:
+    """Page 28 at ``as_of``: the deals Investment Metrics holds, through the engines named above."""
+    import pandas as pd
+    from config import is_dev_deal
+    from consolidation import build_property_map
+    from one_pager import _child_vcodes_for_parent
+    from flask_app.services import dashboard_service, loan_caps
+    from flask_app.services.portfolio_snapshot_debt import committed_facility, deal_loan_rows, resolve_debt
+    from flask_app.services.portfolio_snapshot_freeze import _one_pager_provider
+
+    inv = data["inv"]
+    by_v = {str(v).strip().upper(): r for v, (_, r) in zip(inv["vcode"], inv.iterrows())}
+    quarter = _quarter_of(as_of)
+    provider = _one_pager_provider(data)
+    loans_raw = data.get("mri_loans_raw")
+    held = (im.get("current") or {}).get("rows") or []
+
+    deal_rows, deal_of = [], {}
+    prop_map = build_property_map(inv)
+    for r in held:
+        v = r["vcode"]
+        for t in (r.get("twin_vcodes") or [v]):
+            deal_of[t] = (v, r["name"])
+            for child in prop_map.get(t, []):
+                deal_of[str(child).strip().upper()] = (v, r["name"])
+        row = by_v.get(v)
+        strategy = ""
+        if row is not None:
+            strategy = str(row.get("Investment_Strategy") or "").strip() or str(row.get("Lifecycle") or "").strip()
+        dev = is_dev_deal(strategy)
+        payload = provider(v, quarter)
+        perf = payload.get("property_performance") or {}
+        committed = committed_facility(deal_loan_rows(loans_raw, v, _child_vcodes_for_parent(v, inv)))
+        debt, _ = resolve_debt(payload.get("cap_stack"), dev, committed)
+        deal_rows.append({
+            "vcode": v, "name": r["name"], "is_dev": dev,
+            "cls": metrics_class(row.get("Asset_Type") if row is not None else None),
+            "occ": ((perf.get("economic_occ") or {}).get("ytd_actual")),
+            "noi": ((perf.get("noi") or {}).get("ytd_actual")),
+            "dscr": ((perf.get("dscr") or {}).get("ytd_actual")),
+            "debt": debt,
+        })
+    metrics = compose_metrics_by_class(deal_rows)
+    # One Pager occupancy is in percentage points (92.2); the page speaks decimals.
+    for x in metrics["rows"] + [metrics["portfolio"]]:
+        if x["occupancy"] is not None:
+            x["occupancy"] = x["occupancy"] / 100.0
+
+    population = pd.DataFrame({"vcode": [r["vcode"] for r in held]})
+    maturity = dashboard_service.get_loan_maturity_data(loans_raw, population, inv)
+    terms = {}
+    if loans_raw is not None and "LoanID" in loans_raw.columns:
+        for _, lr in loans_raw.iterrows():
+            terms[str(lr.get("LoanID"))] = lr
+    loans = []
+    for d in maturity["detail"]:
+        lr = terms.get(d["loan_id"])
+        vc = str(lr.get("vCode")).strip().upper() if lr is not None else ""
+        deal_v, deal_name = deal_of.get(vc, (vc, d["property"]))
+        rate = d.get("rate")
+        loan = {**d, "deal": deal_v, "deal_name": deal_name,
+                "rate": (rate / 100.0 if rate and rate >= 1 else rate) or None}
+        if d["rate_type"] != "Fixed" and lr is not None:
+            mat = date.fromisoformat(d["maturity"]) if d.get("maturity") else None
+            loan["index"] = None if pd.isna(lr.get("vIndex")) else str(lr.get("vIndex"))
+            loan["spread"] = loan_caps._rate(lr.get("vSpread"))
+            loan["cap"] = loan_caps.cap_terms(lr.get("vIntRatereset"), lr.get("vHedged"), lr.get("vHedgedStrat"),
+                                              lr.get("vSpread"), f"{mat.month}/{mat.strftime('%y')}" if mat else None)
+        loans.append(loan)
+    debt = compose_debt(loans, as_of)
+    notes = metrics["notes"] + debt["notes"] + [
+        "Loans are as MRI holds them today: a loan repaid since the as-of is not shown, and one originated "
+        "after it is.",
+        "Loans with no rate type in MRI are counted as fixed, as the Dashboard's maturity chart counts them.",
+    ]
+    if quarter and as_of != _quarter_end(as_of):
+        notes.append(f"Occupancy and DSCR are year-to-date at the end of {quarter}.")
+    return {"metrics": metrics, "debt": debt, "notes": notes, "quarter": quarter}
+
+
+def _quarter_end(d: date) -> date:
+    m = ((d.month - 1) // 3 + 1) * 3
+    nxt = date(d.year + (m == 12), 1 if m == 12 else m + 1, 1)
+    return date.fromordinal(nxt.toordinal() - 1)
 
 
 def _property_counts(inv) -> Dict[str, Optional[int]]:
@@ -446,6 +707,16 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
                 "footnotes": [f"*Preferred equity balance includes unfunded commitments. Portfolio "
                               f"data is updated through {when}."]}
     im = ims.get_report(as_of, data=data)
+    if key == "debt":
+        out = _portfolio_metrics(as_of, data, im)
+        d = out["debt"]
+        fl, cap = d["floating"]["share"], d["fixed_or_capped_share"]
+        return {"key": key, "slide_title": SLIDE_TITLES[key], **out,
+                "banner": (None if fl is None or cap is None else
+                           f"Floating rate debt is {fl:.0%} of total debt; {cap:.0%} of all debt is fixed or capped"),
+                "footnotes": [f"Occupancy and DSCR: year-to-date through {when}, development deals excluded. "
+                              f"Debt at facility amount, unfunded development debt included; maturity "
+                              f"buckets are years from {when} to maturity."]}
     if key == "investment_summaries":
         layout = deck_layout(im)
         notes = [f"The deck layout names a column Investment Metrics does not carry: {m}"

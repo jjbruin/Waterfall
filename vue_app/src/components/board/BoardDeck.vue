@@ -23,6 +23,7 @@ import CapitalizationSlide from './CapitalizationSlide.vue'
 import PerformanceSlide from './PerformanceSlide.vue'
 import InvestmentSummarySlide from './InvestmentSummarySlide.vue'
 import NarrativeSlide from './NarrativeSlide.vue'
+import PortfolioMetricsSlide from './PortfolioMetricsSlide.vue'
 import { firstPage } from './slideFormat'
 
 const props = defineProps<{ meeting: any }>()
@@ -203,6 +204,7 @@ const notes = computed<string[]>(() => currentView.value?.notes || [])
               <AssetClassSlide v-if="current.kind === 'exposure_asset_class'" :view="currentView" :page="current.label" />
               <CapitalizationSlide v-else-if="current.kind === 'capitalization'" :view="currentView" :page="current.label" />
               <PerformanceSlide v-else-if="current.kind === 'performance'" :view="currentView" :page="current.label" />
+              <PortfolioMetricsSlide v-else-if="current.kind === 'debt'" :view="currentView" :page="current.label" />
               <InvestmentSummarySlide v-else-if="current.kind === 'investment_summaries'" :view="currentView"
                                       :slide="current.spec" :page="current.label" />
             </template>

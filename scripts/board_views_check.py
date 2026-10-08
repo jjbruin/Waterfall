@@ -279,6 +279,77 @@ chk("p.23 is on the catalog and in the deck's view keys",
     "exposure_asset_class" in bv.VIEW_KEYS
     and "exposure_asset_class" in {s_["key"] for s_ in board_service.SCHEDULES if s_.get("view")})
 
+print("\n9. Page 28: occupancy and DSCR by the Snapshot's rules; debt from the loan engines")
+from datetime import date as _d  # noqa: E402
+DR = [
+    {"vcode": "A", "name": "MF one", "is_dev": False, "cls": "Multifamily", "occ": 90.0, "noi": 3.0, "dscr": 1.2, "debt": 10.0},
+    {"vcode": "B", "name": "MF two", "is_dev": False, "cls": "Multifamily", "occ": 80.0, "noi": 1.0, "dscr": 2.0, "debt": 30.0},
+    {"vcode": "C", "name": "MF dev", "is_dev": True, "cls": "Multifamily", "occ": 10.0, "noi": 9.0, "dscr": 0.1, "debt": 99.0},
+    {"vcode": "D", "name": "Store", "is_dev": False, "cls": "Self Storage", "occ": None, "noi": None, "dscr": None, "debt": 5.0},
+    {"vcode": "E", "name": "Camp", "is_dev": False, "cls": "RV Park", "occ": 50.0, "noi": 2.0, "dscr": 0.8, "debt": 4.0},
+]
+mc = bv.compose_metrics_by_class(DR)
+mrow = {r["label"]: r for r in mc["rows"]}
+chk("occupancy is NOI-weighted, the Snapshot's rule: (90x3 + 80x1) / 4 = 87.5",
+    abs(mrow["Multifamily"]["occupancy"] - 87.5) < 1e-9, mrow["Multifamily"])
+chk("DSCR is debt-weighted, the Snapshot's rule: (1.2x10 + 2.0x30) / 40 = 1.8",
+    abs(mrow["Multifamily"]["dscr"] - 1.8) < 1e-9)
+chk("a development deal is in neither average, and is named", "MF dev" not in mrow["Multifamily"]["deals"]
+    and any("Development deals" in n and "MF dev" in n for n in mc["notes"]))
+chk("a deal with no reading is left out and named, not counted as 0",
+    mrow["Self Storage"]["occupancy"] is None and any("Store" in n and "not in occupancy" in n for n in mc["notes"]))
+chk("the portfolio row is the same rule over every operating deal",
+    abs(mc["portfolio"]["occupancy"] - (90 * 3 + 80 + 50 * 2) / 6) < 1e-9)
+src9 = open(os.path.join(ROOT, "flask_app", "services", "board_views_service.py"), encoding="utf-8").read()
+chk("the averages ARE the Snapshot's functions, not a copy",
+    "from flask_app.services.portfolio_snapshot_loan import _debt_weighted" in src9
+    and "from flask_app.services.portfolio_snapshot_operating import _weighted" in src9)
+chk("...and the loans come from the Dashboard's maturity engine, the caps from loan_caps",
+    "dashboard_service.get_loan_maturity_data(" in src9 and "loan_caps.cap_terms(" in src9)
+
+AS = _d(2025, 12, 31)
+
+
+def L(name, amt, rt, mat, rate=None, cap=None, index="SOFR", spread=0.03):
+    return {"deal_name": name, "amount": amt, "rate_type": rt, "maturity": mat, "rate": rate,
+            "index": index, "spread": spread, "cap": cap}
+
+
+LO = [
+    L("F3", 100.0, "Fixed", "2028-12-30", 0.05),          # 3.0 years less a day -> 0-3
+    L("F3b", 100.0, "Fixed", "2028-12-31", 0.03),         # exactly three years -> 0-3
+    L("F4", 200.0, "Fixed", "2029-01-02", 0.04),          # just over three -> 4-6
+    L("F9", 300.0, "Fixed", "2034-06-30", 0.06),          # 6+
+    L("Old", 50.0, "Fixed", "2025-06-30", 0.07),          # matured before the as-of -> 0-3, named
+    L("Open", 150.0, "Floating", "2027-06-30", None, {"capped": False}),
+    L("Low", 60.0, "Floating", "2027-06-30", None, {"capped": True, "strike": 0.025, "max_rate": 0.055, "expiry": "6/27"}),
+    L("High", 40.0, "Floating", "2027-06-30", None, {"capped": True, "strike": 0.05, "max_rate": 0.09, "expiry": "6/27"}),
+    L("Murky", 10.0, "Floating", "2027-06-30", None, {"capped": None, "text": "5.00% for part", "problem": "cap text is not a plain strike / expiry"}),
+]
+dbt = bv.compose_debt(LO, AS)
+bk = {b["label"]: b for b in dbt["fixed"]["buckets"]}
+chk("buckets by years from the as-of: exactly 3 years is 0-3, a day over is 4-6",
+    bk["0-3"]["amount"] == 250.0 and bk["4-6"]["amount"] == 200.0 and bk["6+"]["amount"] == 300.0,
+    {k: v["amount"] for k, v in bk.items()})
+chk("a loan past maturity at the as-of is in 0-3 and named",
+    any("Old" in n and "past maturity" in n for n in dbt["notes"]))
+chk("bucket rate is weighted by the facility amount: (5x100 + 3x100 + 7x50) / 250 = 4.6%",
+    abs(bk["0-3"]["avg_rate"] - 0.046) < 1e-12, bk["0-3"]["avg_rate"])
+chk("fixed total is every fixed loan", dbt["fixed"]["total"] == 750.0)
+fr = {r["key"]: r for r in dbt["floating"]["rows"]}
+chk("a cap AT 2.5% is in '<=2.5%', above it in '>2.5%'", fr["low"]["amount"] == 60.0 and fr["high"]["amount"] == 40.0)
+chk("an unreadable cap is its own row, not counted as uncapped or capped",
+    (fr.get("unknown") or {}).get("amount") == 10.0 and fr["none"]["amount"] == 150.0)
+chk("shares are of TOTAL debt, fixed and floating", abs(fr["none"]["share"] - 150.0 / 1010.0) < 1e-12)
+chk("fixed-or-capped share counts fixed + capped, not uncapped or unreadable",
+    abs(dbt["fixed_or_capped_share"] - (750 + 60 + 40) / 1010.0) < 1e-12)
+ex = {e["deal"]: e["line"] for e in dbt["exposure"]}
+chk("max-interest lines: capped, uncapped, unreadable -- each says which",
+    ex["High"] == "5.00% + 3.00% = 9.00%, through 6/27" and ex["Open"] == "SOFR + 3.00% uncapped, through 6/27"
+    and ex["Murky"].startswith("cap terms:"), ex)
+chk("an unreadable cap is named in the notes with its words",
+    any("Murky" in n and "5.00% for part" in n for n in dbt["notes"]))
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)

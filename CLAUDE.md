@@ -231,6 +231,7 @@ not, and **a "temporary estimate" is a second engine.**
 | Statements | `statement_service.build` + siblings | workpapers, print, Excel |
 | Exchange and reference rates (USD/CAD, SOFR, CORRA, EFFR...) | `market_rates_service.rate_on` (the `market_rates` table, from Bank of Canada / NY Fed) | PE exposure; NOT yet Investment Metrics, which still carries `CAD_TO_USD = 0.73` (open_items 19.2) |
 | Ultimate ownership by investor group, as of a date | `ownership_chain_service.group_shares` (commitments in force, amounts multiplied down; accounting's dated per-investment overrides applied at their entity) | PE exposure |
+| A floating loan's rate cap: strike, expiry, max rate | `loan_caps.cap_terms` (`vIntRatereset`, then MRI's cap text) | Board p.28 |
 | Unrealized gain/loss and realized losses per holding | `pe_exposure_service.noncash_by_holding` (ia_transactions -- the app's `accounting` feed has no non-cash rows) | PE exposure |
 
 **A second implementation is most dangerous when it is NEARLY right** — nothing on
@@ -344,9 +345,8 @@ Narrative: `.claude/memory/market_rates.md`. The rules:
 
 - **`rate_on` NEVER INTERPOLATES** — it returns the last publication on or before the
   date, says which, and returns `None` past 7 days. `market_rates` is PROTECTED.
-- **Term SOFR is CME's and licensed — not here.** Sources are free and official (Bank
-  of Canada, NY Fed, Treasury's par yields `UST_1M`..`UST_30Y`), no API key.
-  **Forward curves are not built.**
+- **Term SOFR is CME's and licensed — not here; forward curves are not built.** Sources
+  are free and official (Bank of Canada, NY Fed, Treasury par yields `UST_1M`..`UST_30Y`).
 
 ## Where things are written down
 

@@ -173,6 +173,32 @@ Production, 12/31/25 ($M):
 | Other | 9.6 / 6.2 | 10.8 / 6.9 | Pontchartrain -2.25, Bearfoot +0.92, Lynch +2.49 (accounting Q) |
 | Total | 691.6 / 120.2 | 692.4 / 120.9 | = PE engine grand total, to the dollar |
 
+## p.28 portfolio metrics (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Schedule key `debt`. Deals = Investment Metrics' Current table at the as-of (as p.26).
+- Occupancy / DSCR: One Pager `get_property_performance` per deal (YTD economic occupancy,
+  YTD DSCR) via the Snapshot's memoised provider; rolled up with the Snapshot's own
+  functions -- `_weighted` (NOI) and `_debt_weighted` (debt from `resolve_debt`); development
+  deals (`config.is_dev_deal` on Investment_Strategy or Lifecycle) are out, named.
+- Debt: `dashboard_service.get_loan_maturity_data` (facility amounts, fixed / floating; NULL
+  rate type counts fixed -- its rule). Buckets: years from the as-of to maturity on the
+  CALENDAR (<=3, <=6, >6). Caps: NEW `flask_app/services/loan_caps.py` (`vIntRatereset`, then
+  the `vHedgedStrat` text for strike / expiry; unreadable text shown raw). One-engine row added.
+- Loans are MRI's today; a loan repaid since the as-of is missing (noted on the page).
+
+Production vs the deck (metrics as of 9/30/25):
+
+| | Deck | App |
+|---|---|---|
+| Multifamily / Grocery occ, DSCR | 90% 1.4 / 96% 2.1 | identical |
+| Non-Grocery / Self Storage | 88% 1.5 / 84% 2.1 | 93% 1.6 / 87% 2.7 |
+| RV Park / Industrial | 52% 0.7 (annual avg) / 100% 2.0 | 66% 1.3 (YTD) / 100% 1.3; Resort (Old Kinderhook) its own row |
+| Portfolio | 90% 1.6 | 90% 1.7 |
+| Fixed total | 1,477.5 | 1,478.2 |
+| Fixed 0-3 / 4-6 / 6+ | 502.2 / 615.2 / 360.2 | 393.1 / 814.1 / 271.0 -- no bucket rule reproduces the deck (tested six) |
+| Capped <=2.5% / >2.5% | 56.8 / 48.8 | 20.1 / 55.3 (Nottingham 36.7 now fixed in MRI; Poplar Prairie 6.5 not in the deck) |
+| No cap | 356.1 | 403.0 (JB Fair 77.4 and Town Fair Tire 20.0 are Variable in MRI, absent from the deck) |
+| Cap not readable | -- | Mount Prospect 6.0 ("5.00% for $5.3M, 5yr $825k") |
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

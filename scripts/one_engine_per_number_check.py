@@ -245,6 +245,26 @@ check('...and says whether a NAV exists, so a blank is explicable',
       '"has_nav"' in _cs)
 
 
+section('A floating loan\'s rate cap has one reader')
+
+import glob  # noqa: E402
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_readers = []
+for _f in glob.glob(os.path.join(_root, '*.py')) + glob.glob(os.path.join(_root, 'flask_app', '**', '*.py'), recursive=True):
+    if _f.endswith('loan_caps.py'):
+        continue
+    _src = open(_f, encoding='utf-8', errors='ignore').read()
+    # Reading the cap TEXT for a strike or an expiry is loan_caps' job alone;
+    # showing the raw string (the One Pager does) is not reading it.
+    if 'vHedgedStrat' in _src and ('re.compile' in _src or 're.match' in _src or 're.search' in _src) \
+            and ('exp' in _src.lower() and 'eff' in _src.lower()):
+        _readers.append(os.path.relpath(_f, _root))
+check('no module but loan_caps parses vHedgedStrat for a strike or expiry', not _readers, ', '.join(_readers))
+from flask_app.services import board_views_service as _BV  # noqa: E402
+check('Board p.28 reaches the cap through loan_caps.cap_terms',
+      'loan_caps.cap_terms(' in inspect.getsource(_BV._portfolio_metrics))
+
+
 print(f'\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} skipped')
 if FAIL:
     print('FAILED:')

@@ -140,6 +140,10 @@ reconciliation in `board.md`). Open from it:
 - **MRI `Property_Count`** -- Apple Self Storage P0000003 1 -> 16, PMAT Midwest P0000036
   1 -> 3, Prestige P0000080 1 -> 12. Then p.26 gives 98 properties, 23 wholly owned.
   Owner: whoever maintains MRI deal records.
+- **AM -- p.28 questions** (Oct 8 2026): how the deck's fixed maturity buckets were cut
+  (502 / 615 / 360 is reproduced by no years-to-maturity rule); are JB Fair Park and Town Fair
+  Tire swapped (Variable in MRI, absent from the deck's floating list); Mount Prospect's partial
+  cap terms; Middle Island's spread (MRI 3.70%, deck 3.81%). Owner: **AM / Jack**.
 - **MRI `Asset_Type` spellings** (Oct 8 2026) -- `Retail - Non Groc.` (23 deals) and
   `Retail - Non-Grocery` (Merle Hay, 5-15 Broad, changed Oct 8); `Self Storage` and
   `Self-Storage`. The Board maps both; other reports may not. Settle on one each. Owner: MRI.
