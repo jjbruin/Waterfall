@@ -29,6 +29,12 @@ What it does, and why each part is there:
   * NOTHING IS LOST. The old file is kept as ``<dest>.bak-<timestamp>``, the new
     one is built beside it and only swapped in once every table has copied and
     its row count matches production's.
+  * ONLY THE LAST TWO BACKUPS ARE KEPT (Charlene, Oct 8 2026). Each backup is a
+    full copy (~250 MB, ~1.5 GB with stored PDFs) and nothing ever removed them.
+    After a SUCCESSFUL swap the oldest ``<dest>.bak-*`` files beyond
+    ``--keep-backups`` (default 2, newest first by modified time) are deleted and
+    named on screen. A failed or partial run deletes nothing, and
+    ``--keep-all-backups`` turns pruning off.
   * ``--no-files`` leaves stored documents (lease PDFs, statement PDFs, receipt
     images -- any binary column) empty, which keeps the local file small.
 """
@@ -119,6 +125,42 @@ def repair_dates(path: str) -> int:
     return changed
 
 
+DEFAULT_KEEP_BACKUPS = 2
+
+#: SQLite side files that can sit next to a database; never treated as backups.
+_SIDE_FILES = ("-wal", "-shm", "-journal")
+
+
+def list_backups(dest: str) -> list:
+    """``<dest>.bak-*`` files beside ``dest``, newest first (by modified time)."""
+    folder = os.path.dirname(os.path.abspath(dest))
+    prefix = os.path.basename(dest) + ".bak-"
+    found = [os.path.join(folder, n) for n in os.listdir(folder)
+             if n.startswith(prefix) and not n.endswith(_SIDE_FILES)
+             and os.path.isfile(os.path.join(folder, n))]
+    return sorted(found, key=os.path.getmtime, reverse=True)
+
+
+def prune_backups(dest: str, keep: int) -> tuple:
+    """Delete all but the ``keep`` newest backups of ``dest``.
+
+    Returns ``(kept, removed, failed)`` as path lists. ``keep`` below 1 is
+    refused: pruning must never be able to delete the backup the run just made.
+    A file that cannot be deleted (open elsewhere) is reported, not fatal.
+    """
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
+    backups = list_backups(dest)
+    kept, removed, failed = backups[:keep], [], []
+    for path in backups[keep:]:
+        try:
+            os.remove(path)
+            removed.append(path)
+        except OSError:
+            failed.append(path)
+    return kept, removed, failed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dest", default="waterfall.db")
@@ -128,7 +170,15 @@ def main() -> int:
                     help="only fix 'YYYY-MM-DDT..' dates written by the first version, in place")
     ap.add_argument("--include-compensation", action="store_true",
                     help="also copy comp_* tables (salary-planning holders only)")
+    ap.add_argument("--keep-backups", type=int, default=DEFAULT_KEEP_BACKUPS,
+                    help="after a successful pull, keep only this many newest "
+                         f"<dest>.bak-* files (default {DEFAULT_KEEP_BACKUPS}, minimum 1)")
+    ap.add_argument("--keep-all-backups", action="store_true",
+                    help="do not delete any old backups")
     args = ap.parse_args()
+    if args.keep_backups < 1:
+        print("--keep-backups must be at least 1 (use --keep-all-backups to keep every one).")
+        return 2
 
     if args.repair_dates:
         n = repair_dates(args.dest)
@@ -231,6 +281,18 @@ def main() -> int:
     total = sum(r[2] for r in report)
     print(f"\nDone: {len(report)} tables, {total:,} rows, every count matching production.")
     print(f"Previous local database kept as {backup}.")
+
+    # Only now, with the new copy in place and its backup written.
+    if args.keep_all_backups:
+        print("Old backups left as they are (--keep-all-backups).")
+    else:
+        kept, removed, stuck = prune_backups(args.dest, args.keep_backups)
+        for p in removed:
+            print(f"Removed old backup {os.path.basename(p)}.")
+        for p in stuck:
+            print(f"Could not remove old backup {os.path.basename(p)} (in use?); left in place.")
+        print(f"Keeping the {len(kept)} most recent backup(s): "
+              f"{', '.join(os.path.basename(p) for p in kept)}.")
     return 0
 
 

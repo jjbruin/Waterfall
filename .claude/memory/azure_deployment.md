@@ -107,6 +107,10 @@ $env:DATABASE_URL = (az containerapp secret show -g rg-waterfall-dev -n app-wate
   `user_section_access` are not copied.
 - **Nothing is lost**: the previous file stays as `waterfall.db.bak-<timestamp>`, and
   the new one is swapped in only when every table's row count matches production.
+- **Only the last two backups are kept** (Oct 8 2026): after a SUCCESSFUL swap, older
+  `<dest>.bak-*` files beyond `--keep-backups` (default 2, by modified time) are
+  deleted and named; a failed run deletes nothing; `--keep-all-backups` disables it.
+  Guardrail: `scripts/pull_production_db_backups_check.py`.
 - **Dates are written the way SQLite holds them here** -- `2026-06-30`, or a time
   after a SPACE. SQLite compares dates as TEXT; the first version wrote
   `2026-06-30T00:00:00`, which sorts after `2026-06-30 23:59:59`, and 879 IA rows
