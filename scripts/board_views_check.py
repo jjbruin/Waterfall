@@ -386,6 +386,23 @@ lay_p = bv.deck_layout({**im_payload(2, 0), "current": {**im_payload(2, 0)["curr
 chk("pp. 29-31 print the deck's short partner name, and leave an unlisted one alone",
     lay_p["partner_short"] == {"JPI Companies": "JPI"}, lay_p["partner_short"])
 
+print("\n11. Page 9: pref by close year is Investment Metrics' pref, and totals to its Grand Total")
+IM9 = {"current": {"rows": [{"name": "A", "pref": 10.0, "invest_date": "2016-03-30"},
+                            {"name": "B", "pref": 5.0, "invest_date": "2016-11-01"},
+                            {"name": "C", "pref": 20.0, "invest_date": "2018-02-01"},
+                            {"name": "No date", "pref": 3.0, "invest_date": None}]},
+       "sold": {"rows": [{"name": "D", "pref": 7.0, "invest_date": "2017-05-01"}]},
+       "grand_total": {"pref": 45.0}}
+p9 = bv.compose_pref_by_year(IM9)
+chk("each year is the pref of the deals that closed in it (Current AND Sold)",
+    [(y["year"], y["new"]) for y in p9["years"]] == [(2016, 15e6), (2017, 7e6), (2018, 20e6)], p9["years"])
+chk("cumulative = everything before the year; the bar's top = prior + new",
+    [(y["prior"], y["cumulative"]) for y in p9["years"]] == [(0.0, 15e6), (15e6, 22e6), (22e6, 42e6)])
+chk("a deal with no invest date is in no year, and named (not silently dropped)",
+    p9["total"] == 42e6 and any("No date" in n for n in p9["notes"]))
+chk("...so the page total says how far it is from the engine's Grand Total (45 vs 42)",
+    p9["reconciliation"]["im_grand_total_pref"] == 45e6 and p9["reconciliation"]["page_total"] == 42e6)
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)
