@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v610** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v611** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v610 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v611 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,18 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v611` = `1301efe` (SSO: THE CALLBACK ONLY REDIRECTS TO AN APP PATH OR A WEB ADDRESS. Merge of
+    `fix/sso-redirect-guard` (`8af5657`): `sso._frontend_url()` uses `SSO_REDIRECT_URL` only if it is an
+    app path ("/x", not "//host") or an http(s) address, else logs it and uses `/login` -- the defect v610
+    corrected in configuration can no longer reach a browser, and a protocol-relative open redirect is
+    closed. Not a symptom repair (it validates configuration; the value itself was fixed at v610). Span vs
+    live `d716715` (v610): this commit + the v609/v610 docs. Jim pushed main. Build `capq`, Succeeded; tag
+    locked; P1 re-run (v610); deployed FROM POWERSHELL; Healthy at 100%; `SSO_REDIRECT_URL` carried over as
+    `/login` (read back from v611). Live: a dummy callback answers `302 /login#sso_error=...`; the sign-in
+    start goes to login.microsoftonline.com; in the container `_frontend_url()` returns `/login`.
+    Guardrails: NEW sso_redirect_check 10 (a pass-through guard fails 5), sso_email_match 16,
+    section_access 274, board_access 217. **Rollback** FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:d716715 --revision-suffix v612` (keep SSO_REDIRECT_URL).)
   - `v610` = `d716715` + CONFIG (MICROSOFT SIGN-IN: `SSO_REDIRECT_URL` CORRECTED TO `/login`. Accounting
     (regolf and two accountants) got ERR_UNSAFE_REDIRECT on `/auth/sso/callback`. The callback redirects
     to `SSO_REDIRECT_URL`, which held `C:/Program Files/Git/login` on EVERY revision from `v580` (when SSO
@@ -351,8 +363,7 @@ entry pointing at it. Nothing here was summarised.
     P1 re-run first (v609). Verified: a dummy callback now answers `302 /login#sso_error=...`; the sign-in
     start still goes to login.microsoftonline.com with our callback; regolf, kherrmann, nle and jstewart
     each have their own email on exactly one account, so they match. The code guard that refuses such a
-    value (`_frontend_url`, `scripts/sso_redirect_check.py`) is on `fix/sso-redirect-guard` (`8af5657`),
-    NOT deployed. **Never set an env var that starts with "/" from Git Bash** -- use PowerShell, or
+    value (`_frontend_url`, `scripts/sso_redirect_check.py`) shipped at `v611`. **Never set an env var that starts with "/" from Git Bash** -- use PowerShell, or
     `MSYS_NO_PATHCONV=1`. **Rollback**: none wanted; the old value is the defect.)
   - `v609` = `d716715` (BOARD PRINT: THE PDF KEEPS THE PAGE'S FILLS. `bfa647b` adds `print-color-adjust:
     exact` on the package's printed elements -- browsers drop backgrounds unless "Background graphics" is
