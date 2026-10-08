@@ -132,6 +132,40 @@ def main():
     else:
         print("SKIP E: only bites under the production row order")
 
+    # F/G -- Reports > ROE Summary reads Donald Lynch's U/W from P0000073 (the
+    # same one-off entry), and every other deal from its own vcode.
+    import sqlite3 as _sq
+    vcs = [r[0] for r in _sq.connect(app.config["DB_PATH"]).execute(
+        "select vcode from deals")]
+
+    def roe():
+        r = c.post("/api/reports/roe-summary",
+                   json={"vcodes": vcs, "report_date": "2026-06-30"},
+                   headers={"Authorization": "Bearer " + tok}).get_json()
+        return r["rows"]
+
+    rows_f = roe()
+    dl = [r for r in rows_f if r["Deal Name"] == "Donald Lynch"]
+    chk("F: ROE Summary has one Donald Lynch row with U/W ITD ROE > 0, read from P0000073",
+        len(dl) == 1 and (dl[0]["U/W ITD ROE"] or 0) > 0 and dl[0]["_uw_vcode"] == "P0000073",
+        [(r.get("U/W ITD ROE"), r.get("_uw_vcode")) for r in dl])
+    others = [r for r in rows_f if r["Deal Name"] != "Donald Lynch"
+              and r["_uw_vcode"] in S.REPORT_VCODE_PROMOTE.values()]
+    chk("F: no other deal reads U/W from the one-off's vcode", not others,
+        [r["Deal Name"] for r in others])
+    saved = dict(S.REPORT_VCODE_PROMOTE)
+    S.REPORT_VCODE_PROMOTE.clear()
+    try:
+        dl0 = [r for r in roe() if r["Deal Name"] == "Donald Lynch"]
+    finally:
+        S.REPORT_VCODE_PROMOTE.update(saved)
+    if order == "P0000049":
+        chk("G: without the one-off, U/W ITD ROE falls back to 0 (check is not vacuous)",
+            bool(dl0) and not (dl0[0]["U/W ITD ROE"] or 0),
+            [r.get("U/W ITD ROE") for r in dl0])
+    else:
+        print("SKIP G: only bites under the production row order")
+
     print(f"\n{len(FAILS)} failing")
     return 1 if FAILS else 0
 

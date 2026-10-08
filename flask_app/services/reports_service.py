@@ -420,6 +420,7 @@ def build_roe_summary_row(
     uw_cf_total = 0.0
     uw_roc_total = 0.0
 
+    uw_vcode = vcode_str
     if isbs_raw is not None and not isbs_raw.empty:
         from one_pager import _get_uw_pe_periodic, _get_uw_7073_signed, UW_PE_DIST_ACCT, UW_PE_ROC_ACCT
 
@@ -431,13 +432,31 @@ def build_roe_summary_row(
             isbs_raw, vcode, date(2000, 1, 1), report_date, UW_PE_DIST_ACCT
         )
 
+        # ONE-OFF, DONALD LYNCH ONLY (Charlene, Oct 8 2026) -- the same entry as
+        # portfolio_snapshot_service.REPORT_VCODE_PROMOTE, so retiring it is one
+        # deletion. MCCORD resolves to P0000049 on production Postgres (the map
+        # is last-row-wins), but every Projected IS 7071/7073 row is on its twin
+        # P0000073, so U/W ITD ROE read 0.0. The row's own vcode wins; the twin
+        # is read only when the row's vcode has no underwriting rows at all.
+        if not (uw_capital_events_raw or uw_dists):
+            from flask_app.services.portfolio_snapshot_service import (
+                REPORT_VCODE_PROMOTE)
+            twin = REPORT_VCODE_PROMOTE.get(vcode_str)
+            if twin:
+                uw_capital_events_raw = _get_uw_pe_periodic(
+                    isbs_raw, twin, date(2000, 1, 1), report_date, UW_PE_ROC_ACCT)
+                uw_dists = _get_uw_pe_periodic(
+                    isbs_raw, twin, date(2000, 1, 1), report_date, UW_PE_DIST_ACCT)
+                if uw_capital_events_raw or uw_dists:
+                    uw_vcode = twin
+
         if uw_capital_events_raw or uw_dists:
             # Build capital events from 7073:
             # _get_uw_pe_periodic returns abs(periodic) — we need sign convention:
             # positive original = contribution, negative original = return of capital
             # Re-read raw 7073 to get signs
             uw_capital_events = _get_uw_7073_signed(
-                isbs_raw, vcode, date(2000, 1, 1), report_date
+                isbs_raw, uw_vcode, date(2000, 1, 1), report_date
             )
 
             if uw_capital_events or uw_dists:
@@ -579,6 +598,9 @@ def build_roe_summary_row(
         "_uw_detail_rows": uw_detail_rows,
         "_uw_cf_total": uw_cf_total,
         "_uw_roc_total": uw_roc_total,
+        # Which vcode the U/W figures were read from -- the row's own, except the
+        # Donald Lynch one-off above.
+        "_uw_vcode": uw_vcode,
         "_years": detail["years"],
         "_total_days": (report_date - inception).days,
         "_inception": inception,
