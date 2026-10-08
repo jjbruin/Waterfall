@@ -258,16 +258,46 @@ const MIME: Record<string, string> = {
   tif: 'image/tiff', tiff: 'image/tiff', bmp: 'image/bmp',
 }
 
-/** Download one item as a browser File, exactly as if it had been chosen from disk. */
+/** Why SharePoint would not hand a file over, in words a user can act on. */
+function whyNoDownload(name: string, meta: any, status?: number): string {
+  if (!meta?.file) return `${name}: SharePoint does not treat this as a downloadable file.`
+  if (meta?.publication?.level === 'checkout') {
+    return `${name} is checked out in SharePoint. Check it in (or ask whoever has it out), then try again.`
+  }
+  if (!meta?.size) return `${name} is still uploading to SharePoint. Try again in a minute.`
+  if (status === 423) return `${name} is locked -- it is open for editing. Close it, then try again.`
+  return `${name}: SharePoint would not hand this file over${status ? ` (${status})` : ''}. If it was saved ` +
+    `in the last few minutes it may still be syncing -- try again shortly; if it is open or checked out, ` +
+    `close or check it in. Or download it and use Choose Files.`
+}
+
+/** Download one item as a browser File, exactly as if it had been chosen from disk.
+ *
+ *  Graph usually returns a short-lived, pre-authenticated download link with the
+ *  item. It does NOT for a file that is checked out, still uploading or syncing,
+ *  or restricted by a label (Jim, Oct 8 2026: investment_map.csv, saved that
+ *  day, came back with no link). Then the file is read through Graph's own
+ *  /content endpoint with the user's read-only token -- the same file, by the
+ *  route Graph keeps for exactly this -- and if that fails too, the user is told
+ *  why in words they can act on. */
 export async function download(item: SpItem, rel?: string): Promise<File> {
-  // A fresh, short-lived pre-authenticated URL: fetched without our token,
-  // and SharePoint allows it cross-origin.
-  const meta = await graph(`/drives/${item.driveId}/items/${item.id}?$select=id,name,size,@microsoft.graph.downloadUrl`)
+  const meta = await graph(`/drives/${item.driveId}/items/${item.id}` +
+    `?$select=id,name,size,file,publication,@microsoft.graph.downloadUrl`)
   const url = meta['@microsoft.graph.downloadUrl']
-  if (!url) throw new Error(`${item.name}: SharePoint did not provide a download link.`)
-  const r = await fetch(url)
-  if (!r.ok) throw new Error(`${item.name}: download failed (${r.status})`)
-  const blob = await r.blob()
+  let blob: Blob
+  if (url) {
+    // Fetched WITHOUT our token: the link carries its own short-lived authorisation.
+    const r = await fetch(url)
+    if (!r.ok) throw new Error(`${item.name}: download failed (${r.status})`)
+    blob = await r.blob()
+  } else {
+    if (!meta.file) throw new Error(whyNoDownload(item.name, meta))
+    // Graph only: the token never goes anywhere but graph.microsoft.com.
+    const r = await fetch(`${GRAPH}/drives/${item.driveId}/items/${item.id}/content`,
+      { headers: { Authorization: `Bearer ${await token()}` } })
+    if (!r.ok) throw new Error(whyNoDownload(item.name, meta, r.status))
+    blob = await r.blob()
+  }
   if (blob.size !== (meta.size ?? blob.size)) {
     throw new Error(`${item.name}: downloaded ${blob.size} bytes, SharePoint lists ${meta.size}`)
   }
