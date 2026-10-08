@@ -18,6 +18,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import api from '@/api/client'
+import AssetClassSlide from './AssetClassSlide.vue'
 import CapitalizationSlide from './CapitalizationSlide.vue'
 import PerformanceSlide from './PerformanceSlide.vue'
 import InvestmentSummarySlide from './InvestmentSummarySlide.vue'
@@ -199,7 +200,8 @@ const notes = computed<string[]>(() => currentView.value?.notes || [])
               <NarrativeSlide :title="current.narrative.title" :body="current.narrative.body" :page="current.label" />
             </template>
             <template v-else-if="currentStatus === 'ready' && currentView">
-              <CapitalizationSlide v-if="current.kind === 'capitalization'" :view="currentView" :page="current.label" />
+              <AssetClassSlide v-if="current.kind === 'exposure_asset_class'" :view="currentView" :page="current.label" />
+              <CapitalizationSlide v-else-if="current.kind === 'capitalization'" :view="currentView" :page="current.label" />
               <PerformanceSlide v-else-if="current.kind === 'performance'" :view="currentView" :page="current.label" />
               <InvestmentSummarySlide v-else-if="current.kind === 'investment_summaries'" :view="currentView"
                                       :slide="current.spec" :page="current.label" />

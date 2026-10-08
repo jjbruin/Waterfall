@@ -15,6 +15,9 @@ already owns, at the schedule's own as-of date (ONE NUMBER, ONE ENGINE):
   | 27   | Combined CoC                             | investment_metrics.pref_weighted_average --  |
   |      |                                          |   the engine's own Total / Average rule      |
   | 29-31| The investment summaries                 | Investment Metrics, the payload the tab shows|
+  | 23   | Net pref incl. unfunded by asset class,  | pe_exposure_service: funded Cost + remaining |
+  |      |   total and PSC                          |   to fund per deal, PSC by its split; the    |
+  |      |                                          |   class is MRI's deals.Asset_Type, grouped   |
 
 The only arithmetic is ADDING an engine's per-deal figures into the page's
 rows, and every such total is checked against the engine's own total in
@@ -40,7 +43,7 @@ THIRD_PARTY = ("TIAA", "KOC", "Clarion", "F&F", "Declaration", "Ambassadors")
 GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Clarion": "Clarion",
                 "F&F": "Friends & Family", "Declaration": "Declaration", "Ambassadors": "Ambassadors"}
 
-VIEW_KEYS = ("capitalization", "performance", "investment_summaries")
+VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "investment_summaries")
 
 # ------------------------------------------------------------------ the deck's layout
 #
@@ -49,8 +52,29 @@ VIEW_KEYS = ("capitalization", "performance", "investment_summaries")
 # of an engine's columns the deck prints, and how many rows fit one page.
 
 #: The deck's slide titles (Jan 2026 deck, pp. 26-27).
-SLIDE_TITLES = {"capitalization": "Current Portfolio Capitalization",
+SLIDE_TITLES = {"exposure_asset_class": "Exposure: Asset Class",
+                "capitalization": "Current Portfolio Capitalization",
                 "performance": "Performance: Portfolio Level"}
+
+#: The deck's asset classes (p. 23), in its order, from MRI's ``deals.Asset_Type``.
+#: A GROUPING, not a figure. The Portfolio Snapshot has its own rollup
+#: (``portfolio_snapshot_summary.ASSET_TYPE_ROLLUP``) because TIAA's report folds
+#: every retail type into one bucket; the board deck splits grocery-anchored from
+#: non-grocery and puts the small types in "Other". As there, an Asset_Type this
+#: map does not name is its OWN row, named in the notes -- never absorbed into a
+#: neighbour (plain "Retail", with no sub-type, is exactly that case today).
+ASSET_CLASSES = ("Multifamily", "Non-Grocery Retail", "Grocery-Anchored Retail", "Self Storage", "Other")
+ASSET_CLASS_OF = {
+    "multifamily": "Multifamily",
+    # MRI spells this two ways (Oct 8 2026: 23 deals "Retail - Non Groc.", and the two
+    # reclassified that day, Merle Hay and 5-15 Broad, "Retail - Non-Grocery").
+    "retail - non groc.": "Non-Grocery Retail", "retail - non groc": "Non-Grocery Retail",
+    "retail - non-grocery": "Non-Grocery Retail",
+    "retail - grocery": "Grocery-Anchored Retail",
+    "self storage": "Self Storage", "self-storage": "Self Storage",
+    "industrial": "Other", "rv park": "Other", "resort": "Other",
+}
+UNCLASSIFIED = "Unclassified (no Asset_Type)"
 
 #: The board deck prints a NARROWER Investment Metrics table than the tab (pp.
 #: 29-31): no DMA/Location and no Year-1 CoC columns, and the Sold page shows
@@ -311,7 +335,85 @@ def compose_performance(pe: dict, im: dict) -> dict:
                       "unfunded commitments at that date."]}
 
 
+# ------------------------------------------------------------------ page 23
+
+def asset_class(asset_type) -> str:
+    """The deck's class for an MRI ``Asset_Type``; an unnamed type passes through as itself."""
+    raw = "" if asset_type is None or asset_type != asset_type else str(asset_type).strip()
+    if not raw:
+        return UNCLASSIFIED
+    return ASSET_CLASS_OF.get(raw.lower(), raw)
+
+
+def compose_asset_class(pe: dict, asset_types: Dict[str, Optional[str]]) -> dict:
+    """Page 23: net preferred equity INCLUDING unfunded commitments, by asset class.
+
+    Per deal: the PE exposure engine's funded Cost plus its remaining to fund; PSC
+    is the engine's PSC column of each. A deal whose unfunded commitment the engine
+    could not split (several holders) is in the total and not in PSC, and is named;
+    a holding with no USD rate is in neither, as in the engine's own totals.
+    """
+    notes: List[str] = []
+    total: Dict[str, float] = {}
+    psc: Dict[str, float] = {}
+    deals: Dict[str, set] = {}
+    raw_of: Dict[str, set] = {}
+
+    def add(vcode, name, amount, psc_amount):
+        cls = asset_class(asset_types.get(vcode))
+        total[cls] = total.get(cls, 0.0) + amount
+        if psc_amount is not None:
+            psc[cls] = psc.get(cls, 0.0) + psc_amount
+        deals.setdefault(cls, set()).add(name)
+        raw_of.setdefault(cls, set()).add(str(asset_types.get(vcode) or ""))
+
+    for r in pe.get("rows") or []:
+        if r.get("fx_missing") or r.get("cost") is None:
+            continue
+        add(r["vcode"], r["deal_name"], r["cost"], (r.get("cost_by_group") or {}).get("PSC") or 0.0)
+    for f in pe.get("future_funding") or []:
+        amt = f.get("remaining_to_fund_usd")
+        if amt is None:
+            continue
+        split = f.get("by_group")
+        add(f["vcode"], f["deal_name"], amt, (split.get("PSC") or 0.0) if split else None)
+        if not split:
+            notes.append(f"{f['deal_name']}: its ${amt / 1e6:,.2f}M unfunded commitment has several "
+                         f"holders and is not split, so it is in the total and not in PSC.")
+
+    order = list(ASSET_CLASSES) + sorted(c for c in total if c not in ASSET_CLASSES)
+    grand, grand_psc = sum(total.values()), sum(psc.values())
+    rows = []
+    for c in order:
+        if c not in total and c not in ASSET_CLASSES:
+            continue
+        rows.append({"label": c, "total": total.get(c, 0.0) if c in total else None,
+                     "total_share": (total[c] / grand) if (c in total and grand) else None,
+                     "psc": psc.get(c) if c in total else None,
+                     "psc_share": (psc[c] / grand_psc) if (c in psc and grand_psc) else None,
+                     "deals": sorted(deals.get(c, ())), "in_deck": c in ASSET_CLASSES})
+        if c not in ASSET_CLASSES:
+            notes.append(f"Asset_Type {', '.join(sorted(raw_of[c])) or '(blank)'} is not one of the deck's "
+                         f"classes, so it is its own row: {', '.join(sorted(deals[c]))}.")
+    totals = pe.get("totals") or {}
+    return {
+        "as_of": pe.get("as_of"), "rows": rows,
+        "total": {"total": grand, "psc": grand_psc},
+        "reconciliation": {"pe_grand_cost": totals.get("grand_cost"), "page_total": grand,
+                           "pe_grand_psc": (totals.get("grand_cost_by_group") or {}).get("PSC"),
+                           "page_psc": grand_psc},
+        "notes": notes,
+    }
+
+
 # ------------------------------------------------------------------ the views
+
+def _asset_types(inv) -> Dict[str, Optional[str]]:
+    if inv is None or "vcode" not in inv.columns or "Asset_Type" not in inv.columns:
+        return {}
+    return {str(v).strip().upper(): (None if t is None or t != t else str(t))
+            for v, t in zip(inv["vcode"], inv["Asset_Type"])}
+
 
 def _property_counts(inv) -> Dict[str, Optional[int]]:
     out: Dict[str, Optional[int]] = {}
@@ -335,8 +437,15 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
     if data is None:
         from flask_app.services.data_service import get_data
         data = get_data()
-    im = ims.get_report(as_of, data=data)
     when = _short_date(as_of.isoformat())
+    if key == "exposure_asset_class":
+        # PE exposure only -- no Investment Metrics build for this page.
+        pe = pe_svc.get_report(as_of, data=data, engine=engine)
+        return {"key": key, "slide_title": SLIDE_TITLES[key],
+                **compose_asset_class(pe, _asset_types(data.get("inv"))),
+                "footnotes": [f"*Preferred equity balance includes unfunded commitments. Portfolio "
+                              f"data is updated through {when}."]}
+    im = ims.get_report(as_of, data=data)
     if key == "investment_summaries":
         layout = deck_layout(im)
         notes = [f"The deck layout names a column Investment Metrics does not carry: {m}"

@@ -241,6 +241,44 @@ chk("investment-summary cells are written by Investment Metrics' own formatter",
 chk("...and its columns and pages come from the server's layout, not the screen",
     "view.deck.columns" in slide_src and "props.slide.first" in slide_src)
 
+print("\n8. Page 23: exposure by asset class is the PE engine's, grouped, never guessed")
+AT = {"P0000001": "Multifamily", "P0000002": "Retail - Non Groc.", "P0000012": "Retail - Non Groc.",
+      "P0000003": "Retail - Grocery", "P0000006": "RV Park", "P0000004": "Retail"}
+PE23 = {**PE, "future_funding": PE["future_funding"] + [
+    {"vcode": "P0000007", "deal_name": "Multi-holder", "remaining_to_fund_usd": 3_000_000.0, "by_group": None}],
+    "totals": {**PE["totals"], "grand_cost": 69_000_000.0 + 23_000_000.0,
+               "grand_cost_by_group": {"PSC": 23_000_000.0 + 2_000_000.0}}}
+ac = bv.compose_asset_class(PE23, AT)
+by = {r["label"]: r for r in ac["rows"]}
+chk("total == the engine's grand total (funded + unfunded), to the cent",
+    abs(ac["total"]["total"] - PE23["totals"]["grand_cost"]) < 0.01, ac["total"])
+chk("PSC == the engine's PSC grand total", abs(ac["total"]["psc"] - 25_000_000.0) < 0.01, ac["total"]["psc"])
+chk("a deal's funded and unfunded land in ITS class (Wholly, MF: 10M funded)",
+    by["Multifamily"]["total"] == 10_000_000.0)
+chk("a twin vcode is classed by its own Asset_Type (Venture 50M + twin 2M -> Non-Grocery)",
+    by["Non-Grocery Retail"]["total"] == 52_000_000.0)
+chk("RV Park is Other, as the deck groups it", by["Other"]["total"] == 3_000_000.0)
+chk("both MRI spellings of non-grocery retail are one class",
+    bv.asset_class("Retail - Non Groc.") == bv.asset_class("Retail - Non-Grocery") == "Non-Grocery Retail")
+chk("an Asset_Type the deck does not name is its OWN row, not absorbed (plain 'Retail')",
+    "Retail" in by and by["Retail"]["total"] == 20_000_000.0 and not by["Retail"]["in_deck"])
+chk("...and is named in the notes", any("Asset_Type Retail is not one of the deck's classes" in n for n in ac["notes"]))
+chk("a deal with no Asset_Type is its own Unclassified row, not dropped",
+    by.get(bv.UNCLASSIFIED, {}).get("total") == 3_000_000.0)
+chk("an unsplit unfunded commitment is in the total, not in PSC, and named",
+    bv.UNCLASSIFIED in by and by[bv.UNCLASSIFIED]["psc"] is None
+    and any("Multi-holder" in n and "not in PSC" in n for n in ac["notes"]))
+chk("every deck class is a row even when empty, in the deck's order",
+    [r["label"] for r in ac["rows"]][:5] == list(bv.ASSET_CLASSES))
+chk("an empty deck class shows a dash (None), not $0.0",
+    by["Self Storage"]["total"] is None and by["Self Storage"]["total_share"] is None)
+chk("shares are of the page's own total and add to 100%",
+    abs(sum(r["total_share"] or 0 for r in ac["rows"]) - 1) < 1e-9
+    and abs(sum(r["psc_share"] or 0 for r in ac["rows"]) - 1) < 1e-9)
+chk("p.23 is on the catalog and in the deck's view keys",
+    "exposure_asset_class" in bv.VIEW_KEYS
+    and "exposure_asset_class" in {s_["key"] for s_ in board_service.SCHEDULES if s_.get("view")})
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)

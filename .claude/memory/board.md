@@ -150,6 +150,29 @@ capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 w
 (per-deal first lien, CoC, realized IRR -- the workbook's sold 17.7% and 5.6% are typed
 on its Total row); not re-litigated here. Scripts (scratchpad): im_vs_deck.py, bv_run.py.
 
+## p.23 exposure by asset class (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Total and PSC net preferred equity INCLUDING unfunded, by class: the PE exposure engine's
+funded Cost + remaining to fund per deal (PSC by its split), grouped by MRI `Asset_Type`
+through `board_views_service.ASSET_CLASS_OF` -- a deck grouping (Multifamily, Non-Grocery
+Retail, Grocery-Anchored Retail, Self Storage, Other = Industrial / RV Park / Resort). An
+Asset_Type the map does not name is its OWN row with a note, never absorbed.
+
+MRI on Oct 8 2026: Burton is now `Retail - Grocery`; Merle Hay and 5-15 Broad were changed
+to `Retail - Non-Grocery` -- a SECOND spelling beside the 23 deals' `Retail - Non Groc.`
+(both map; MRI should settle on one). `Self Storage` / `Self-Storage` likewise.
+`Property_Count` NOT yet changed; `Investment_Strategy` still blank on all 199.
+
+Production, 12/31/25 ($M):
+
+| Class | Deck total / PSC | App total / PSC | Why |
+|---|---|---|---|
+| Multifamily | 427.9 / 63.8 | 441.3 / 65.2 | the deck filed Brainerd's $13.3M unfunded under Non-Grocery (a deck error) |
+| Non-Grocery Retail | 90.9 / 18.7 | 77.6 / 17.4 | the same, the other way: +13.3 ties it exactly |
+| Grocery-Anchored | 92.8 / 11.0 | 92.8 / 11.1 | ties |
+| Self Storage | 70.3 / 20.5 | 69.8 / 20.4 | Apple Bales, Middle Island over-funded (accounting Q) |
+| Other | 9.6 / 6.2 | 10.8 / 6.9 | Pontchartrain -2.25, Bearfoot +0.92, Lynch +2.49 (accounting Q) |
+| Total | 691.6 / 120.2 | 692.4 / 120.9 | = PE engine grand total, to the dollar |
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:
