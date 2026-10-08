@@ -240,6 +240,12 @@ chk("the abbreviated package leaves the narrative sections out; the full one car
     "if (version.value === 'full') {" in deck_src)
 chk("the printed copy draws pages through the same component as the screen",
     deck_src.count("<DeckPage") == 2 and 'class="bd-print"' in deck_src)
+import re as _re  # noqa: E402
+_print_css = (_re.search(r"@media print \{(.*?)\n\}", deck_src, _re.S) or [None, ""])[1]
+chk("the printed copy keeps its fills (green rule, bands, shading, bars) even with the dialog's "
+    "'Background graphics' unticked: print-color-adjust: exact on every printed element",
+    ".bd-print, .bd-print *" in _print_css and "print-color-adjust: exact" in _print_css
+    and "-webkit-print-color-adjust: exact" in _print_css, _print_css[:200])
 chk("...and keeps it, keyed by meeting, schedule AND as-of date (a new date refetches)",
     "`${props.meeting.id}|${s.key}|${s.as_of}`" in deck_src and "CACHE.has(k)" in deck_src)
 slide_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "InvestmentSummarySlide.vue"),

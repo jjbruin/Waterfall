@@ -456,6 +456,12 @@ const reviewNotes = computed<string[]>(() => (current.value?.sched ? viewOf(curr
 @media screen { .bd-print { position: fixed; left: -40000px; top: 0; } }
 @media print {
   @page { size: 1100px 825px; margin: 0; }
+  /* The fills ARE the formatting -- the green rule, banded rows, header shading,
+     the bars, the banner. Browsers drop backgrounds when printing unless the
+     dialog's "Background graphics" is ticked (it is not, by default); this makes
+     them print regardless. Measured Oct 8 2026: without it, Save as PDF lost all
+     of them. */
+  .bd-print, .bd-print * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   body > *:not(.bd-print) { display: none !important; }
   html, body { background: #fff !important; }
   .bd-print { position: static; }
