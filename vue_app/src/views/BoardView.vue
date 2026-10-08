@@ -217,7 +217,8 @@ onMounted(async () => {
         <p class="muted small">The narrative sections appear in the <strong>Full</strong> package. A blank line starts a
           new paragraph; lines starting with "-" are bullets; a line starting "## " is a sub-heading. Attachments
           (images, or PDFs -- each PDF page becomes a page image) follow the text. A section longer than a page
-          continues onto further pages, breaking between paragraphs, bullets and attachments.</p>
+          continues onto further pages, breaking between paragraphs, bullets and attachments. <strong>Year in
+          review</strong> runs on beneath page 5's computed figures (3rd party AUM growth, investment activity).</p>
         <div v-for="n in meeting.narratives" :key="n.key" class="narr">
           <label><strong>{{ n.title }}</strong> <span class="muted small">p. {{ n.pages }}
             <template v-if="n.updated_by"> · {{ n.updated_by }}, {{ n.updated_at }}</template></span></label>

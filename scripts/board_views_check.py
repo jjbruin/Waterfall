@@ -417,6 +417,51 @@ chk("a deal with no invest date is in no year, and named (not silently dropped)"
 chk("...so the page total says how far it is from the engine's Grand Total (45 vs 42)",
     p9["reconciliation"]["im_grand_total_pref"] == 45e6 and p9["reconciliation"]["page_total"] == 42e6)
 
+print("\n12. Page 5: the year in review -- AUM growth from PE exposure at two dates, activity from Investment Metrics")
+from datetime import date as _dd  # noqa: E402
+Z = {g: 0.0 for g in G}
+PE_NOW = {"totals": {"cost_by_group": {**Z, "PSC": 50e6, "TIAA": 300e6, "KOC": 80e6},
+                     "future_by_group": {**Z, "TIAA": 40e6}}}
+PE_PRI = {"totals": {"cost_by_group": {**Z, "PSC": 45e6, "TIAA": 200e6, "KOC": 80e6}, "future_by_group": Z}}
+IM5 = {"current": {"rows": [
+    {"name": "Old JPI deal", "partner": "JPI", "invest_date": "2020-05-01", "pref": 10.0},
+    {"name": "New JPI deal", "partner": "JPI Companies", "invest_date": "2025-06-01", "pref": 20.0},
+    {"name": "Brand new", "partner": "Newco Partners", "invest_date": "2025-03-01", "pref": 5.0},
+    {"name": "On the prior date", "partner": "JPI", "invest_date": "2024-12-31", "pref": 7.0},
+    {"name": "On the as-of", "partner": "Other Co", "invest_date": "2025-12-31", "pref": 3.0}]},
+       "sold": {"rows": [
+    {"name": "Sold this year", "partner": "JPI", "invest_date": "2018-01-01", "sale_date": "2025-08-30",
+     "pref": 6.0, "proceeds": 0.2},
+    {"name": "Sold last year", "partner": "JPI", "invest_date": "2017-01-01", "sale_date": "2024-06-30",
+     "pref": 4.0, "proceeds": 9.0}]}}
+LOSS_NOW = {("CW", "PPI2"): -5_925_000.0, ("PPICW", "INV"): -5_925_000.0, ("OLD", "PPI2"): -1e6}
+LOSS_PRI = {("OLD", "PPI2"): -1e6}
+y5 = bv.compose_year_in_review(PE_NOW, PE_PRI, IM5, _dd(2025, 12, 31), _dd(2024, 12, 31), LOSS_NOW, LOSS_PRI,
+                               {"CW": "Sold this year", "OLD": "Older deal"})
+aum, act = y5["sections"][0]["bullets"], y5["sections"][1]["bullets"]
+chk("3rd-party AUM is the engine's funded cost less PSC, with its YoY change",
+    aum[0] == "Total 3rd party AUM is $380.0M, a YoY increase of $100.0M (+36%)", aum[0])
+chk("an investor with unfunded commitment says so, and the unfunded is NOT added in",
+    aum[1] == "TIAA AUM is $300.0M (excluding $40.0M unfunded), a YoY increase of $100.0M (+50%)", aum[1])
+chk("PSC is not 3rd party", not any("PSC" in b for b in aum))
+chk("new deals: invest date AFTER the prior date and ON OR BEFORE the as-of (both boundaries)",
+    y5["figures"]["new_deals"] == ["New JPI deal", "Brand new", "On the as-of"], y5["figures"]["new_deals"])
+chk("...and their pref is Investment Metrics' pref ($20M + $5M + $3M)",
+    act[0] == "$28.0M of Preferred Equity invested in 3 new deals", act[0])
+chk("a NEW partner's FIRST deal closed in the year; a spelling variant of an old partner is not new",
+    y5["figures"]["new_partners"] == ["Newco Partners", "Other Co"], y5["figures"]["new_partners"])
+chk("exits are the Sold rows whose sale date is in the year", y5["figures"]["exits"] == ["Sold this year"])
+chk("a loss is NOT inferred from proceeds below pref (proceeds exclude returned capital)",
+    not any("returned" in b for b in act))
+chk("realized losses booked in the year: the deal's own investment, now less a year ago; the chain's "
+    "copy (PPICW) is not counted again",
+    y5["figures"]["losses_booked"] == {"CW": 5_925_000.0}
+    and act[-1] == "Realized losses booked in the year: Sold this year $5.9M", (y5["figures"]["losses_booked"], act[-1]))
+chk("a year ending 12/31 is titled by its year", y5["year"] == "2025" and
+    bv.compose_year_in_review(PE_NOW, PE_PRI, IM5, _dd(2026, 6, 30), _dd(2025, 6, 30))["year"] == "Year to 6/30/26")
+chk("the deck runs the Year in review text on beneath page 5's figures, and does not print it twice",
+    "year_in_review: 'year_in_review'" in deck_src and "if (absorbed.has(n.key)) continue" in deck_src)
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)
