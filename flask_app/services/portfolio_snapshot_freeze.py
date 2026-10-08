@@ -400,6 +400,34 @@ def _one_pager_provider(data: dict) -> Callable:
     return provider
 
 
+def _atclose_debt_service_provider(data: dict) -> Callable:
+    """(vcode, acquisition date) -> the first 12 months of modeled debt service.
+
+    The ONE engine for modeled debt service (valuation_debt_service.
+    monthly_schedule), summed over the twelve months from closing. None when the
+    schedule has fewer than 12 rows -- "no loans" is never reported as zero debt
+    service. Feeds the Loan subtab's AT CLOSE DSCR (portfolio_snapshot_loan).
+    """
+    from datetime import date as _date
+    from flask_app.services.valuation_debt_service import monthly_schedule
+
+    cache: dict = {}
+
+    def provider(vcode: str, acquired):
+        if acquired is None:
+            return None
+        key = (vcode, acquired)
+        if key not in cache:
+            end = _date(acquired.year + 1, acquired.month, 1)
+            rows = (monthly_schedule(vcode, acquired, end, data).get("rows")
+                    or [])[:12]
+            cache[key] = (sum((r.get("interest") or 0) + (r.get("principal") or 0)
+                              for r in rows) if len(rows) == 12 else None)
+        return cache[key]
+
+    return provider
+
+
 def _quarterly_noi_provider(data: dict) -> Callable:
     """(vcode, quarter) -> that quarter's periodic NOI, or None.
 
@@ -563,7 +591,8 @@ def build_subtab(name: str, investor: str, quarter: str, data: dict,
             loans=data.get("mri_loans_raw"), valuations=data.get("mri_val"),
             inv=data["inv"],
             quarterly_noi_provider=(quarterly_noi_provider
-                                    or _quarterly_noi_provider(data)))
+                                    or _quarterly_noi_provider(data)),
+            atclose_debt_service_provider=_atclose_debt_service_provider(data))
     raise ValueError(f"unknown subtab {name!r}")
 
 

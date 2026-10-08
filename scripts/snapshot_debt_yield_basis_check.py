@@ -76,9 +76,17 @@ def main():
             ok, {k: g.get(k) for k in ("debt_yield_basis", "annualised_noi", "quarter_noi")})
         bad = [r["vcode"] for r in rows
                if r["vcode"] != GIANT7 and r.get("debt_yield") is not None
+               and not r.get("at_close")
                and (r["debt_yield_basis"] != L.DY_BASIS_QUARTER
                     or abs((r["quarter_noi"] or 0) * 4 - (r["annualised_noi"] or 0)) > 1e-6)]
         chk(f"B {q}: every other Debt Yield is single-quarter x 4, and says so", not bad, bad)
+        # AT CLOSE rows (snapshot_loan_at_close_check) must say so too, and
+        # divide the NOI at close they report.
+        bad_ac = [r["vcode"] for r in rows if r.get("at_close")
+                  and (not r["debt_yield_basis"].startswith("NOI at close")
+                       or abs(r["annualised_noi"] - r["at_close"]["noi_at_close"]) > 1e-6)]
+        chk(f"B {q}: every AT CLOSE Debt Yield says 'NOI at close' and divides it",
+            not bad_ac, bad_ac)
 
     src = open(L.__file__, encoding="utf-8").read()
     chk("C: the basis is set per row, not as one fixed literal (check is not vacuous)",
