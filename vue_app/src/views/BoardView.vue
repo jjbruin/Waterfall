@@ -63,6 +63,49 @@ async function saveNarrative(n: any) {
   } catch (e) { fail(e) }
 }
 
+// ---- the package: footnotes saved in the deck, attachments in a narrative section ----
+function onNotesSaved(key: string, value: any) {
+  const pn = { ...(meeting.value.page_notes || {}) }
+  if (value) pn[key] = value
+  else delete pn[key]
+  meeting.value = { ...meeting.value, page_notes: pn }
+}
+const uploading = ref<Record<string, boolean>>({})
+async function attach(n: any, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length) return
+  error.value = ''; uploading.value[n.key] = true
+  try {
+    for (const f of files) {
+      const fd = new FormData()
+      fd.append('file', f)
+      await api.post(`/api/board/meetings/${meeting.value.id}/narratives/${n.key}/attachments`, fd)
+    }
+  } catch (e) { fail(e) } finally {
+    uploading.value[n.key] = false
+    await refreshAttachments()
+  }
+}
+async function refreshAttachments() {
+  const m = (await api.get(`/api/board/meetings/${meeting.value.id}`)).data
+  // Keep unsaved narrative text: only the attachments come from the server.
+  const byKey: Record<string, any> = Object.fromEntries(m.narratives.map((x: any) => [x.key, x.attachments]))
+  meeting.value = { ...meeting.value, narratives: meeting.value.narratives.map((x: any) => ({ ...x, attachments: byKey[x.key] || [] })) }
+}
+async function updateAttachment(a: any, body: Record<string, any>) {
+  error.value = ''
+  try { await api.put(`/api/board/meetings/${meeting.value.id}/attachments/${a.id}`, body) } catch (e) { fail(e) }
+  await refreshAttachments()
+}
+async function removeAttachment(a: any) {
+  if (!confirm(`Remove "${a.filename}" from this section?`)) return
+  error.value = ''
+  try { await api.delete(`/api/board/meetings/${meeting.value.id}/attachments/${a.id}`) } catch (e) { fail(e) }
+  await refreshAttachments()
+}
+
 // ---- access (admin account) ----
 const access = ref<{ users: any[]; permissions: any[] } | null>(null)
 async function loadAccess() { access.value = (await api.get('/api/board/access')).data }
@@ -144,7 +187,8 @@ onMounted(async () => {
         <button :class="{ on: mtab === 'narrative' }" @click="mtab = 'narrative'">Narrative</button>
       </div>
 
-      <BoardDeck v-if="mtab === 'deck'" :meeting="meeting" />
+      <BoardDeck v-if="mtab === 'deck'" :meeting="meeting" :can-edit="editable && can('board_edit')"
+                 @notes-saved="onNotesSaved" />
 
       <template v-if="mtab === 'schedules'">
         <p class="muted small">Which schedules the deck carries, and the as-of date each is drawn at.
@@ -170,14 +214,37 @@ onMounted(async () => {
       </template>
 
       <template v-if="mtab === 'narrative'">
-        <p class="muted small">Text pages. A block with text appears in the deck at its page.</p>
+        <p class="muted small">The narrative sections appear in the <strong>Full</strong> package. A blank line starts a
+          new paragraph; lines starting with "-" are bullets; a line starting "## " is a sub-heading. Attachments
+          (images, or PDFs -- each PDF page becomes a page image) follow the text. A section longer than a page
+          continues onto further pages, breaking between paragraphs, bullets and attachments.</p>
         <div v-for="n in meeting.narratives" :key="n.key" class="narr">
           <label><strong>{{ n.title }}</strong> <span class="muted small">p. {{ n.pages }}
             <template v-if="n.updated_by"> · {{ n.updated_by }}, {{ n.updated_at }}</template></span></label>
-          <textarea v-model="n.body" rows="5" :disabled="!editable || !can('board_edit')"
+          <textarea v-model="n.body" rows="6" :disabled="!editable || !can('board_edit')"
                     @input="narrativeDirty[n.key] = true" />
           <button v-if="can('board_edit') && editable" class="btn-secondary"
                   :disabled="!narrativeDirty[n.key]" @click="saveNarrative(n)">Save</button>
+          <div class="att">
+            <div v-for="(a, i) in n.attachments || []" :key="a.id" class="att-row">
+              <span class="att-name" :title="a.filename">{{ a.filename }}</span>
+              <span class="muted small">{{ a.page_count }} page{{ a.page_count === 1 ? '' : 's' }}</span>
+              <input class="att-cap" :value="a.caption" placeholder="Caption (optional)"
+                     :disabled="!editable || !can('board_edit')"
+                     @change="updateAttachment(a, { caption: ($event.target as HTMLInputElement).value })" />
+              <template v-if="editable && can('board_edit')">
+                <button class="ico" title="Move up" :disabled="i === 0" @click="updateAttachment(a, { move: -1 })">↑</button>
+                <button class="ico" title="Move down" :disabled="i === (n.attachments || []).length - 1"
+                        @click="updateAttachment(a, { move: 1 })">↓</button>
+                <button class="ico" title="Remove" @click="removeAttachment(a)">✕</button>
+              </template>
+            </div>
+            <label v-if="editable && can('board_edit')" class="att-add">
+              <input type="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf" multiple
+                     @change="attach(n, $event)" />
+              <span class="btn-secondary">{{ uploading[n.key] ? 'Attaching…' : '+ Attach image or PDF' }}</span>
+            </label>
+          </div>
         </div>
       </template>
     </section>
@@ -251,6 +318,15 @@ h1 { margin: 0 0 4px; }
 .narr { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .narr textarea { width: 100%; font: inherit; padding: 6px; }
 .narr button { align-self: flex-start; }
+.att { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.att-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.att-name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-cap { flex: 1; max-width: 360px; font: inherit; font-size: 12.5px; padding: 3px 6px; }
+.att-add input { display: none; }
+.att-add { align-self: flex-start; cursor: pointer; }
+.ico { width: 26px; height: 26px; border: 1px solid var(--color-border, #d1d5db); border-radius: 4px;
+  background: var(--color-surface, #fff); color: inherit; cursor: pointer; }
+.ico:disabled { opacity: .35; }
 .btn-primary, .btn-secondary { padding: 5px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
   border: 1px solid var(--color-primary, #1f4e79); }
 .btn-primary { background: var(--color-primary, #1f4e79); color: #fff; font-weight: 600; }

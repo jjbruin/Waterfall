@@ -24,78 +24,88 @@ from sqlalchemy import text
 #: plan's own reading of where each one comes from; the phase that builds it
 #: replaces the placeholder with the engine's view.
 SCHEDULES = (
-    {"key": "highlights", "pages": "4", "phase": 2,
+    {"key": "highlights", "part": "I", "pages": "4", "phase": 2,
      "title": "Since-inception highlights",
      "source": "Sold Portfolio (realized IRR), committed pref, deals, One Pager capitalization",
      "status": "View to build"},
-    {"key": "mix_pies", "pages": "4", "phase": 2,
+    {"key": "mix_pies", "part": "I", "pages": "4", "phase": 2,
      "title": "Mix by asset type, deal type and region",
      "source": "deals (Asset_Type, Lifecycle, State) weighted by PE exposure",
      "status": "Needs data"},
-    {"key": "year_in_review", "pages": "5", "phase": 2,
+    {"key": "year_in_review", "part": "I", "pages": "5", "phase": 2,
      "title": "Year in review: AUM by investor, raises, activity, exits",
      "source": "PE exposure at two dates, deals",
      "status": "View to build"},
-    {"key": "pref_by_year", "pages": "9", "phase": 2,
+    {"key": "pref_by_year", "part": "II", "pages": "9", "phase": 2,
      "title": "Pref equity invested by year, new and cumulative",
-     "source": "Committed pref and accounting contributions by close year",
-     "status": "View to build"},
-    {"key": "sponsors", "pages": "10", "phase": 2,
+     "source": "Investment Metrics PSC pref (Current + Sold) by close year",
+     "status": "View built", "view": True},
+    {"key": "sponsors", "part": "II", "pages": "10", "phase": 2,
      "title": "Deal sourcing: sponsors and repeat business",
      "source": "deals.Operating_Partner (needs a canonical sponsor list)",
      "status": "Needs data"},
-    {"key": "originations", "pages": "11-12", "phase": 3,
+    {"key": "originations", "part": "II", "pages": "11-12", "phase": 3,
      "title": "Originations funnel, channels, pass reasons, pipeline mix",
      "source": "Originations spreadsheet, imported before each meeting",
      "status": "Needs data"},
-    {"key": "platform_projection", "pages": "17-19", "phase": 5,
+    {"key": "platform_projection", "part": "III", "pages": "17-19", "phase": 5,
      "title": "5-year platform projection",
      "source": "Platform-model engine (new) and the payroll plan",
      "status": "New engine"},
-    {"key": "projected_sales", "pages": "20-21", "phase": 4,
+    {"key": "projected_sales", "part": "III", "pages": "20-21", "phase": 4,
      "title": "5-year projected sales returns",
      "source": "Deal Analysis per deal; PSC share from PE exposure",
      "status": "View to build"},
-    {"key": "exposure_asset_class", "pages": "23", "phase": 1,
+    {"key": "exposure_asset_class", "part": "IV", "pages": "23", "phase": 1,
      "title": "Exposure by asset class",
-     "source": "PE exposure engine",
-     "status": "Ready now"},
-    {"key": "exposure_partner", "pages": "24", "phase": 1,
+     "source": "PE exposure (funded + unfunded, total and PSC) by MRI Asset_Type",
+     "status": "View built", "view": True},
+    {"key": "exposure_partner", "part": "IV", "pages": "24", "phase": 1,
      "title": "Exposure by operating partner",
-     "source": "PE exposure + Operating_Partner (same cleanup as page 10)",
-     "status": "Needs data"},
-    {"key": "portfolio_map", "pages": "25", "phase": 1,
+     "source": "PE exposure (funded + unfunded, total and PSC) by MRI Operating_Partner, deck short names",
+     "status": "View built", "view": True},
+    {"key": "portfolio_map", "part": "IV", "pages": "25", "phase": 1,
      "title": "Portfolio map",
      "source": "deals addresses, geocoded",
      "status": "View to build"},
-    {"key": "capitalization", "pages": "26", "phase": 1,
+    {"key": "capitalization", "part": "IV", "pages": "26", "phase": 1,
      "title": "Capitalization and third-party capital by investor",
      "source": "PE exposure (funded capital by investor) + Investment Metrics (deals held, Total Size)",
      "status": "View built", "view": True},
-    {"key": "performance", "pages": "27", "phase": 1,
+    {"key": "performance", "part": "IV", "pages": "27", "phase": 1,
      "title": "Portfolio performance",
      "source": "Investment Metrics totals + PE exposure (pref incl. unfunded)",
      "status": "View built", "view": True},
-    {"key": "debt", "pages": "28", "phase": 1,
+    {"key": "debt", "part": "IV", "pages": "28", "phase": 1,
      "title": "Debt, occupancy and DSCR by asset class",
-     "source": "loans, Market Rates (SOFR), One Pager occupancy and DSCR",
-     "status": "View to build"},
-    {"key": "investment_summaries", "pages": "29-31", "phase": 1,
+     "source": "One Pager occupancy and DSCR (Snapshot roll-up rules), Dashboard loan maturities, MRI cap terms",
+     "status": "View built", "view": True},
+    {"key": "investment_summaries", "part": "IV", "pages": "29-31", "phase": 1,
      "title": "Investment summaries, current and exited",
      "source": "Investment Metrics",
      "status": "View built", "view": True},
 )
 SCHEDULE_KEYS = tuple(s["key"] for s in SCHEDULES)
 
+#: The package's parts, in order -- the January 2026 deck's table of contents.
+#: Every schedule and narrative names its part; a part with nothing in it is not printed.
+PARTS = (
+    {"key": "I", "title": "Company Highlights & Challenges"},
+    {"key": "II", "title": "Originations"},
+    {"key": "III", "title": "5-Year Financial Projection"},
+    {"key": "IV", "title": "Portfolio Review"},
+    {"key": "V", "title": "Appendix"},
+)
+
 #: The pages that are edited text, one block each.
 NARRATIVES = (
-    {"key": "year_in_review", "pages": "5", "title": "Year in review"},
-    {"key": "strategy", "pages": "6", "title": "Strategy"},
-    {"key": "headwinds", "pages": "7", "title": "Headwinds"},
-    {"key": "lessons_learned", "pages": "13", "title": "Lessons learned"},
-    {"key": "outlook", "pages": "14", "title": "Outlook"},
-    {"key": "marketing", "pages": "15", "title": "Marketing"},
-    {"key": "org_chart", "pages": "33", "title": "Organization chart (names and titles only)"},
+    {"key": "year_in_review", "part": "I", "pages": "5", "title": "Year in review"},
+    {"key": "strategy", "part": "I", "pages": "6", "title": "Strategy"},
+    {"key": "headwinds", "part": "I", "pages": "7", "title": "Headwinds"},
+    {"key": "lessons_learned", "part": "I", "pages": "13", "title": "Lessons learned"},
+    {"key": "outlook", "part": "II", "pages": "14", "title": "Outlook"},
+    {"key": "marketing", "part": "II", "pages": "15", "title": "Marketing"},
+    {"key": "org_chart", "part": "V", "pages": "33", "title": "Organization chart (names and titles only)"},
 )
 NARRATIVE_KEYS = tuple(n["key"] for n in NARRATIVES)
 
@@ -240,11 +250,18 @@ def get_meeting(meeting_id: int, engine=None) -> dict | None:
                    "updated_by": (narr.get(n["key"]) or {}).get("updated_by"),
                    "updated_at": str((narr.get(n["key"]) or {}).get("updated_at") or "") or None}
                   for n in NARRATIVES]
+    # The package around the figures: each page's footnotes / disclosure, and the
+    # attachments in each narrative section (board_package_service).
+    from flask_app.services import board_package_service as pkg
+    files = pkg.attachments(meeting_id, engine)
+    for n in narratives:
+        n["attachments"] = files.get(n["key"], [])
     return {"id": m["id"], "title": m["title"], "meeting_date": md,
             "default_as_of": _d(m["default_as_of"]), "status": m["status"],
             "editable": m["status"] in EDITABLE,
             "created_by": m["created_by"], "updated_by": m["updated_by"],
-            "schedules": schedules, "narratives": narratives}
+            "schedules": schedules, "narratives": narratives, "parts": list(PARTS),
+            "page_notes": pkg.page_notes(meeting_id, engine)}
 
 
 def _require_draft(meeting_id: int, engine) -> dict:

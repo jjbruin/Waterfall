@@ -150,6 +150,93 @@ capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 w
 (per-deal first lien, CoC, realized IRR -- the workbook's sold 17.7% and 5.6% are typed
 on its Total row); not re-litigated here. Scripts (scratchpad): im_vs_deck.py, bv_run.py.
 
+## p.23 exposure by asset class (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Total and PSC net preferred equity INCLUDING unfunded, by class: the PE exposure engine's
+funded Cost + remaining to fund per deal (PSC by its split), grouped by MRI `Asset_Type`
+through `board_views_service.ASSET_CLASS_OF` -- a deck grouping (Multifamily, Non-Grocery
+Retail, Grocery-Anchored Retail, Self Storage, Other = Industrial / RV Park / Resort). An
+Asset_Type the map does not name is its OWN row with a note, never absorbed.
+
+MRI on Oct 8 2026: Burton is now `Retail - Grocery`; Merle Hay and 5-15 Broad were changed
+to `Retail - Non-Grocery` -- a SECOND spelling beside the 23 deals' `Retail - Non Groc.`
+(both map; MRI should settle on one). `Self Storage` / `Self-Storage` likewise.
+`Property_Count` NOT yet changed; `Investment_Strategy` still blank on all 199.
+
+Production, 12/31/25 ($M):
+
+| Class | Deck total / PSC | App total / PSC | Why |
+|---|---|---|---|
+| Multifamily | 427.9 / 63.8 | 441.3 / 65.2 | the deck filed Brainerd's $13.3M unfunded under Non-Grocery (a deck error) |
+| Non-Grocery Retail | 90.9 / 18.7 | 77.6 / 17.4 | the same, the other way: +13.3 ties it exactly |
+| Grocery-Anchored | 92.8 / 11.0 | 92.8 / 11.1 | ties |
+| Self Storage | 70.3 / 20.5 | 69.8 / 20.4 | Apple Bales, Middle Island over-funded (accounting Q) |
+| Other | 9.6 / 6.2 | 10.8 / 6.9 | Pontchartrain -2.25, Bearfoot +0.92, Lynch +2.49 (accounting Q) |
+| Total | 691.6 / 120.2 | 692.4 / 120.9 | = PE engine grand total, to the dollar |
+
+## p.28 portfolio metrics (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Schedule key `debt`. Deals = Investment Metrics' Current table at the as-of (as p.26).
+- Occupancy / DSCR: One Pager `get_property_performance` per deal (YTD economic occupancy,
+  YTD DSCR) via the Snapshot's memoised provider; rolled up with the Snapshot's own
+  functions -- `_weighted` (NOI) and `_debt_weighted` (debt from `resolve_debt`); development
+  deals (`config.is_dev_deal` on Investment_Strategy or Lifecycle) are out, named.
+- Debt: `dashboard_service.get_loan_maturity_data` (facility amounts, fixed / floating; NULL
+  rate type counts fixed -- its rule). Buckets: years from the as-of to maturity on the
+  CALENDAR (<=3, <=6, >6). Caps: NEW `flask_app/services/loan_caps.py` (`vIntRatereset`, then
+  the `vHedgedStrat` text for strike / expiry; unreadable text shown raw). One-engine row added.
+- Loans are MRI's today; a loan repaid since the as-of is missing (noted on the page).
+
+Production vs the deck (metrics as of 9/30/25):
+
+| | Deck | App |
+|---|---|---|
+| Multifamily / Grocery occ, DSCR | 90% 1.4 / 96% 2.1 | identical |
+| Non-Grocery / Self Storage | 88% 1.5 / 84% 2.1 | 93% 1.6 / 87% 2.7 |
+| RV Park / Industrial | 52% 0.7 (annual avg) / 100% 2.0 | 66% 1.3 (YTD) / 100% 1.3; Resort (Old Kinderhook) its own row |
+| Portfolio | 90% 1.6 | 90% 1.7 |
+| Fixed total | 1,477.5 | 1,478.2 |
+| Fixed 0-3 / 4-6 / 6+ | 502.2 / 615.2 / 360.2 | 393.1 / 814.1 / 271.0 -- no bucket rule reproduces the deck (tested six) |
+| Capped <=2.5% / >2.5% | 56.8 / 48.8 | 20.1 / 55.3 (Nottingham 36.7 now fixed in MRI; Poplar Prairie 6.5 not in the deck) |
+| No cap | 356.1 | 403.0 (JB Fair 77.4 and Town Fair Tire 20.0 are Variable in MRI, absent from the deck) |
+| Cap not readable | -- | Mount Prospect 6.0 ("5.00% for $5.3M, 5yr $825k") |
+
+## p.24 exposure by operating partner (Oct 8 2026; branch `feat/board-p23-asset-class`)
+p.23's figures grouped by MRI `Operating_Partner` through `board_views_service.PARTNER_NAMES`
+-- SPELLING variants only, to the deck's short names (JPI / JPI Companies, Vastgood / Vastgood
+Properties LLC, Apple / Apple Self Storage...); the same names print in pp.29-30's partner
+column (display only). Deals = MRI deals (Jim's rule), so the deck's transaction counts
+(Apple 7, Berger 8, total 61) are not this column. Production 12/31/25: totals = PE engine
+(692.4 / 120.9); 14 partners tie the deck to $0.1M; the rest differ by WHO the deck assigns a
+deal to -- MRI vs deck: Brainerd / Crowne ("Bertram and DiMarco", "Bertram/Pyramid" vs
+"Bright Ravens"), JB Fair Park ("Dave West" vs "L. Allen"), The Gallery ("Manhattan Five" vs
+"MFP"); and Pegasus 44.9 vs 12.5, JPI 99.9 vs 109.2, PMAT 6.1 vs 32.7, LBX PSC 5.5 vs 11.8 --
+redistribution, since the grand total ties. Not mapped; AM's call.
+
+## The package (Oct 8 2026; branch `feat/board-p23-asset-class`)
+Jim asked for: page numbers that match what prints; a FULL and an ABBREVIATED package; attachments in
+narrative sections; narratives that run onto more pages at natural breaks; and editable footnotes and
+disclosures on every page.
+- **Structure** (`BoardDeck.vue`): cover, table of contents, then each PART (`board_service.PARTS`,
+  the January deck's I-V; every schedule and narrative names its `part`) -- a divider page, then its
+  pages in catalog order. ABBREVIATED = schedules with a view; FULL adds narratives with text or
+  attachments. A part with nothing in it is not printed.
+- **Page numbers are positions** (index + 1) after pagination; the contents prints the same numbers.
+- **Narratives** (`narrative.ts`): text syntax -- blank line = paragraph, "-" lines = bullets, "## " =
+  sub-heading; attachments follow the text. Blocks are MEASURED in a hidden copy of the page body
+  (global `bd-narr` styles) and packed; a paragraph breaks at a sentence end, a list between items; the
+  last page keeps room for the section's footnotes; continuation pages titled "(cont'd)".
+- **Attachments** (`board_package_service`): images, or PDFs rendered to one PNG per page at 150 dpi
+  (PyMuPDF), max 30 pages / 25 MB; type by the file's BYTES; unreadable files refused with the reason.
+  Tables `board_attachments`, `board_attachment_pages`.
+- **Footnotes / disclosures**: drawn by the frame (`BoardSlide`) on every page. Defaults come with the
+  view; `board_page_notes` row per (meeting, page key) -- `footnotes` NULL = defaults, a list REPLACES
+  them, [] = none; reset deletes the row. Editor panel under the page, live preview. Narrative notes show
+  on the section's last page.
+- **Print / PDF**: every page drawn at 1100 x 825 by the same `DeckPage` component, `@page` sized to the
+  canvas; the button waits for all figures and images.
+- Logo: the official file (`brand.md`).
+- Guardrails: `board_package_check` 28, `board_access_check` 217 (the five new routes, every role),
+  `board_views_check` 101. All `board_*` tables are now PROTECTED.
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

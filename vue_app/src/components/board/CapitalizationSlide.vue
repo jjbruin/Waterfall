@@ -3,11 +3,11 @@
 import BoardSlide from './BoardSlide.vue'
 import { money, pct } from './slideFormat'
 
-defineProps<{ view: any; page: string | number }>()
+defineProps<{ view: any; page: string | number; notes?: { footnotes: string[]; disclosure?: string | null } }>()
 </script>
 
 <template>
-  <BoardSlide :title="view.slide_title" :page="page">
+  <BoardSlide :title="view.slide_title" :page="page" :footnotes="notes?.footnotes" :disclosure="notes?.disclosure">
     <table class="cap">
       <colgroup>
         <col style="width: 22%" /><col style="width: 10%" /><col style="width: 11%" /><col style="width: 13%" />
@@ -54,9 +54,6 @@ defineProps<{ view: any; page: string | number }>()
       </tbody>
     </table>
 
-    <div class="notes">
-      <div v-for="(f, i) in view.footnotes" :key="i">{{ f }}</div>
-    </div>
   </BoardSlide>
 </template>
 
@@ -87,5 +84,4 @@ table { border-collapse: collapse; color: #000; }
 .src .vl { border-left: 1.5px solid #000; }
 .src tr.tot td { border-top: 1.5px solid #000; font-weight: 700; font-size: 16px; }
 
-.notes { position: absolute; left: 30px; bottom: 26px; font-size: 12px; font-style: italic; line-height: 1.4; }
 </style>

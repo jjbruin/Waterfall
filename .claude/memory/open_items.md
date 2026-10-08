@@ -140,6 +140,18 @@ reconciliation in `board.md`). Open from it:
 - **MRI `Property_Count`** -- Apple Self Storage P0000003 1 -> 16, PMAT Midwest P0000036
   1 -> 3, Prestige P0000080 1 -> 12. Then p.26 gives 98 properties, 23 wholly owned.
   Owner: whoever maintains MRI deal records.
+- **AM -- p.28 questions** (Oct 8 2026): how the deck's fixed maturity buckets were cut
+  (502 / 615 / 360 is reproduced by no years-to-maturity rule); are JB Fair Park and Town Fair
+  Tire swapped (Variable in MRI, absent from the deck's floating list); Mount Prospect's partial
+  cap terms; Middle Island's spread (MRI 3.70%, deck 3.81%). Owner: **AM / Jack**.
+- **AM -- p.24 partner assignments** (Oct 8 2026): the deck and MRI name different partners for
+  Brainerd / Crowne Plaza (deck "Bright Ravens"), JB Fair Park (deck "L. Allen", MRI "Dave
+  West"), The Gallery ("MFP" / "Manhattan Five"); and the deck's Pegasus, JPI, PMAT and LBX rows
+  carry deals MRI assigns elsewhere. Fix MRI's `Operating_Partner`, or tell us the deck was wrong;
+  `PARTNER_NAMES` then takes the confirmed short names. Owner: **AM / Jack**.
+- **MRI `Asset_Type` spellings** (Oct 8 2026) -- `Retail - Non Groc.` (23 deals) and
+  `Retail - Non-Grocery` (Merle Hay, 5-15 Broad, changed Oct 8); `Self Storage` and
+  `Self-Storage`. The Board maps both; other reports may not. Settle on one each. Owner: MRI.
 
 Development plan (a shared doc, private until shared): https://claude.ai/code/artifact/71e5c89f-933f-4b88-9e3e-f1b2e1d7a5b9
 -- built from the Jan 14 2026 board deck (33 pages). Seven phases: 0 foundation (an

@@ -155,6 +155,12 @@ def main():
                                                      "default_as_of": "2025-12-31"}, headers=H["builder"])
     chk("the builder creates a meeting (201)", m.status_code == 201, m.get_json())
     mid = (m.get_json() or {}).get("id", 1)
+    # A real attachment for the routes that address one (a 1x1 PNG).
+    import base64
+    from flask_app.services import board_package_service as pkg
+    PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    with app.app_context():
+        aid = pkg.add_attachment(mid, "strategy", "seed.png", PNG, "image/png", "", "admin")["id"]
     routes = []
     for rule in app.url_map.iter_rules():
         if not str(rule).startswith("/api/board"):
@@ -162,7 +168,9 @@ def main():
         for meth in sorted(rule.methods - {"HEAD", "OPTIONS"}):
             # A narrative's key, or a schedule's for a schedule view.
             path = (str(rule).replace("<int:mid>", str(mid)).replace("<int:user_id>", str(ids["ana"]))
-                    .replace("<key>", "performance" if str(rule).endswith("/view") else "strategy"))
+                    .replace("<key>", "performance" if str(rule).endswith("/view") else "strategy")
+                    .replace("<page_key>", "capitalization").replace("<int:aid>", str(aid))
+                    .replace("<int:n>", "1"))
             routes.append((meth, path, str(rule)))
     # The schedule views read every engine; this check is about WHO may call
     # them, so the figures are stubbed (board_views_check proves the figures).
@@ -178,19 +186,36 @@ def main():
             "/api/board/meetings/<int:mid>": {"title": "Q1 2026 Board"},
             "/api/board/meetings/<int:mid>/schedules": {"schedules": [{"key": "performance", "as_of": "2025-12-31"}]},
             "/api/board/meetings/<int:mid>/narratives/<key>": {"body": "Strategy text"},
-            "/api/board/access/<int:user_id>": {"permissions": {}}}
+            "/api/board/access/<int:user_id>": {"permissions": {}},
+            "/api/board/meetings/<int:mid>/pages/<page_key>/notes": {"footnotes": ["A note"], "disclosure": "D"},
+            "/api/board/meetings/<int:mid>/attachments/<int:aid>": {"caption": "A caption"}}
+    UPLOAD = "/api/board/meetings/<int:mid>/narratives/<key>/attachments"
 
     def call(who, meth, path, rule):
+        import io as _io
         h = H[who] if who else {}
         if meth == "GET":
             return client.get(path, headers=h).status_code
+        if meth == "DELETE":
+            # Each caller deletes an attachment of its own, so one success does not
+            # turn the next caller's answer into a 404.
+            with app.app_context():
+                fresh = pkg.add_attachment(mid, "strategy", "d.png", PNG, "image/png", "", "admin")["id"]
+            return client.delete(path.rsplit("/", 1)[0] + "/%d" % fresh, headers=h).status_code
+        if rule == UPLOAD:
+            return client.post(path, data={"file": (_io.BytesIO(PNG), "x.png"), "caption": "c"},
+                               content_type="multipart/form-data", headers=h).status_code
         fn = client.post if meth == "POST" else client.put
         return fn(path, json=BODY.get(rule, {}), headers=h).status_code
 
     WRITE_NEEDS = {"POST /api/board/meetings": "board_build",
                    "PUT /api/board/meetings/<int:mid>": "board_build",
                    "PUT /api/board/meetings/<int:mid>/schedules": "board_edit",
-                   "PUT /api/board/meetings/<int:mid>/narratives/<key>": "board_edit"}
+                   "PUT /api/board/meetings/<int:mid>/narratives/<key>": "board_edit",
+                   "PUT /api/board/meetings/<int:mid>/pages/<page_key>/notes": "board_edit",
+                   "POST " + UPLOAD: "board_edit",
+                   "PUT /api/board/meetings/<int:mid>/attachments/<int:aid>": "board_edit",
+                   "DELETE /api/board/meetings/<int:mid>/attachments/<int:aid>": "board_edit"}
     SUPER = {"/api/board/access", "/api/board/access/<int:user_id>", "/api/board/audit"}
     HOLDS = {"reader": set(), "boss": set(), "editor": {"board_edit"}, "builder": {"board_build", "board_edit"},
              "cfo": {"comp_edit", "comp_view"}}

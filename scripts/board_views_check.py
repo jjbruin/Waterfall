@@ -230,8 +230,16 @@ chk("a column the payload no longer carries is REPORTED, not silently dropped",
 print("\n7. The screen turns pages without asking the server again")
 deck_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "BoardDeck.vue"), encoding="utf-8").read()
 gets = [ln.strip() for ln in deck_src.splitlines() if "api.get(" in ln]
-chk("the deck asks the server for one thing only: a schedule's view",
-    len(gets) == 1 and "/schedules/${s.key}/view" in gets[0], gets)
+chk("the deck reads only a schedule's view and an attachment's page images -- no figure is fetched or computed elsewhere",
+    len(gets) == 2 and any("/schedules/${s.key}/view" in g for g in gets)
+    and any("/attachments/${a.id}/pages/${pg.n}" in g for g in gets), gets)
+chk("page numbers are positions in the package (index + 1), and the contents prints the same positions",
+    ':page="index + 1"' in deck_src and ':page="i + 1"' in deck_src
+    and "slides.value.findIndex((s) => s.section === sec) + 1" in deck_src)
+chk("the abbreviated package leaves the narrative sections out; the full one carries them",
+    "if (version.value === 'full') {" in deck_src)
+chk("the printed copy draws pages through the same component as the screen",
+    deck_src.count("<DeckPage") == 2 and 'class="bd-print"' in deck_src)
 chk("...and keeps it, keyed by meeting, schedule AND as-of date (a new date refetches)",
     "`${props.meeting.id}|${s.key}|${s.as_of}`" in deck_src and "CACHE.has(k)" in deck_src)
 slide_src = open(os.path.join(ROOT, "vue_app", "src", "components", "board", "InvestmentSummarySlide.vue"),
@@ -240,6 +248,168 @@ chk("investment-summary cells are written by Investment Metrics' own formatter",
     "from '@/utils/investmentMetricsFormat'" in slide_src and "cellText(r, c)" in slide_src)
 chk("...and its columns and pages come from the server's layout, not the screen",
     "view.deck.columns" in slide_src and "props.slide.first" in slide_src)
+
+print("\n8. Page 23: exposure by asset class is the PE engine's, grouped, never guessed")
+AT = {"P0000001": "Multifamily", "P0000002": "Retail - Non Groc.", "P0000012": "Retail - Non Groc.",
+      "P0000003": "Retail - Grocery", "P0000006": "RV Park", "P0000004": "Retail"}
+PE23 = {**PE, "future_funding": PE["future_funding"] + [
+    {"vcode": "P0000007", "deal_name": "Multi-holder", "remaining_to_fund_usd": 3_000_000.0, "by_group": None}],
+    "totals": {**PE["totals"], "grand_cost": 69_000_000.0 + 23_000_000.0,
+               "grand_cost_by_group": {"PSC": 23_000_000.0 + 2_000_000.0}}}
+ac = bv.compose_asset_class(PE23, AT)
+by = {r["label"]: r for r in ac["rows"]}
+chk("total == the engine's grand total (funded + unfunded), to the cent",
+    abs(ac["total"]["total"] - PE23["totals"]["grand_cost"]) < 0.01, ac["total"])
+chk("PSC == the engine's PSC grand total", abs(ac["total"]["psc"] - 25_000_000.0) < 0.01, ac["total"]["psc"])
+chk("a deal's funded and unfunded land in ITS class (Wholly, MF: 10M funded)",
+    by["Multifamily"]["total"] == 10_000_000.0)
+chk("a twin vcode is classed by its own Asset_Type (Venture 50M + twin 2M -> Non-Grocery)",
+    by["Non-Grocery Retail"]["total"] == 52_000_000.0)
+chk("RV Park is Other, as the deck groups it", by["Other"]["total"] == 3_000_000.0)
+chk("both MRI spellings of non-grocery retail are one class",
+    bv.asset_class("Retail - Non Groc.") == bv.asset_class("Retail - Non-Grocery") == "Non-Grocery Retail")
+chk("an Asset_Type the deck does not name is its OWN row, not absorbed (plain 'Retail')",
+    "Retail" in by and by["Retail"]["total"] == 20_000_000.0 and not by["Retail"]["in_deck"])
+chk("...and is named in the notes", any("Asset_Type Retail is not one of the deck's classes" in n for n in ac["notes"]))
+chk("a deal with no Asset_Type is its own Unclassified row, not dropped",
+    by.get(bv.UNCLASSIFIED, {}).get("total") == 3_000_000.0)
+chk("an unsplit unfunded commitment is in the total, not in PSC, and named",
+    bv.UNCLASSIFIED in by and by[bv.UNCLASSIFIED]["psc"] is None
+    and any("Multi-holder" in n and "not in PSC" in n for n in ac["notes"]))
+chk("every deck class is a row even when empty, in the deck's order",
+    [r["label"] for r in ac["rows"]][:5] == list(bv.ASSET_CLASSES))
+chk("an empty deck class shows a dash (None), not $0.0",
+    by["Self Storage"]["total"] is None and by["Self Storage"]["total_share"] is None)
+chk("shares are of the page's own total and add to 100%",
+    abs(sum(r["total_share"] or 0 for r in ac["rows"]) - 1) < 1e-9
+    and abs(sum(r["psc_share"] or 0 for r in ac["rows"]) - 1) < 1e-9)
+chk("p.23 is on the catalog and in the deck's view keys",
+    "exposure_asset_class" in bv.VIEW_KEYS
+    and "exposure_asset_class" in {s_["key"] for s_ in board_service.SCHEDULES if s_.get("view")})
+
+print("\n9. Page 28: occupancy and DSCR by the Snapshot's rules; debt from the loan engines")
+from datetime import date as _d  # noqa: E402
+DR = [
+    {"vcode": "A", "name": "MF one", "is_dev": False, "cls": "Multifamily", "occ": 90.0, "noi": 3.0, "dscr": 1.2, "debt": 10.0},
+    {"vcode": "B", "name": "MF two", "is_dev": False, "cls": "Multifamily", "occ": 80.0, "noi": 1.0, "dscr": 2.0, "debt": 30.0},
+    {"vcode": "C", "name": "MF dev", "is_dev": True, "cls": "Multifamily", "occ": 10.0, "noi": 9.0, "dscr": 0.1, "debt": 99.0},
+    {"vcode": "D", "name": "Store", "is_dev": False, "cls": "Self Storage", "occ": None, "noi": None, "dscr": None, "debt": 5.0},
+    {"vcode": "E", "name": "Camp", "is_dev": False, "cls": "RV Park", "occ": 50.0, "noi": 2.0, "dscr": 0.8, "debt": 4.0},
+]
+mc = bv.compose_metrics_by_class(DR)
+mrow = {r["label"]: r for r in mc["rows"]}
+chk("occupancy is NOI-weighted, the Snapshot's rule: (90x3 + 80x1) / 4 = 87.5",
+    abs(mrow["Multifamily"]["occupancy"] - 87.5) < 1e-9, mrow["Multifamily"])
+chk("DSCR is debt-weighted, the Snapshot's rule: (1.2x10 + 2.0x30) / 40 = 1.8",
+    abs(mrow["Multifamily"]["dscr"] - 1.8) < 1e-9)
+chk("a development deal is in neither average, and is named", "MF dev" not in mrow["Multifamily"]["deals"]
+    and any("Development deals" in n and "MF dev" in n for n in mc["notes"]))
+chk("a deal with no reading is left out and named, not counted as 0",
+    mrow["Self Storage"]["occupancy"] is None and any("Store" in n and "not in occupancy" in n for n in mc["notes"]))
+chk("the portfolio row is the same rule over every operating deal",
+    abs(mc["portfolio"]["occupancy"] - (90 * 3 + 80 + 50 * 2) / 6) < 1e-9)
+src9 = open(os.path.join(ROOT, "flask_app", "services", "board_views_service.py"), encoding="utf-8").read()
+chk("the averages ARE the Snapshot's functions, not a copy",
+    "from flask_app.services.portfolio_snapshot_loan import _debt_weighted" in src9
+    and "from flask_app.services.portfolio_snapshot_operating import _weighted" in src9)
+chk("...and the loans come from the Dashboard's maturity engine, the caps from loan_caps",
+    "dashboard_service.get_loan_maturity_data(" in src9 and "loan_caps.cap_terms(" in src9)
+
+AS = _d(2025, 12, 31)
+
+
+def L(name, amt, rt, mat, rate=None, cap=None, index="SOFR", spread=0.03):
+    return {"deal_name": name, "amount": amt, "rate_type": rt, "maturity": mat, "rate": rate,
+            "index": index, "spread": spread, "cap": cap}
+
+
+LO = [
+    L("F3", 100.0, "Fixed", "2028-12-30", 0.05),          # 3.0 years less a day -> 0-3
+    L("F3b", 100.0, "Fixed", "2028-12-31", 0.03),         # exactly three years -> 0-3
+    L("F4", 200.0, "Fixed", "2029-01-02", 0.04),          # just over three -> 4-6
+    L("F9", 300.0, "Fixed", "2034-06-30", 0.06),          # 6+
+    L("Old", 50.0, "Fixed", "2025-06-30", 0.07),          # matured before the as-of -> 0-3, named
+    L("Open", 150.0, "Floating", "2027-06-30", None, {"capped": False}),
+    L("Low", 60.0, "Floating", "2027-06-30", None, {"capped": True, "strike": 0.025, "max_rate": 0.055, "expiry": "6/27"}),
+    L("High", 40.0, "Floating", "2027-06-30", None, {"capped": True, "strike": 0.05, "max_rate": 0.09, "expiry": "6/27"}),
+    L("Murky", 10.0, "Floating", "2027-06-30", None, {"capped": None, "text": "5.00% for part", "problem": "cap text is not a plain strike / expiry"}),
+]
+dbt = bv.compose_debt(LO, AS)
+bk = {b["label"]: b for b in dbt["fixed"]["buckets"]}
+chk("buckets by years from the as-of: exactly 3 years is 0-3, a day over is 4-6",
+    bk["0-3"]["amount"] == 250.0 and bk["4-6"]["amount"] == 200.0 and bk["6+"]["amount"] == 300.0,
+    {k: v["amount"] for k, v in bk.items()})
+chk("a loan past maturity at the as-of is in 0-3 and named",
+    any("Old" in n and "past maturity" in n for n in dbt["notes"]))
+chk("bucket rate is weighted by the facility amount: (5x100 + 3x100 + 7x50) / 250 = 4.6%",
+    abs(bk["0-3"]["avg_rate"] - 0.046) < 1e-12, bk["0-3"]["avg_rate"])
+chk("fixed total is every fixed loan", dbt["fixed"]["total"] == 750.0)
+fr = {r["key"]: r for r in dbt["floating"]["rows"]}
+chk("a cap AT 2.5% is in '<=2.5%', above it in '>2.5%'", fr["low"]["amount"] == 60.0 and fr["high"]["amount"] == 40.0)
+chk("an unreadable cap is its own row, not counted as uncapped or capped",
+    (fr.get("unknown") or {}).get("amount") == 10.0 and fr["none"]["amount"] == 150.0)
+chk("shares are of TOTAL debt, fixed and floating", abs(fr["none"]["share"] - 150.0 / 1010.0) < 1e-12)
+chk("fixed-or-capped share counts fixed + capped, not uncapped or unreadable",
+    abs(dbt["fixed_or_capped_share"] - (750 + 60 + 40) / 1010.0) < 1e-12)
+ex = {e["deal"]: e["line"] for e in dbt["exposure"]}
+chk("max-interest lines: capped, uncapped, unreadable -- each says which",
+    ex["High"] == "5.00% + 3.00% = 9.00%, through 6/27" and ex["Open"] == "SOFR + 3.00% uncapped, through 6/27"
+    and ex["Murky"].startswith("cap terms:"), ex)
+chk("an unreadable cap is named in the notes with its words",
+    any("Murky" in n and "5.00% for part" in n for n in dbt["notes"]))
+
+print("\n10. Page 24: exposure by operating partner -- p.23's figures, grouped by MRI's partner")
+OPS = {"P0000001": "JPI", "P0000002": "JPI Companies", "P0000012": "JPI", "P0000003": "Mystery Partners LLC",
+       "P0000006": "Vastgood Properties LLC", "P0000004": "Vastgood"}
+PC = {"P0000001": 1, "P0000002": 2, "P0000012": 0, "P0000003": 3, "P0000006": 1, "P0000004": 1}
+pr = bv.compose_partner_exposure(PE23, OPS, PC)
+pby = {r["label"]: r for r in pr["rows"]}
+chk("total == the engine's grand total, and PSC == its PSC grand total",
+    abs(pr["total"]["total"] - PE23["totals"]["grand_cost"]) < 0.01 and abs(pr["total"]["psc"] - 25_000_000.0) < 0.01,
+    pr["total"])
+chk("MRI's two spellings of one partner are one row (JPI + JPI Companies)",
+    pby["JPI"]["total"] == 10_000_000.0 + 52_000_000.0 and "JPI Companies" not in pby)
+chk("...and the merge is named", any("JPI: MRI spells this partner 2 ways" in n for n in pr["notes"]))
+chk("a partner not on the deck list passes through as MRI has it, named",
+    "Mystery Partners LLC" in pby and any('"Mystery Partners LLC" is shown as MRI has it' in n for n in pr["notes"]))
+chk("a deal with no Operating_Partner is its own row, not dropped", bv.NO_PARTNER in pby)
+_pe_both = {**PE23, "future_funding": PE23["future_funding"] + [
+    {"vcode": "P0000001", "deal_name": "Wholly", "remaining_to_fund_usd": 1_000_000.0,
+     "by_group": {g: (1_000_000.0 if g == "PSC" else 0.0) for g in G}}]}
+_pb = {r["label"]: r for r in bv.compose_partner_exposure(_pe_both, OPS, PC)["rows"]}
+chk("a deal funded AND with unfunded commitment counts once; properties = MRI's count over its vcodes",
+    _pb["JPI"]["deals"] == 3 and _pb["JPI"]["properties"] == 1 + 2 + 0
+    and _pb["JPI"]["total"] == 63_000_000.0, _pb["JPI"])
+chk("an unsplit unfunded commitment is in the total, not PSC (no-partner row)",
+    pby[bv.NO_PARTNER]["total"] == 3_000_000.0 and pby[bv.NO_PARTNER]["psc"] == 0.0)
+chk("rows are alphabetical, as the deck lists them",
+    [r["label"] for r in pr["rows"]] == sorted((r["label"] for r in pr["rows"]), key=str.lower))
+chk("the short names map SPELLINGS only: MRI and the deck name different partners for Brainerd, "
+    "Crowne Plaza, JB Fair Park and The Gallery, and none of those is mapped",
+    all(k not in bv.PARTNER_NAMES for k in ("bertram and dimarco", "bertram/pyramid", "manhattan five"))
+    and "Bright Ravens" not in bv.PARTNER_NAMES.values() and "L. Allen" not in bv.PARTNER_NAMES.values()
+    and bv.PARTNER_NAMES["dave west"] == "D. West")
+lay_p = bv.deck_layout({**im_payload(2, 0), "current": {**im_payload(2, 0)["current"],
+                        "rows": [{"vcode": "C0", "partner": "JPI Companies"}, {"vcode": "C1", "partner": "Odd Co"}]}})
+chk("pp. 29-31 print the deck's short partner name, and leave an unlisted one alone",
+    lay_p["partner_short"] == {"JPI Companies": "JPI"}, lay_p["partner_short"])
+
+print("\n11. Page 9: pref by close year is Investment Metrics' pref, and totals to its Grand Total")
+IM9 = {"current": {"rows": [{"name": "A", "pref": 10.0, "invest_date": "2016-03-30"},
+                            {"name": "B", "pref": 5.0, "invest_date": "2016-11-01"},
+                            {"name": "C", "pref": 20.0, "invest_date": "2018-02-01"},
+                            {"name": "No date", "pref": 3.0, "invest_date": None}]},
+       "sold": {"rows": [{"name": "D", "pref": 7.0, "invest_date": "2017-05-01"}]},
+       "grand_total": {"pref": 45.0}}
+p9 = bv.compose_pref_by_year(IM9)
+chk("each year is the pref of the deals that closed in it (Current AND Sold)",
+    [(y["year"], y["new"]) for y in p9["years"]] == [(2016, 15e6), (2017, 7e6), (2018, 20e6)], p9["years"])
+chk("cumulative = everything before the year; the bar's top = prior + new",
+    [(y["prior"], y["cumulative"]) for y in p9["years"]] == [(0.0, 15e6), (15e6, 22e6), (22e6, 42e6)])
+chk("a deal with no invest date is in no year, and named (not silently dropped)",
+    p9["total"] == 42e6 and any("No date" in n for n in p9["notes"]))
+chk("...so the page total says how far it is from the engine's Grand Total (45 vs 42)",
+    p9["reconciliation"]["im_grand_total_pref"] == 45e6 and p9["reconciliation"]["page_total"] == 42e6)
 
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:

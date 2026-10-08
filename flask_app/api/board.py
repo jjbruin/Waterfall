@@ -3,8 +3,10 @@ OPT-IN (``auth/sections.py``): the section gate refuses a user who has not been
 granted it before any route here runs. Inside, what may be DONE is a permission
 by username (``auth/permissions.py``), checked per route:
 
-    read anything here ............ the Board section (schedule views included)
+    read anything here ............ the Board section (schedule views and attachments included)
     meeting schedules, narratives . board_edit
+    footnotes, disclosures,
+    narrative attachments ......... board_edit
     create a meeting, rename it ... board_build
     grants and the access log ..... the admin USERNAME only
 
@@ -123,6 +125,91 @@ def schedule_view(mid, key):
     as_of = svc.parse_date(s["as_of"], "As-of date")
     out = views.build_view(key, as_of)
     return jsonify(safe_json({**out, "schedule": {k: s[k] for k in ("key", "title", "pages", "as_of")}}))
+
+
+@board_bp.route("/meetings/<int:mid>/pages/<page_key>/notes", methods=["PUT"])
+@login_required
+@need("board_edit")
+def put_page_notes(mid, page_key):
+    """{footnotes: [..] | null, disclosure: str | null}. A list replaces the page's
+    default footnotes; null keeps the defaults. ``{"reset": true}`` returns to them."""
+    from flask_app.services import board_package_service as pkg
+    b = request.get_json(silent=True) or {}
+    try:
+        if b.get("reset"):
+            pkg.reset_page_notes(mid, page_key, _actor()["username"])
+            return jsonify({"footnotes": None, "disclosure": None})
+        return jsonify(pkg.save_page_notes(mid, page_key, b.get("footnotes"), b.get("disclosure"),
+                                           _actor()["username"]))
+    except LookupError as e:
+        return _bad(e, 404)
+    except PermissionError as e:
+        return _bad(e, 409)
+    except ValueError as e:
+        return _bad(e)
+
+
+@board_bp.route("/meetings/<int:mid>/narratives/<key>/attachments", methods=["POST"])
+@login_required
+@need("board_edit")
+def post_attachment(mid, key):
+    """multipart: ``file`` (an image or a PDF) and optional ``caption``."""
+    from flask_app.services import board_package_service as pkg
+    f = request.files.get("file")
+    if f is None:
+        return _bad(ValueError("Choose a file to attach"))
+    try:
+        return jsonify(pkg.add_attachment(mid, key, f.filename, f.read(), f.mimetype,
+                                          request.form.get("caption") or "", _actor()["username"])), 201
+    except LookupError as e:
+        return _bad(e, 404)
+    except PermissionError as e:
+        return _bad(e, 409)
+    except ValueError as e:
+        return _bad(e)
+
+
+@board_bp.route("/meetings/<int:mid>/attachments/<int:aid>", methods=["PUT"])
+@login_required
+@need("board_edit")
+def put_attachment(mid, aid):
+    from flask_app.services import board_package_service as pkg
+    b = request.get_json(silent=True) or {}
+    try:
+        return jsonify(pkg.update_attachment(mid, aid, {k: b[k] for k in ("caption", "move") if k in b},
+                                             _actor()["username"]))
+    except LookupError as e:
+        return _bad(e, 404)
+    except PermissionError as e:
+        return _bad(e, 409)
+    except ValueError as e:
+        return _bad(e)
+
+
+@board_bp.route("/meetings/<int:mid>/attachments/<int:aid>", methods=["DELETE"])
+@login_required
+@need("board_edit")
+def delete_attachment(mid, aid):
+    from flask_app.services import board_package_service as pkg
+    try:
+        pkg.delete_attachment(mid, aid, _actor()["username"])
+        return jsonify({"deleted": aid})
+    except LookupError as e:
+        return _bad(e, 404)
+    except PermissionError as e:
+        return _bad(e, 409)
+
+
+@board_bp.route("/meetings/<int:mid>/attachments/<int:aid>/pages/<int:n>", methods=["GET"])
+@login_required
+def attachment_page(mid, aid, n):
+    """One shown page of an attachment, as an image. Read access is the Board section."""
+    from flask import Response
+    from flask_app.services import board_package_service as pkg
+    got = pkg.attachment_page(mid, aid, n)
+    if got is None:
+        return jsonify({"error": "Attachment page not found"}), 404
+    return Response(got[1], mimetype=got[0], headers={"Cache-Control": "private, max-age=3600"})
 
 
 @board_bp.route("/meetings/<int:mid>", methods=["PUT"])
