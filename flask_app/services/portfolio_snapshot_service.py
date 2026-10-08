@@ -682,6 +682,16 @@ def _s(value) -> str:
     return str(value).strip()
 
 
+def _capital_vcode_of(inv: pd.DataFrame, iid: str):
+    """The vcode the engine attaches ``iid``'s accounting to -- the One Pager's
+    own map over the same frame. See REPORT_VCODE_PROMOTE."""
+    try:
+        from loaders import build_investmentid_to_vcode
+        return build_investmentid_to_vcode(inv).get(iid)
+    except Exception:
+        return None
+
+
 def _deal_index(inv: pd.DataFrame) -> dict:
     """vcode -> deal metadata, from the deals frame.
 
@@ -745,6 +755,15 @@ def _deal_index(inv: pd.DataFrame) -> dict:
             out[real]["property_count"] = max(1, stub_meta["property_count"])
             out[real]["name"] = stub_meta["name"]
             out[real]["promoted_from"] = stub
+            # WHERE THE CAPITAL IS. The accounting feed is keyed on InvestmentID,
+            # and build_investmentid_to_vcode resolves a shared ID to whichever
+            # row the database returns LAST: P0000073 on local SQLite, P0000049
+            # on production Postgres (measured Oct 8 2026 -- v601 printed the
+            # debt with zero equity because of it). Ask the SAME map, over the
+            # SAME frame the One Pager provider uses, so the row reads equity
+            # from wherever the engine attached it, whatever the row order.
+            cap_vc = _capital_vcode_of(inv, out[real]["iid"])
+            out[real]["capital_vcode"] = cap_vc if cap_vc in (stub, real) else real
     return out
 
 
@@ -1022,6 +1041,8 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "stack_quarter": quarter,
             "flags": [],
         }
+        if m.get("capital_vcode"):            # REPORT_VCODE_PROMOTE rows only
+            entry["capital_vcode"] = m["capital_vcode"]
         if entry["kept_despite_sold"]:
             entry["flags"].append(
                 "sold/foreclosed before quarter end — kept on the report to "
