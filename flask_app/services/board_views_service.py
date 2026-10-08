@@ -21,6 +21,8 @@ already owns, at the schedule's own as-of date (ONE NUMBER, ONE ENGINE):
   |      |                                          |   NOI-weighted, DSCR debt-weighted, dev out  |
   | 28   | Fixed / floating debt, maturities, rates | dashboard_service.get_loan_maturity_data     |
   |      | Rate caps, max interest                  | loan_caps.cap_terms                          |
+  | 24   | The same, by operating partner           | as p. 23, grouped by deals.Operating_Partner |
+  |      |                                          |   through PARTNER_NAMES                      |
   | 23   | Net pref incl. unfunded by asset class,  | pe_exposure_service: funded Cost + remaining |
   |      |   total and PSC                          |   to fund per deal, PSC by its split; the    |
   |      |                                          |   class is MRI's deals.Asset_Type, grouped   |
@@ -49,7 +51,7 @@ THIRD_PARTY = ("TIAA", "KOC", "Clarion", "F&F", "Declaration", "Ambassadors")
 GROUP_LABELS = {"PSC": "PSC", "TIAA": "TIAA", "KOC": "Knights of Columbus", "Clarion": "Clarion",
                 "F&F": "Friends & Family", "Declaration": "Declaration", "Ambassadors": "Ambassadors"}
 
-VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "debt",
+VIEW_KEYS = ("exposure_asset_class", "exposure_partner", "capitalization", "performance", "debt",
              "investment_summaries")
 
 # ------------------------------------------------------------------ the deck's layout
@@ -60,6 +62,7 @@ VIEW_KEYS = ("exposure_asset_class", "capitalization", "performance", "debt",
 
 #: The deck's slide titles (Jan 2026 deck, pp. 26-27).
 SLIDE_TITLES = {"exposure_asset_class": "Exposure: Asset Class",
+                "exposure_partner": "Exposure: Operating Partner (Current Deals)",
                 "capitalization": "Current Portfolio Capitalization",
                 "performance": "Performance: Portfolio Level",
                 "debt": "Portfolio Metrics"}
@@ -83,6 +86,35 @@ ASSET_CLASS_OF = {
     "industrial": "Other", "rv park": "Other", "resort": "Other",
 }
 UNCLASSIFIED = "Unclassified (no Asset_Type)"
+
+#: MRI's ``deals.Operating_Partner`` spellings -> the deck's short name (p. 24, and
+#: the partner column of pp. 29-30). SPELLING VARIANTS ONLY: "JPI" and "JPI
+#: Companies" are one partner. Where MRI and the January deck name DIFFERENT
+#: partners for a deal -- Brainerd / Crowne Plaza ("Bertram and DiMarco",
+#: "Bertram/Pyramid" vs the deck's "Bright Ravens"), JB Fair Park ("Dave West" vs
+#: "L. Allen"), The Gallery ("Manhattan Five" vs "MFP") -- nothing is mapped: that
+#: is a question about who the partner is, for asset management (open_items), not
+#: a spelling. A name not listed passes through as MRI has it, and is named.
+PARTNER_NAMES = {
+    "abbell associates": "Abbell", "apple": "Apple", "apple self storage": "Apple",
+    "ashcroft capital": "Ashcroft", "athena r.e.": "Athena", "berger communities": "Berger",
+    "burton property group": "Burton", "capreit": "CAPREIT", "colony hills": "Colony Hills",
+    "dave west": "D. West", "elan multifamily investments": "Elan", "evergreen devco, inc.": "Evergreen",
+    "flag wharf": "Flag Wharf", "jpi": "JPI", "jpi companies": "JPI", "kempner properties": "Kempner",
+    "lbx investments": "LBX", "mcb real estate": "MCB", "mccord development, inc.": "McCord",
+    "orei": "OREI", "pegasus investment partners": "Pegasus", "pmat": "PMAT", "prestige": "Prestige",
+    "pyramid": "Pyramid", "rainier companies": "Rainier", "rcg ventures": "RCG", "vastgood": "Vastgood",
+    "vastgood properties llc": "Vastgood",
+}
+NO_PARTNER = "(no Operating_Partner in MRI)"
+
+
+def partner_name(raw) -> str:
+    """The deck's name for an MRI ``Operating_Partner``; an unlisted spelling passes through."""
+    r = "" if raw is None or raw != raw else str(raw).strip()
+    if not r:
+        return NO_PARTNER
+    return PARTNER_NAMES.get(r.lower(), r)
 
 #: The board deck prints a NARROWER Investment Metrics table than the tab (pp.
 #: 29-31): no DMA/Location and no Year-1 CoC columns, and the Sold page shows
@@ -141,7 +173,15 @@ def deck_layout(im: dict) -> dict:
                              f"*Exited investments through {as_of}. Gross Pref Equity includes "
                              f"underwritten, capital call but does not include return of capital."),
             })
-    return {"columns": columns, "slides": slides, "missing_columns": missing}
+    # The partner column prints the deck's short name (PARTNER_NAMES): display only,
+    # the Investment Metrics payload itself is untouched.
+    short = {}
+    for t in ("current", "sold"):
+        for r in (im.get(t) or {}).get("rows") or []:
+            raw = r.get("partner")
+            if raw and partner_name(raw) != str(raw).strip():
+                short[str(raw)] = partner_name(raw)
+    return {"columns": columns, "slides": slides, "missing_columns": missing, "partner_short": short}
 
 
 def _add(a: Optional[float], b: Optional[float]) -> Optional[float]:
@@ -577,7 +617,85 @@ def compose_debt(loans: List[dict], as_of: date) -> dict:
     }
 
 
+# ------------------------------------------------------------------ page 24
+
+def compose_partner_exposure(pe: dict, partners: Dict[str, Optional[str]],
+                             property_counts: Dict[str, Optional[int]]) -> dict:
+    """Page 24: p. 23's figures -- funded Cost + remaining to fund, total and PSC --
+    by operating partner, with the deals and properties behind each.
+
+    A deal is an MRI deal (Jim, Oct 7 2026: Brainerd I and II are one), so the deck's
+    transaction count (Apple 7, Berger 8) is not this column. An unsplit unfunded
+    commitment is in the total and not PSC, as on p. 23.
+    """
+    groups: Dict[str, dict] = {}
+    notes: List[str] = []
+
+    def g(vcode):
+        raw = partners.get(vcode)
+        name = partner_name(raw)
+        x = groups.setdefault(name, {"total": 0.0, "psc": 0.0, "deals": set(), "vcodes": set(), "raw": set()})
+        x["raw"].add("" if raw is None or raw != raw else str(raw).strip())
+        x["vcodes"].add(vcode)
+        return x
+
+    for r in pe.get("rows") or []:
+        if r.get("fx_missing") or r.get("cost") is None:
+            continue
+        x = g(r["vcode"])
+        x["total"] += r["cost"]
+        x["psc"] += (r.get("cost_by_group") or {}).get("PSC") or 0.0
+        x["deals"].add(r["deal_name"])
+    for f in pe.get("future_funding") or []:
+        amt = f.get("remaining_to_fund_usd")
+        if amt is None:
+            continue
+        x = g(f["vcode"])
+        x["total"] += amt
+        split = f.get("by_group")
+        if split:
+            x["psc"] += split.get("PSC") or 0.0
+        else:
+            notes.append(f"{f['deal_name']}: its ${amt / 1e6:,.2f}M unfunded commitment has several "
+                         f"holders and is not split, so it is in the total and not in PSC.")
+        x["deals"].add(f["deal_name"])
+
+    grand = sum(x["total"] for x in groups.values())
+    grand_psc = sum(x["psc"] for x in groups.values())
+    rows = []
+    for name in sorted(groups, key=lambda n: n.lower()):
+        x = groups[name]
+        pcs = [property_counts.get(v) for v in x["vcodes"]]
+        rows.append({"label": name, "deals": len(x["deals"]),
+                     "properties": None if all(p is None for p in pcs) else sum(p or 0 for p in pcs),
+                     "total": x["total"], "total_share": x["total"] / grand if grand else None,
+                     "psc": x["psc"], "psc_share": x["psc"] / grand_psc if grand_psc else None,
+                     "deal_names": sorted(x["deals"]), "mri_names": sorted(x["raw"])})
+        spellings = sorted(n for n in x["raw"] if n)
+        if len(spellings) > 1:
+            notes.append(f"{name}: MRI spells this partner {len(spellings)} ways ({'; '.join(spellings)}); "
+                         f"shown as one.")
+        if name not in PARTNER_NAMES.values():
+            notes.append(f"Operating partner \"{name}\" is shown as MRI has it (no short name on the deck "
+                         f"list): {', '.join(sorted(x['deals']))}.")
+    totals = pe.get("totals") or {}
+    return {"rows": rows,
+            "total": {"total": grand, "psc": grand_psc, "deals": sum(r["deals"] for r in rows),
+                      "properties": sum(r["properties"] or 0 for r in rows)},
+            "reconciliation": {"pe_grand_cost": totals.get("grand_cost"), "page_total": grand,
+                               "pe_grand_psc": (totals.get("grand_cost_by_group") or {}).get("PSC"),
+                               "page_psc": grand_psc},
+            "notes": notes}
+
+
 # ------------------------------------------------------------------ the views
+
+def _partners(inv) -> Dict[str, Optional[str]]:
+    if inv is None or "vcode" not in inv.columns or "Operating_Partner" not in inv.columns:
+        return {}
+    return {str(v).strip().upper(): (None if t is None or t != t else str(t))
+            for v, t in zip(inv["vcode"], inv["Operating_Partner"])}
+
 
 def _asset_types(inv) -> Dict[str, Optional[str]]:
     if inv is None or "vcode" not in inv.columns or "Asset_Type" not in inv.columns:
@@ -699,6 +817,12 @@ def build_view(key: str, as_of: date, data: Optional[dict] = None, engine=None) 
         from flask_app.services.data_service import get_data
         data = get_data()
     when = _short_date(as_of.isoformat())
+    if key == "exposure_partner":
+        pe = pe_svc.get_report(as_of, data=data, engine=engine)
+        return {"key": key, "slide_title": SLIDE_TITLES[key],
+                **compose_partner_exposure(pe, _partners(data.get("inv")), _property_counts(data.get("inv"))),
+                "footnotes": [f"*Preferred equity balance includes unfunded commitments. Portfolio data is "
+                              f"updated through {when}."]}
     if key == "exposure_asset_class":
         # PE exposure only -- no Investment Metrics build for this page.
         pe = pe_svc.get_report(as_of, data=data, engine=engine)

@@ -144,6 +144,11 @@ reconciliation in `board.md`). Open from it:
   (502 / 615 / 360 is reproduced by no years-to-maturity rule); are JB Fair Park and Town Fair
   Tire swapped (Variable in MRI, absent from the deck's floating list); Mount Prospect's partial
   cap terms; Middle Island's spread (MRI 3.70%, deck 3.81%). Owner: **AM / Jack**.
+- **AM -- p.24 partner assignments** (Oct 8 2026): the deck and MRI name different partners for
+  Brainerd / Crowne Plaza (deck "Bright Ravens"), JB Fair Park (deck "L. Allen", MRI "Dave
+  West"), The Gallery ("MFP" / "Manhattan Five"); and the deck's Pegasus, JPI, PMAT and LBX rows
+  carry deals MRI assigns elsewhere. Fix MRI's `Operating_Partner`, or tell us the deck was wrong;
+  `PARTNER_NAMES` then takes the confirmed short names. Owner: **AM / Jack**.
 - **MRI `Asset_Type` spellings** (Oct 8 2026) -- `Retail - Non Groc.` (23 deals) and
   `Retail - Non-Grocery` (Merle Hay, 5-15 Broad, changed Oct 8); `Self Storage` and
   `Self-Storage`. The Board maps both; other reports may not. Settle on one each. Owner: MRI.

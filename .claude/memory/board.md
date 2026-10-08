@@ -199,6 +199,18 @@ Production vs the deck (metrics as of 9/30/25):
 | No cap | 356.1 | 403.0 (JB Fair 77.4 and Town Fair Tire 20.0 are Variable in MRI, absent from the deck) |
 | Cap not readable | -- | Mount Prospect 6.0 ("5.00% for $5.3M, 5yr $825k") |
 
+## p.24 exposure by operating partner (Oct 8 2026; branch `feat/board-p23-asset-class`)
+p.23's figures grouped by MRI `Operating_Partner` through `board_views_service.PARTNER_NAMES`
+-- SPELLING variants only, to the deck's short names (JPI / JPI Companies, Vastgood / Vastgood
+Properties LLC, Apple / Apple Self Storage...); the same names print in pp.29-30's partner
+column (display only). Deals = MRI deals (Jim's rule), so the deck's transaction counts
+(Apple 7, Berger 8, total 61) are not this column. Production 12/31/25: totals = PE engine
+(692.4 / 120.9); 14 partners tie the deck to $0.1M; the rest differ by WHO the deck assigns a
+deal to -- MRI vs deck: Brainerd / Crowne ("Bertram and DiMarco", "Bertram/Pyramid" vs
+"Bright Ravens"), JB Fair Park ("Dave West" vs "L. Allen"), The Gallery ("Manhattan Five" vs
+"MFP"); and Pegasus 44.9 vs 12.5, JPI 99.9 vs 109.2, PMAT 6.1 vs 32.7, LBX PSC 5.5 vs 11.8 --
+redistribution, since the grand total ties. Not mapped; AM's call.
+
 ### Future-funding split, measured Oct 7 2026 (production data at 12/31/25, nothing changed)
 The engine splits a deal's unfunded commitment by its holder's funded shares (commitment
 ratios); a multi-holder deal is left unsplit. Against the 12/31/25 tracker, by deal:

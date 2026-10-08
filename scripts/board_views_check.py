@@ -350,6 +350,42 @@ chk("max-interest lines: capped, uncapped, unreadable -- each says which",
 chk("an unreadable cap is named in the notes with its words",
     any("Murky" in n and "5.00% for part" in n for n in dbt["notes"]))
 
+print("\n10. Page 24: exposure by operating partner -- p.23's figures, grouped by MRI's partner")
+OPS = {"P0000001": "JPI", "P0000002": "JPI Companies", "P0000012": "JPI", "P0000003": "Mystery Partners LLC",
+       "P0000006": "Vastgood Properties LLC", "P0000004": "Vastgood"}
+PC = {"P0000001": 1, "P0000002": 2, "P0000012": 0, "P0000003": 3, "P0000006": 1, "P0000004": 1}
+pr = bv.compose_partner_exposure(PE23, OPS, PC)
+pby = {r["label"]: r for r in pr["rows"]}
+chk("total == the engine's grand total, and PSC == its PSC grand total",
+    abs(pr["total"]["total"] - PE23["totals"]["grand_cost"]) < 0.01 and abs(pr["total"]["psc"] - 25_000_000.0) < 0.01,
+    pr["total"])
+chk("MRI's two spellings of one partner are one row (JPI + JPI Companies)",
+    pby["JPI"]["total"] == 10_000_000.0 + 52_000_000.0 and "JPI Companies" not in pby)
+chk("...and the merge is named", any("JPI: MRI spells this partner 2 ways" in n for n in pr["notes"]))
+chk("a partner not on the deck list passes through as MRI has it, named",
+    "Mystery Partners LLC" in pby and any('"Mystery Partners LLC" is shown as MRI has it' in n for n in pr["notes"]))
+chk("a deal with no Operating_Partner is its own row, not dropped", bv.NO_PARTNER in pby)
+_pe_both = {**PE23, "future_funding": PE23["future_funding"] + [
+    {"vcode": "P0000001", "deal_name": "Wholly", "remaining_to_fund_usd": 1_000_000.0,
+     "by_group": {g: (1_000_000.0 if g == "PSC" else 0.0) for g in G}}]}
+_pb = {r["label"]: r for r in bv.compose_partner_exposure(_pe_both, OPS, PC)["rows"]}
+chk("a deal funded AND with unfunded commitment counts once; properties = MRI's count over its vcodes",
+    _pb["JPI"]["deals"] == 3 and _pb["JPI"]["properties"] == 1 + 2 + 0
+    and _pb["JPI"]["total"] == 63_000_000.0, _pb["JPI"])
+chk("an unsplit unfunded commitment is in the total, not PSC (no-partner row)",
+    pby[bv.NO_PARTNER]["total"] == 3_000_000.0 and pby[bv.NO_PARTNER]["psc"] == 0.0)
+chk("rows are alphabetical, as the deck lists them",
+    [r["label"] for r in pr["rows"]] == sorted((r["label"] for r in pr["rows"]), key=str.lower))
+chk("the short names map SPELLINGS only: MRI and the deck name different partners for Brainerd, "
+    "Crowne Plaza, JB Fair Park and The Gallery, and none of those is mapped",
+    all(k not in bv.PARTNER_NAMES for k in ("bertram and dimarco", "bertram/pyramid", "manhattan five"))
+    and "Bright Ravens" not in bv.PARTNER_NAMES.values() and "L. Allen" not in bv.PARTNER_NAMES.values()
+    and bv.PARTNER_NAMES["dave west"] == "D. West")
+lay_p = bv.deck_layout({**im_payload(2, 0), "current": {**im_payload(2, 0)["current"],
+                        "rows": [{"vcode": "C0", "partner": "JPI Companies"}, {"vcode": "C1", "partner": "Odd Co"}]}})
+chk("pp. 29-31 print the deck's short partner name, and leave an unlisted one alone",
+    lay_p["partner_short"] == {"JPI Companies": "JPI"}, lay_p["partner_short"])
+
 print("\n%d passed, %d failed" % (PASSED, len(FAILED)))
 for f in FAILED:
     print("  -", f)

@@ -93,6 +93,7 @@ watch(() => [props.slide, props.view], fit)
           <td v-for="c in cols" :key="c.key" :class="[c.align === 'left' ? 'l' : '', { vr: RULE_BEFORE.has(c.key) }]">
             <template v-if="c.key === 'name'">{{ r.name }}<span v-if="r.markers?.length" class="mk">
               {{ r.markers.map((m: number) => `(${m})`).join('') }}</span></template>
+            <template v-else-if="c.key === 'partner'">{{ view.deck.partner_short?.[r.partner] || cellText(r, c) }}</template>
             <template v-else>{{ cellText(r, c) }}</template>
           </td>
         </tr>
