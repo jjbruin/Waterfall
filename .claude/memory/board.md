@@ -237,7 +237,7 @@ disclosures on every page.
 - Guardrails: `board_package_check` 28, `board_access_check` 217 (the five new routes, every role),
   `board_views_check` 101. All `board_*` tables are now PROTECTED.
 
-## p.5 year in review (Oct 8 2026; branch `feat/board-p5-year-in-review`)
+## p.5 year in review (Oct 8 2026; live `v612`)
 Two computed sections, then (FULL only) the editors' Year in review text and attachments, paginated as
 ONE section -- the narrative is absorbed (`ABSORBS` in BoardDeck), not printed twice.
 - 3rd Party AUM Growth: PE exposure FUNDED cost by group at the as-of vs the same date a year earlier;

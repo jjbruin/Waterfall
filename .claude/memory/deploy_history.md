@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v611** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v612** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v611 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v612 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,20 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v612` = `925c3fc` (BOARD P.5: THE YEAR IN REVIEW. Merge of `feat/board-p5-year-in-review` (`02eb864`):
+    3rd-party AUM growth (PE exposure funded cost at the as-of and a year earlier) and the year's investment
+    activity (Investment Metrics rows; realized losses from `noncash_by_holding` at the deal's own
+    investment), then the Year in review text as one paginated section (Full). Also ships `328a333` (the
+    local production pull keeps only the last two backups -- Jim approved; local tooling, never imported by
+    the app). Not a symptom repair. Span vs live `1301efe` (v611): those two + the v611 docs + two merges.
+    Jim pushed main. Build `capr`, Succeeded; tag locked; P1 re-run (v611); deployed from PowerShell;
+    Healthy at 100%; `SSO_REDIRECT_URL` read back as `/login`, callback still `302 /login#...`. SERVED:
+    `BoardView-Db3MyOUW.js` from `main-rISagIFc.js` (the ABSORBS map, the narrative hint). IN THE
+    CONTAINER: `year_in_review` first in VIEW_KEYS, status View built. Guardrails: board_views 113 (3 new
+    injections), board_package 28, board_access 217, section_access 274, one_engine 28, print_page_rule
+    20/20, pull_production_db_backups 0 failing, sso_redirect 10. The accountants confirmed Microsoft
+    sign-in works (after v610/v611). **Rollback** FORWARD: `--image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:1301efe --revision-suffix v613` (keep SSO_REDIRECT_URL).)
   - `v611` = `1301efe` (SSO: THE CALLBACK ONLY REDIRECTS TO AN APP PATH OR A WEB ADDRESS. Merge of
     `fix/sso-redirect-guard` (`8af5657`): `sso._frontend_url()` uses `SSO_REDIRECT_URL` only if it is an
     app path ("/x", not "//host") or an http(s) address, else logs it and uses `/login` -- the defect v610
