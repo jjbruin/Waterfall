@@ -176,6 +176,16 @@ body {
     margin: 0;
   }
 
+  /* Financial statements, at the reference's own margins. The one named box
+     with a margin: a statement can run onto a second physical page, and only
+     a page margin (not container padding) repeats on every page. Opt-in by
+     `page: statement-sheet` (StatementsPrintView), so it cannot reach any
+     other view's print. */
+  @page statement-sheet {
+    size: letter portrait;
+    margin: 1in 1in 0.75in 1in;
+  }
+
   .sidebar {
     display: none !important;
   }
