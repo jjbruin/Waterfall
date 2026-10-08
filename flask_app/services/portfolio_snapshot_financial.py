@@ -1050,6 +1050,22 @@ def assemble_financial(investor_code: str, quarter: str, *,
             flags.append(f"One Pager unavailable: {str(exc)[:80]}")
             payload = {}
         cap = payload.get("cap_stack") or {}
+        # REPORT_VCODE_PROMOTE (Donald Lynch only): debt, loan and operations
+        # come from the reported vcode, the EQUITY from the vcode the engine
+        # attached the InvestmentID's accounting to -- see `capital_vcode` in
+        # portfolio_snapshot_service._deal_index.
+        cap_vc = entry.get("capital_vcode")
+        if cap_vc and cap_vc != vcode:
+            try:
+                eq = (one_pager_provider(cap_vc, stack_quarter) or {}).get(
+                    "cap_stack") or {}
+            except Exception as exc:
+                eq = {}
+                flags.append(f"equity One Pager unavailable: {str(exc)[:80]}")
+            cap = {**cap, **{k: eq.get(k) for k in
+                             ("pref_equity", "partner_equity", "committed_pe")}}
+            flags.append(f"equity read from {cap_vc}, debt from {vcode} "
+                         "(REPORT_VCODE_PROMOTE)")
         if stack_quarter != quarter:
             diag["stack_rebased"] = diag.get("stack_rebased", 0) + 1
 

@@ -216,7 +216,30 @@ KEEP_DESPITE_SOLD: set[str] = {
     "P0000017",       # East Manchester — sold 6/25/2026
     "PCAMARI",        # Camarillo Village — sold
     "POUTLOO",        # Outlook Nine Mile — sold
+    "P0000073",       # Donald Lynch — sold 9/4/2026 (see REPORT_VCODE_PROMOTE)
 }
+
+# ══════════════════════════════════════════════════════════════════════════
+# ONE-OFF, DONALD LYNCH ONLY — report the deal under the vcode holding its data
+# ══════════════════════════════════════════════════════════════════════════
+#: stub vcode -> the vcode the Snapshot reports in its place.
+#:
+#: InvestmentID MCCORD carries two vcodes. P0000049 is the parent row
+#: (Property_Count 1) and holds NOTHING — no ISBS, loan, valuation, and the
+#: cap stack answers 0 under it because build_investmentid_to_vcode maps MCCORD
+#: to P0000073. P0000073 (870 DLB, Property_Count 0) holds every figure. Built
+#: from P0000049 the row printed Debt 0.0 / Total Cap 0.0 for every investor
+#: reaching it through PPI33; built from P0000073 it reads, at 26Q2, debt
+#: 9,684,943, pref 2,312,100, partner 1,050,000 (One Pager cap stack).
+#:
+#: A PER-DEAL HARDCODE (Charlene, Oct 8 2026, "a one-off for Donald Lynch
+#: only"). The general rule — read a data-less parent from its same-InvestmentID
+#: child — would also touch ASTONC and was deliberately not taken. To retire:
+#: delete the entry, or fix the MRI parent/child structure for MCCORD.
+REPORT_VCODE_PROMOTE: dict[str, str] = {
+    "P0000049": "P0000073",       # Donald Lynch stub -> 870 DLB
+}
+# ══════════════════════════════════════════════════════════════════════════
 # ══════════════════════════════════════════════════════════════════════════
 
 #: Group key -> the label the reference PDF prints on that group's total row.
@@ -659,6 +682,16 @@ def _s(value) -> str:
     return str(value).strip()
 
 
+def _capital_vcode_of(inv: pd.DataFrame, iid: str):
+    """The vcode the engine attaches ``iid``'s accounting to -- the One Pager's
+    own map over the same frame. See REPORT_VCODE_PROMOTE."""
+    try:
+        from loaders import build_investmentid_to_vcode
+        return build_investmentid_to_vcode(inv).get(iid)
+    except Exception:
+        return None
+
+
 def _deal_index(inv: pd.DataFrame) -> dict:
     """vcode -> deal metadata, from the deals frame.
 
@@ -713,6 +746,24 @@ def _deal_index(inv: pd.DataFrame) -> dict:
             # Deals" subtotal all read this one field so they cannot diverge.
             "investment_strategy": _s(d.get(cols.get("investment_strategy"))),
         }
+    # ONE-OFF — see REPORT_VCODE_PROMOTE. The stub leaves the index and the
+    # vcode with the data takes its place as a reportable (non-child) deal,
+    # under the stub's name.
+    for stub, real in REPORT_VCODE_PROMOTE.items():
+        if stub in out and real in out:
+            stub_meta = out.pop(stub)
+            out[real]["property_count"] = max(1, stub_meta["property_count"])
+            out[real]["name"] = stub_meta["name"]
+            out[real]["promoted_from"] = stub
+            # WHERE THE CAPITAL IS. The accounting feed is keyed on InvestmentID,
+            # and build_investmentid_to_vcode resolves a shared ID to whichever
+            # row the database returns LAST: P0000073 on local SQLite, P0000049
+            # on production Postgres (measured Oct 8 2026 -- v601 printed the
+            # debt with zero equity because of it). Ask the SAME map, over the
+            # SAME frame the One Pager provider uses, so the row reads equity
+            # from wherever the engine attached it, whatever the row order.
+            cap_vc = _capital_vcode_of(inv, out[real]["iid"])
+            out[real]["capital_vcode"] = cap_vc if cap_vc in (stub, real) else real
     return out
 
 
@@ -990,6 +1041,8 @@ def resolve_investor_deals(investor_code: str, quarter: str,
             "stack_quarter": quarter,
             "flags": [],
         }
+        if m.get("capital_vcode"):            # REPORT_VCODE_PROMOTE rows only
+            entry["capital_vcode"] = m["capital_vcode"]
         if entry["kept_despite_sold"]:
             entry["flags"].append(
                 "sold/foreclosed before quarter end — kept on the report to "

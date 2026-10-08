@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v600** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v604** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v600 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v604 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,33 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v604` = `66e714d` (REPORTS ROE SUMMARY: DONALD LYNCH U/W ITD ROE. Oct 8 2026, Charlene, Jim
+    approved. Same one-off entry (REPORT_VCODE_PROMOTE): the row builds under P0000049 on
+    production but every Projected IS 7071/7073 row is on P0000073, so U/W ITD ROE read 0.0. The
+    row's own vcode wins; the twin is read only when it has none. Diffed all 77 deals under the
+    production row order: only Donald Lynch moves, 0.0% -> 24.2%. Verified on LIVE: 77 rows, 0
+    errors, Donald Lynch U/W 24.2% read from P0000073, no other row reads P0000073; the v603
+    Snapshot row unchanged. 24.2% is the highest in the book (median 8.5%) and its inputs look like
+    different bases -- app supplement capital vs MRI 7071 distributions -- pending the U/W model.)
+  - `v603` = `6c58d15` (PORTFOLIO SNAPSHOT: DONALD LYNCH REPORTED, CORRECTLY THIS TIME. Oct 8 2026,
+    Charlene, Jim approved the one-off. Branch `fix/snapshot-loan-remove-typed-ratios` (6eaf5e6 +
+    6c58d15 on 56a251c), NOT merged to main at deploy. The Donald Lynch row (MCCORD) reports under
+    P0000073 -- debt, loan, operations -- with pref / partner / committed pref from the vcode
+    `build_investmentid_to_vcode` returns for MCCORD (`_capital_vcode_of`), and P0000073 joins
+    KEEP_DESPITE_SOLD. Verified on LIVE, Declaration (DCXVIA): 26Q2 debt 9,684,943, Total Pref
+    4,935,000, Ptr Equity 1,050,000, Total Cap 15,669,943, DSCR 2.08x / LTV 54.1% / DY 13.7%; 26Q3
+    '(Sold)', stack 2026-Q2, debt n/a, Total Cap 5,985,000. TIAA: no Donald Lynch row, 26Q2 totals
+    byte-identical to Oct 7. Guardrail `scripts/snapshot_donald_lynch_promote_check.py` -- RUN IT
+    UNDER BOTH ROW ORDERS (see its docstring).)
+  - `v602` = `c04bfe4` (ROLLBACK of v601 by rolling forward to the v600 image. Oct 8 2026.)
+  - `v601` = `6eaf5e6` (BROKEN ON LIVE, rolled back as v602. The Donald Lynch one-off read the WHOLE
+    cap stack from P0000073. `build_investmentid_to_vcode` is `dict(zip(...))`, last row wins: MCCORD
+    -> P0000073 on local SQLite, -> P0000049 on production Postgres, so live put the equity on
+    P0000049 and the row printed debt 9.68M with Total Pref blank and Ptr Equity 0.0. Tested only
+    on local row order. LESSON: anything keyed on a shared InvestmentID (MCCORD, ASTONC) must be
+    tested under the PG row order -- a copy of waterfall.db with the row deleted and re-inserted
+    last reproduces it. The order-dependent map itself is shared by the pref engine, sold service,
+    PE exposure and others; NOT fixed, raised with Charlene for Jim.)
   - `v600` = `c04bfe4` (BOARD: THE MEETING AS A DECK. Merge of `feat/board-deck-viewer`
     (`3407f2d`): an open meeting shows its schedules as deck pages on the January deck's 4:3
     canvas (green rule, title, banded tables, INTERNAL USE ONLY, page number), scaled to the
