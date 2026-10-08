@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v604** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v605** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v604 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v605 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,28 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v605` = `a75319a` (BOARD: PAGES 9, 23, 24, 28 AND THE RESULTS PACKAGE. Merge of
+    `feat/board-p23-asset-class`: p.23 exposure by asset class, p.24 by operating partner (deck short
+    names, spelling variants only), p.28 occupancy / DSCR (One Pager per deal, Snapshot roll-up
+    functions) and fixed / floating debt (Dashboard maturity engine) with NEW `loan_caps.cap_terms`,
+    p.9 pref by close year (Investment Metrics); and the package -- cover (official logo,
+    `docs/brand`), contents with printed page numbers, parts I-V with dividers, FULL / ABBREVIATED,
+    narrative attachments (images; PDFs rendered per page) and measured pagination, footnotes and
+    disclosures on every page (`board_page_notes`), Print / PDF. Five new routes; all `board_*` tables
+    PROTECTED. No figure in an existing report moves; not a symptom repair (partner / asset-class maps
+    group names only). Span vs live `66e714d` (Charlene's v604, merged to main by her): the six Board
+    commits + `699d4a1` (her v604 docs) + two merges. Jim pushed main. Build `capj`, 3m03s, Succeeded;
+    tag locked; P1 re-run (still v604); Healthy at 100%. Guardrails on the merged tree: board_views 101,
+    board_package 28 (NEW), loan_caps 12 (NEW), board_access 217, section_access 274, one_engine 28,
+    investment_metrics 240, snapshot_loan_no_typed_ratios pass; Charlene's
+    snapshot_donald_lynch_promote_check fails A-DSCR and F identically on her own `66e714d` with the
+    same local DB -- local data, not this merge. SERVED: `BoardView-C9L4rG7c.js` from
+    `main-Cun6PlbP.js` (Abbreviated, Footnotes & disclosure, Print / PDF, Attach image or PDF), logo
+    `psc-logo-DlgW-Big.png` 200; write routes 401 without a token. IN THE CONTAINER (no data load): the
+    three new tables created on PostgreSQL, a PDF renders, tables protected, seven views, five parts.
+    Note: an unknown GET under /api answers the SPA shell (200, HTML) -- pre-existing, no data.
+    **Rollback** is FORWARD: `--image acrwaterfalldev.azurecr.io/waterfall-xirr:66e714d
+    --revision-suffix v606` (the new tables are harmless to v604).)
   - `v604` = `66e714d` (REPORTS ROE SUMMARY: DONALD LYNCH U/W ITD ROE. Oct 8 2026, Charlene, Jim
     approved. Same one-off entry (REPORT_VCODE_PROMOTE): the row builds under P0000049 on
     production but every Projected IS 7071/7073 row is on P0000073, so U/W ITD ROE read 0.0. The

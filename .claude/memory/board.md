@@ -150,7 +150,7 @@ capital. The p.27 / pp.29-31 gaps are Investment Metrics' own against the 9/30 w
 (per-deal first lien, CoC, realized IRR -- the workbook's sold 17.7% and 5.6% are typed
 on its Total row); not re-litigated here. Scripts (scratchpad): im_vs_deck.py, bv_run.py.
 
-## p.23 exposure by asset class (Oct 8 2026; branch `feat/board-p23-asset-class`)
+## p.23 exposure by asset class (Oct 8 2026; live `v605`)
 Total and PSC net preferred equity INCLUDING unfunded, by class: the PE exposure engine's
 funded Cost + remaining to fund per deal (PSC by its split), grouped by MRI `Asset_Type`
 through `board_views_service.ASSET_CLASS_OF` -- a deck grouping (Multifamily, Non-Grocery
@@ -173,7 +173,7 @@ Production, 12/31/25 ($M):
 | Other | 9.6 / 6.2 | 10.8 / 6.9 | Pontchartrain -2.25, Bearfoot +0.92, Lynch +2.49 (accounting Q) |
 | Total | 691.6 / 120.2 | 692.4 / 120.9 | = PE engine grand total, to the dollar |
 
-## p.28 portfolio metrics (Oct 8 2026; branch `feat/board-p23-asset-class`)
+## p.28 portfolio metrics (Oct 8 2026; live `v605`)
 Schedule key `debt`. Deals = Investment Metrics' Current table at the as-of (as p.26).
 - Occupancy / DSCR: One Pager `get_property_performance` per deal (YTD economic occupancy,
   YTD DSCR) via the Snapshot's memoised provider; rolled up with the Snapshot's own
@@ -199,7 +199,7 @@ Production vs the deck (metrics as of 9/30/25):
 | No cap | 356.1 | 403.0 (JB Fair 77.4 and Town Fair Tire 20.0 are Variable in MRI, absent from the deck) |
 | Cap not readable | -- | Mount Prospect 6.0 ("5.00% for $5.3M, 5yr $825k") |
 
-## p.24 exposure by operating partner (Oct 8 2026; branch `feat/board-p23-asset-class`)
+## p.24 exposure by operating partner (Oct 8 2026; live `v605`)
 p.23's figures grouped by MRI `Operating_Partner` through `board_views_service.PARTNER_NAMES`
 -- SPELLING variants only, to the deck's short names (JPI / JPI Companies, Vastgood / Vastgood
 Properties LLC, Apple / Apple Self Storage...); the same names print in pp.29-30's partner
@@ -211,7 +211,7 @@ deal to -- MRI vs deck: Brainerd / Crowne ("Bertram and DiMarco", "Bertram/Pyram
 "MFP"); and Pegasus 44.9 vs 12.5, JPI 99.9 vs 109.2, PMAT 6.1 vs 32.7, LBX PSC 5.5 vs 11.8 --
 redistribution, since the grand total ties. Not mapped; AM's call.
 
-## The package (Oct 8 2026; branch `feat/board-p23-asset-class`)
+## The package (Oct 8 2026; live `v605`)
 Jim asked for: page numbers that match what prints; a FULL and an ABBREVIATED package; attachments in
 narrative sections; narratives that run onto more pages at natural breaks; and editable footnotes and
 disclosures on every page.
