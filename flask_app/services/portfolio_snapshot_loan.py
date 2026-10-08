@@ -362,6 +362,9 @@ MANUAL_RATIO_FIELDS = ("ltv", "ytd_dscr", "debt_yield")
 #: rather than a second opinion about what Giant 7's debt service is.
 PROJECTED_YE_NOI_FALLBACK: frozenset = frozenset({"P0000019"})   # Giant 7
 
+#: The Debt Yield basis every row reports unless the fallback above fired.
+DY_BASIS_QUARTER = "single-quarter Interim IS NOI x 4 / debt"
+
 
 MANUAL_RATIO_SEEDS: dict[str, dict] = {}
 # EMPTIED 2026-10-07 (Charlene): every typed LTV / YTD DSCR / Debt Yield cell is
@@ -1161,6 +1164,7 @@ def assemble_loan(investor_code: str, quarter: str, *,
         q_noi = None if quarterly_noi_provider is None else _num(
             quarterly_noi_provider(vcode, quarter))
         annualised = dy = dy_ytd = None
+        dy_basis = DY_BASIS_QUARTER
         if dev:
             flags.append("ratios shown as 'Dev' — development deal")
             diag["dy_dev_suppressed"] += 1
@@ -1174,10 +1178,17 @@ def assemble_loan(investor_code: str, quarter: str, *,
             annualised = _num((perf.get("noi") or {}).get("actual_ye"))
             dy = annualised / debt
             diag["ye_fallback_dy"] = diag.get("ye_fallback_dy", 0) + 1
+            # Say what Projected YE actually was. With no actuals this year the
+            # One Pager makes it the full-year budget; otherwise YTD actual
+            # plus the rest-of-year budget (one_pager, "Projected YE").
+            _src = (f"the full-year {str(quarter)[:4]} budget, no "
+                    f"{str(quarter)[:4]} actuals" if ytd_noi is None
+                    else "YTD actual + rest-of-year budget")
+            dy_basis = f"Projected YE NOI ({_src}) / debt"
             flags.append(
                 f"TEMPORARY: Debt Yield from Projected YE NOI "
-                f"({annualised:,.0f}) over debt — no complete quarter of "
-                f"actual NOI (deal under PSA)")
+                f"({annualised:,.0f}; {_src}) over debt — no complete "
+                f"quarter of actual NOI (deal under PSA)")
         elif q_noi is None:
             flags.append("Debt Yield n/a — no complete quarter of actual NOI")
             diag["dy_no_ytd"] += 1
@@ -1252,7 +1263,9 @@ def assemble_loan(investor_code: str, quarter: str, *,
             "debt_yield_display": (NA_DISPLAY if debt_free else
                                    DEV_DISPLAY if dev else dy),
             "debt_yield_ytd_annualised": dy_ytd,
-            "debt_yield_basis": "single-quarter Interim IS NOI x 4 / debt",
+            # What was divided. The single-quarter basis everywhere except the
+            # PROJECTED_YE_NOI_FALLBACK branch, which names its own source.
+            "debt_yield_basis": dy_basis,
             "kept_despite_sold": bool(sold),
             # The SAME field name and the SAME literal the Financial subtab
             # emits, so a sold deal cannot be labelled one way on one page and
@@ -1898,8 +1911,10 @@ def _selftest():                                    # pragma: no cover
     chk("a typed LTV leaves the computed figure in the raw field",
         all(r["ltv"] == r.get("ltv_computed")
             for r in flat.values() if r.get("ltv_is_manual")))
-    chk("Debt Yield basis is single-quarter x 4",
-        all(r["debt_yield_basis"].startswith("single-quarter")
+    chk("Debt Yield basis is single-quarter x 4, except where the YE fallback fired",
+        all(r["debt_yield_basis"] == DY_BASIS_QUARTER
+            or (r["vcode"] in PROJECTED_YE_NOI_FALLBACK
+                and r["debt_yield_basis"].startswith("Projected YE NOI"))
             for r in flat.values()))
     chk("at Q1 single-quarter x4 equals YTD-annualised",
         all(r["debt_yield_ytd_annualised"] is None
