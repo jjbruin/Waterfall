@@ -462,6 +462,13 @@ const reviewNotes = computed<string[]>(() => (current.value?.sched ? viewOf(curr
      later print in the session), and the hide rule is gated on .bd-print
      being present (ungated, every later print came out blank). */
   body:has(> .bd-print) > *:not(.bd-print) { display: none !important; }
+  /* The fills ARE the formatting -- the green rule, banded rows, header shading,
+     the bars, the banner. Browsers drop backgrounds when printing unless the
+     dialog's "Background graphics" is ticked (it is not, by default); this makes
+     them print regardless. Measured Oct 8 2026: without it, Save as PDF lost all
+     of them. Scoped to the package's own elements, so it cannot leak into
+     another screen's print. */
+  .bd-print, .bd-print * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   html, body { background: #fff !important; }
   .bd-print { position: static; }
   .bd-print .bd-page { page: board-deck; width: 1100px; height: 825px; overflow: hidden; break-after: page; page-break-after: always; }
