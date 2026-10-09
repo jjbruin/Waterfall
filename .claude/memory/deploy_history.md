@@ -12,7 +12,7 @@ part of the branch they came from.
 
 Newest first. Revisions absent from the post-mortem sections (`v396` and older,
 apart from the few noted) carry no recorded post-mortem; their SHAs are in the
-**Revisions v349-v613** index at the foot of this file, which is where the CLAUDE.md
+**Revisions v349-v614** index at the foot of this file, which is where the CLAUDE.md
 index moved to on Oct 5 2026. CLAUDE.md now carries no revision list at all — the
 running revision's image tag IS its commit SHA, so pre-flight P1 answers "what is
 live?" without one.
@@ -327,7 +327,7 @@ first SHA-pinned revision
 
 `v348` and earlier point at `:latest` and are not traceable by tag.
 
-## Revisions v349-v613 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
+## Revisions v349-v614 (moved from CLAUDE.md, Oct 5 2026; v566 onward added here directly)
 
 The per-revision index that used to sit inline in CLAUDE.md under **Running
 the Application -> Deploying Changes**, verbatim and newest first. Entries
@@ -342,6 +342,17 @@ entry pointing at it. Nothing here was summarised.
   its SHA suggests** — several did not (`v424` was a merge, not the commit that was asked
   for; `v378` was superseded minutes later; `v418`/`v417` shipped only part of a branch).
 
+  - `v614` = `d7d426c` (PORTFOLIO SNAPSHOT PRINT: EACH TABLE SUBTAB FITTED TO ONE SHEET. Charlene, Oct 9
+    2026, fast-forward of `fix/snapshot-print-one-page` onto `66621f1`. `fitPagesToSheet()` zooms each
+    table page in `beforeprint` (floor 0.85); the snapshot's print rules moved from @media print to
+    `@container style(--paper: 1)` -- Chrome/Edge only, Firefox prints without them. Sweep, 26Q2, all
+    147 investors, v613 vs this build: table spills 8 -> 6 (TGAM, PSC1 now 4 pages); BCA, FNKI, OWPP,
+    OWPSC, RWPI, WOFC still put the 6 Financial footnote lines on a sheet of their own (would fit at
+    ~0.82; Charlene kept 0.85). Printed words identical on the 140 that never spilled. P2 vs live
+    7b93298 = this + two docs commits (86634b9, 66621f1). ACR run 18:05-18:07 UTC Succeeded, tag
+    locked; served chunk `PortfolioSnapshotPrintView-DBClsaxr.js` / `-CftqaciE.css` = the swept build.
+    Guardrail `scripts/snapshot_print_fit_check.py`. `az containerapp update ... --image
+    acrwaterfalldev.azurecr.io/waterfall-xirr:d7d426c --revision-suffix v614`.)
   - `v613` = `7b93298` (SHAREPOINT PICKER: A FILE WITH NO DOWNLOAD LINK IS STILL READ. Merge of
     `fix/sharepoint-download-fallback` (`daaca11`). Jim: picking `investment_map.csv` (saved that day) in
     Data Explorer failed "SharePoint did not provide a download link." Graph omits
