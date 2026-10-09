@@ -193,6 +193,12 @@ body {
     margin: 0;
   }
 
+  /* Print rules written as `@container style(--paper: 1)` (the Portfolio
+     Snapshot's) apply whenever this is on: always in print, and for a moment
+     when a view sets it to measure itself as it will print (see
+     PortfolioSnapshotPrintView's fitPagesToSheet). */
+  html { --paper: 1; }
+
   .sidebar {
     display: none !important;
   }

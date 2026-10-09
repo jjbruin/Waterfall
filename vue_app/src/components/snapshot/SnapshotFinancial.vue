@@ -754,7 +754,11 @@ tfoot tr:not(:first-child) td { border-top: none; }
 .footnotes h4 { font-size: 13px; margin: 0 0 8px 0; }
 /* On paper the block sits under a full-page table and every line of it
    competes with a deal row for the same inches. */
-@media print {
+/* Print rules, switched by `--paper` rather than by @media print alone: App.vue
+   turns it on for all printing, and PortfolioSnapshotPrintView turns it on for
+   a moment in `beforeprint` so it can measure each page as it will print and
+   fit it to one sheet. Same rules, same order, same cascade as @media print. */
+@container style(--paper: 1) {
   /* This block competes with deal rows for the same inches: it sits under a
      table that runs the height of the page, and at its screen size it needed
      1.08in against the 0.88in left over — which is what pushed a three-line
@@ -844,7 +848,7 @@ tfoot tr:not(:first-child) td { border-top: none; }
   padding: 40px 0;
 }
 
-@media print {
+@container style(--paper: 1) {
   .legend { display: none; }
   .scroll { overflow: visible; border: 1px solid #ccc; }
   .fnadd { display: none; }

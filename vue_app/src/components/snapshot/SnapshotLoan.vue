@@ -607,7 +607,11 @@ tfoot .note {
   padding: 40px 0;
 }
 
-@media print {
+/* Print rules, switched by `--paper` rather than by @media print alone: App.vue
+   turns it on for all printing, and PortfolioSnapshotPrintView turns it on for
+   a moment in `beforeprint` so it can measure each page as it will print and
+   fit it to one sheet. Same rules, same order, same cascade as @media print. */
+@container style(--paper: 1) {
   .legend { display: none; }
   .hint { display: none; }
   .scroll { overflow: visible; border: 1px solid #ccc; }

@@ -20,7 +20,7 @@
  * textareas render as plain text and no save event can fire from a document
  * whose only purpose is to be printed. No mutation endpoint is reachable here.
  */
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api/client'
 import SnapshotFinancial from '../components/snapshot/SnapshotFinancial.vue'
@@ -86,6 +86,64 @@ function doPrint() {
   })
 }
 
+// ---- one subtab, one sheet -----------------------------------------------
+// The tables are sized by hand to fit a landscape sheet, but only for the row
+// count they were tuned on: TIAA 26Q2 carries 37 deals and its Financial page
+// ran ~0.3in long, so the footnote block printed on a sheet of its own. Rather
+// than re-tune pixels every quarter, each page is MEASURED as it will print and
+// shrunk just enough to fit -- a page that already fits is left at 100%.
+//
+// WHEN, and why it is not simpler. Chrome decides the page count from the
+// layout at `beforeprint`; a zoom applied later (e.g. from a matchMedia('print')
+// listener, which does see the print layout) still prints, but onto the stale
+// count, leaving blank sheets at the end. So the fit must happen IN
+// `beforeprint`, where the browser still shows the SCREEN layout. To measure the
+// paper layout there, the print rules are written once inside
+// `@container style(--paper: 1)` and `--paper` is on both under @media print and
+// while `.paper` is set on the document -- so for the measurement the page lays
+// itself out exactly as it prints. Ctrl+P fires `beforeprint` too.
+const SHEET_PX = 8.5 * 96          // landscape letter height; .print-page's own
+                                   // padding is inside this box (border-box)
+const SHEET_SLACK_PX = 4           // sub-pixel rounding must not cost a sheet
+const MIN_ZOOM = 0.85              // below this, a spill is the honest outcome
+// Only the three TABLE subtabs are fitted. The Summary (`.flows`) is narrative
+// and charts: shrinking prose to keep it on one sheet buys nothing a reader
+// wants, so a long one simply continues onto the next sheet.
+const FITTED = '.print-page:not(.flows)'
+
+function fitPagesToSheet() {
+  const doc = document.querySelector<HTMLElement>('.print-doc')
+  if (!doc) return
+  doc.classList.add('paper')
+  for (const el of doc.querySelectorAll<HTMLElement>(FITTED)) {
+    el.style.zoom = ''
+    let z = 1
+    // Zooming changes the measure, which can re-wrap the comment column, so
+    // re-measure rather than trust one ratio.
+    for (let i = 0; i < 4; i++) {
+      const h = el.getBoundingClientRect().height
+      if (h <= SHEET_PX - SHEET_SLACK_PX) break
+      z = Math.max(MIN_ZOOM, z * (SHEET_PX - SHEET_SLACK_PX) / h)
+      el.style.zoom = String(z)
+      if (z === MIN_ZOOM) break
+    }
+    el.dataset.printZoom = z.toFixed(3)
+  }
+  doc.classList.remove('paper')
+}
+function clearPageFit() {
+  for (const el of document.querySelectorAll<HTMLElement>('.print-page')) {
+    el.style.zoom = ''
+    delete el.dataset.printZoom
+  }
+}
+window.addEventListener('beforeprint', fitPagesToSheet)
+window.addEventListener('afterprint', clearPageFit)
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeprint', fitPagesToSheet)
+  window.removeEventListener('afterprint', clearPageFit)
+})
+
 onMounted(async () => {
   if (!investor || !quarter) {
     loadError.value = 'investor and quarter are required'
@@ -127,8 +185,10 @@ onMounted(async () => {
     <p v-else-if="loadError" class="placeholder err">{{ loadError }}</p>
 
     <template v-else-if="bundle">
-      <!-- ══ PAGE 1 — summary: narratives + the two charts ══ -->
-      <section class="print-page">
+      <!-- ══ PAGE 1 — summary: narratives + the two charts ══
+           `flows`: prose, not a table, so it is never shrunk to fit -- a long
+           narrative runs onto a second sheet instead (fitPagesToSheet skips it). -->
+      <section class="print-page flows">
         <h1 class="pdf-title">PORTFOLIO SNAPSHOT</h1>
         <div class="pdf-client">{{ investorName }}</div>
         <div class="pdf-sub">
@@ -370,12 +430,24 @@ onMounted(async () => {
 :deep(table.grid .cmt) { max-width: 2.9in; }
 
 /* ── the printed document ─────────────────────────────────────────────── */
+/* `--paper` switches the print rules on: always when printing, and for the
+   moment fitPagesToSheet() measures in `beforeprint` (see the script). The
+   rules themselves are written ONCE, in the style query below, so the layout
+   that is measured cannot drift from the layout that prints. */
 @media print {
+  /* `--paper` itself is on for all printing from App.vue (html). */
+  .print-doc { background: #fff; padding: 0; }
+}
+.print-doc.paper { --paper: 1; }
+/* Measured on screen, a page has no paper to fill, so give it the sheet's
+   width explicitly; in print `width: auto` is that same 11in. */
+.print-doc.paper .print-page { width: 11in !important; }
+
+@container style(--paper: 1) {
   /* The page box (letter portrait, zero margin — which is what suppresses the
      browser's own header/footer) is set ONCE globally in App.vue. The
      .print-page padding below stands in for the margin. */
 
-  .print-doc { background: #fff; padding: 0; }
   .no-print { display: none !important; }
 
   .print-page {
@@ -403,6 +475,9 @@ onMounted(async () => {
   /* Charts: centred, and wide enough to hold a landscape measure without
      stretching flat. */
   .chartwrap { max-width: 7.6in; margin: 0 auto 10px auto; }
+  /* When a long Summary flows onto a second sheet, a chart moves WITH its
+     title -- never a title at the foot of one page and its chart on the next. */
+  .chartwrap { break-inside: avoid; page-break-inside: avoid; }
   .chart-title { margin-bottom: 0; }
   .sect { margin-bottom: 4px; }
   .narr { margin-bottom: 4px; }
